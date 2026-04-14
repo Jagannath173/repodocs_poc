@@ -1,0 +1,82 @@
+{
+  "name": "internal-python-runner",
+  "displayName": "Internal Python Runner",
+  "description": "VS Code extension that bootstraps a Python venv and runs an internal script.",
+  "version": "1.0.0",
+  "publisher": "local-dev",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onCommand:internalPythonRunner.runInternalPythonScript",
+    "onCommand:internalPythonRunner.showDashboard"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "internalPythonRunner.showDashboard",
+        "title": "Open Python POC Dashboard",
+        "icon": "$(dashboard)"
+      },
+      {
+        "command": "internalPythonRunner.generateRepoDoc",
+        "title": "Generate Repo Documentation",
+        "icon": "$(book)"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "python-poc-explorer",
+          "title": "Python POC",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "python-poc-explorer": [
+        {
+          "id": "python-poc-view",
+          "name": "Python VSIX POC"
+        },
+        {
+          "id": "repo-doc-view",
+          "name": "Repo Documentation"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "python-poc-view",
+        "contents": "Welcome to the Python VSIX POC.\n[Open Dashboard](command:internalPythonRunner.showDashboard)"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "internalPythonRunner.showDashboard",
+          "when": "view == python-poc-view",
+          "group": "navigation"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "lint": "eslint src --ext ts"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.12",
+    "@types/vscode": "^1.85.0",
+    "@typescript-eslint/eslint-plugin": "^8.5.0",
+    "@typescript-eslint/parser": "^8.5.0",
+    "eslint": "^9.9.0",
+    "typescript": "^5.5.4"
+  }
+}
