@@ -12,20 +12,33 @@
   ],
   "activationEvents": [
     "onCommand:internalPythonRunner.runInternalPythonScript",
-    "onCommand:internalPythonRunner.showDashboard"
+    "onCommand:internalPythonRunner.showDashboard",
+    "onCommand:internalPythonRunner.generateRepoDoc",
+    "onCommand:internalPythonRunner.generateFullRepoDoc",
+    "onCommand:internalPythonRunner.authenticateCopilot"
   ],
   "main": "./out/extension.js",
   "contributes": {
     "commands": [
       {
         "command": "internalPythonRunner.showDashboard",
-        "title": "Open Python POC Dashboard",
+        "title": "Internal Python Runner: Open Dashboard",
         "icon": "$(dashboard)"
       },
       {
         "command": "internalPythonRunner.generateRepoDoc",
-        "title": "Generate Repo Documentation",
-        "icon": "$(book)"
+        "title": "Internal Python Runner: Generate Script Overview",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "internalPythonRunner.generateFullRepoDoc",
+        "title": "Internal Python Runner: Generate Full Repo Architecture",
+        "icon": "$(repo)"
+      },
+      {
+        "command": "internalPythonRunner.authenticateCopilot",
+        "title": "Internal Python Runner: Authenticate Copilot",
+        "icon": "$(key)"
       }
     ],
     "viewsContainers": {

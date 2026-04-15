@@ -2,3 +2,9 @@ node_modules/
 out/
 python/venv/
 *.vsix
+.env
+python/copilot_token_cache.json
+temp_auto_push.bat
+temp_interactive_push.bat
+.gitignore
+branch_structure.json

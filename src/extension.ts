@@ -1,11 +1,15 @@
+import { runBenchmark, authenticateCopilot } from "./pythonRunner";
+import { RepoDocProvider } from "./repoDocProvider";
+import { generateDocumentation, generateFullRepoDocumentation } from "./docGenerator";
 import * as vscode from "vscode";
 import * as path from "path";
 import * as fs from "fs";
-import { runBenchmark } from "./pythonRunner";
-import { RepoDocProvider } from "./repoDocProvider";
-import { generateDocumentation } from "./docGenerator";
+
+
+export let extensionContext: vscode.ExtensionContext;
 
 export function activate(context: vscode.ExtensionContext): void {
+  extensionContext = context;
   let dashboardPanel: vscode.WebviewPanel | undefined = undefined;
 
   // 1. Dashboard Management
@@ -20,6 +24,11 @@ export function activate(context: vscode.ExtensionContext): void {
     dashboardPanel.webview.onDidReceiveMessage(message => {
       if (message.command === "runInternal") { 
         triggerBenchmark(context, dashboardPanel); 
+      } else if (message.command === "authenticate") {
+        vscode.commands.executeCommand("internalPythonRunner.authenticateCopilot");
+      } else if (message.command === "saveManualToken") {
+        context.globalState.update("copilot_access_token_override", message.token);
+        vscode.window.showInformationMessage("✅ Access Token saved to context override!");
       }
     });
   };
@@ -31,7 +40,16 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
     vscode.commands.registerCommand("internalPythonRunner.showDashboard", showDashboard),
     vscode.commands.registerCommand("internalPythonRunner.runInternalPythonScript", () => triggerBenchmark(context)),
-    vscode.commands.registerCommand("internalPythonRunner.generateRepoDoc", generateDocumentation)
+    vscode.commands.registerCommand("internalPythonRunner.generateRepoDoc", generateDocumentation),
+    vscode.commands.registerCommand("internalPythonRunner.generateFullRepoDoc", generateFullRepoDocumentation),
+    vscode.commands.registerCommand("internalPythonRunner.authenticateCopilot", () => {
+        const output = vscode.window.createOutputChannel("Internal Python Runner");
+        output.show(true);
+        authenticateCopilot(context, (m) => {
+            output.appendLine(m);
+            dashboardPanel?.webview.postMessage({ type: "log", text: m });
+        });
+    })
   );
 }
 

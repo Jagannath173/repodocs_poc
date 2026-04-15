@@ -10,10 +10,18 @@ export class RepoDocProvider implements vscode.TreeDataProvider<RepoItem> {
 
   getChildren(): RepoItem[] {
     return [
+      new RepoItem("Login to Copilot", vscode.TreeItemCollapsibleState.None, {
+        command: "internalPythonRunner.authenticateCopilot",
+        title: "Login"
+      }, "key"),
       new RepoItem("Generate Script Overview", vscode.TreeItemCollapsibleState.None, {
         command: "internalPythonRunner.generateRepoDoc",
         title: "Generate Report"
       }, "book"),
+      new RepoItem("Generate Full Repo Docs", vscode.TreeItemCollapsibleState.None, {
+        command: "internalPythonRunner.generateFullRepoDoc",
+        title: "Generate Full Repo"
+      }, "repo"),
       new RepoItem("Analyze Script Latency", vscode.TreeItemCollapsibleState.None, {
         command: "internalPythonRunner.runInternalPythonScript",
         title: "Run"
