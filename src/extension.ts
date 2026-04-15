@@ -10,6 +10,7 @@ export let extensionContext: vscode.ExtensionContext;
 
 export function activate(context: vscode.ExtensionContext): void {
   extensionContext = context;
+  const sidebarProvider = new CodeReviewViewProvider();
 
   void ensurePythonEnvironment(context).catch((e: Error) => {
     void vscode.window.showErrorMessage(`Code Review: could not set up Python (${e.message}).`);
@@ -21,7 +22,7 @@ export function activate(context: vscode.ExtensionContext): void {
     });
 
   context.subscriptions.push(
-    vscode.window.registerTreeDataProvider("code-review-main", new CodeReviewViewProvider()),
+    vscode.window.registerTreeDataProvider("code-review-main", sidebarProvider),
     vscode.commands.registerCommand("codeReview.runReview", () => {
       void runCodeReview();
     }),
@@ -43,6 +44,9 @@ export function activate(context: vscode.ExtensionContext): void {
     ),
     vscode.commands.registerCommand("codeReview.authenticate", () => {
       void openAuthWebviewAndAuthenticate(context);
+    }),
+    vscode.commands.registerCommand("codeReview.sidebar.refresh", () => {
+      sidebarProvider.refresh();
     })
   );
 }

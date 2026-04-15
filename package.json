@@ -73,6 +73,11 @@
       {
         "command": "codeReview.assistant.testscriptSelfHealing",
         "title": "Code Review: Assistant - Testscript Self Healing"
+      },
+      {
+        "command": "codeReview.sidebar.refresh",
+        "title": "Code Review: Refresh sidebar",
+        "icon": "$(refresh)"
       }
     ],
     "viewsContainers": {
@@ -88,14 +93,28 @@
       "code-review-sidebar": [
         {
           "id": "code-review-main",
-          "name": "Review"
+          "name": "Targets"
+        }
+      ]
+    },
+    "menus": {
+      "view/title": [
+        {
+          "command": "codeReview.runReview",
+          "when": "view == code-review-main",
+          "group": "navigation@1"
+        },
+        {
+          "command": "codeReview.sidebar.refresh",
+          "when": "view == code-review-main",
+          "group": "navigation@2"
         }
       ]
     },
     "viewsWelcome": [
       {
         "view": "code-review-main",
-        "contents": "### Core\n[Review](command:codeReview.runReview)\n[Apply fixes](command:codeReview.applyFixes)\n[Authenticate Copilot](command:codeReview.authenticate)\n\n### Assistant Endpoints\n[Code explanation](command:codeReview.assistant.codeExplanation)\n[Code refactor](command:codeReview.assistant.codeRefactor)\n[Code generation](command:codeReview.assistant.codeGeneration)\n[Unit test](command:codeReview.assistant.unitTest)\n[File-wise unit test](command:codeReview.assistant.fileWiseUnitTest)\n[Docstring addition](command:codeReview.assistant.docstringAddition)\n[Comment addition](command:codeReview.assistant.commentAddition)\n[Logging addition](command:codeReview.assistant.loggingAddition)\n[Error handling](command:codeReview.assistant.errorHandling)\n[Testscript self healing](command:codeReview.assistant.testscriptSelfHealing)"
+        "contents": "Select an action to get started."
       }
     ]
   },
