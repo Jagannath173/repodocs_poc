@@ -1,0 +1,17 @@
+{% set scenario_prompt %}
+You are designing test payloads to examine pagination and idempotency semantics. Using the schema,
+generate request variations that highlight:
+
+1. Stable idempotency keys reused across identical requests and across slight variations.
+2. Intentional key collisions and key omissions to confirm server behaviour.
+3. Sequential pagination flows, reverse pagination, gaps, and overlapping windows.
+4. Retries with mixed outcomes (successful first attempt, retry after failure, retry after success).
+5. Concurrency-inspired cases where multiple keys/pages interleave.
+
+Mix deterministic sequences with slightly out-of-order patterns to validate the API's ability to dedupe,
+cache, and resume operations correctly. Keep all records syntactically valid and representative of
+realistic integration scenarios.
+{% endset %}
+{% set strategy = "idempotency" %}
+{% include 'assistant/test_data_scenario.jinja' %}
+

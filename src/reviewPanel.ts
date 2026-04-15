@@ -32,6 +32,7 @@ function reviewTableHtml(webview: vscode.Webview, nonce: string): string {
     .tab-btn.active { background: var(--vscode-button-background); color: var(--vscode-button-foreground); border-color: transparent; }
     .tab-panel.hidden { display: none !important; }
     .summary { margin-bottom: 16px; padding: 12px 14px; background: var(--vscode-textCodeBlock-background); border-radius: 6px; border: 1px solid var(--vscode-editorWidget-border); line-height: 1.5; white-space: pre-wrap; }
+    .section-title { margin: 14px 0 8px; font-size: 1em; font-weight: 600; }
     table { width: 100%; border-collapse: collapse; font-size: 0.92em; }
     th, td { border: 1px solid var(--vscode-editorWidget-border); padding: 8px 10px; text-align: left; vertical-align: top; }
     th { background: var(--vscode-editor-inactiveSelectionBackground); font-weight: 600; }
@@ -160,6 +161,14 @@ function reviewTableHtml(webview: vscode.Webview, nonce: string): string {
       var data = state.review;
       var findings = Array.isArray(data.findings) ? data.findings : [];
       var applied = Array.isArray(data.appliedIndices) ? data.appliedIndices : [];
+      var sections = Array.isArray(data.sections) ? data.sections : [];
+      if (!sections.length) {
+        sections = [{
+          name: "Review",
+          summary: data.summary || "(No summary)",
+          findings: findings.map(function (f, i) { return Object.assign({ globalIndex: i }, f); })
+        }];
+      }
       var resultEl = document.getElementById("review-result");
       resultEl.innerHTML = "";
 
@@ -186,56 +195,65 @@ function reviewTableHtml(webview: vscode.Webview, nonce: string): string {
       toolbar.appendChild(btnAuth);
       resultEl.appendChild(toolbar);
 
-      var sum = document.createElement("div");
-      sum.className = "summary";
-      sum.textContent = data.summary || "(No summary)";
-      resultEl.appendChild(sum);
+      sections.forEach(function (section) {
+        var heading = document.createElement("h3");
+        heading.className = "section-title";
+        heading.textContent = section.name || "Review Section";
+        resultEl.appendChild(heading);
 
-      var tbl = document.createElement("table");
-      var thead = document.createElement("thead");
-      var hr = document.createElement("tr");
-      ["Severity", "Category", "Title", "Detail", "Suggestion", "Fix"].forEach(function (h) {
-        var th = document.createElement("th");
-        th.textContent = h;
-        hr.appendChild(th);
-      });
-      thead.appendChild(hr);
-      tbl.appendChild(thead);
-      var tb = document.createElement("tbody");
-      findings.forEach(function (f, rowIdx) {
-        var tr = document.createElement("tr");
-        var isApplied = applied.indexOf(rowIdx) >= 0;
-        if (isApplied) tr.className = "finding-applied";
-        ["severity", "category", "title", "detail", "suggestion"].forEach(function (key) {
-          var td = document.createElement("td");
-          var v = (f && f[key]) != null ? String(f[key]) : "";
-          if (key === "severity") td.className = sevClass(v);
-          if (key === "title" && isApplied) {
-            td.appendChild(document.createTextNode(v + " "));
-            var badge = document.createElement("span");
-            badge.className = "badge-applied";
-            badge.textContent = "Applied";
-            td.appendChild(badge);
-          } else {
-            td.textContent = v;
-          }
-          tr.appendChild(td);
+        var sum = document.createElement("div");
+        sum.className = "summary";
+        sum.textContent = section.summary || "(No summary)";
+        resultEl.appendChild(sum);
+
+        var sectionFindings = Array.isArray(section.findings) ? section.findings : [];
+        var tbl = document.createElement("table");
+        var thead = document.createElement("thead");
+        var hr = document.createElement("tr");
+        ["Severity", "Category", "Title", "Detail", "Suggestion", "Fix"].forEach(function (h) {
+          var th = document.createElement("th");
+          th.textContent = h;
+          hr.appendChild(th);
         });
-        var tdFix = document.createElement("td");
-        var bf = document.createElement("button");
-        bf.type = "button";
-        bf.className = "btn-row-fix";
-        bf.textContent = isApplied ? "Applied" : "Fix";
-        bf.disabled = isApplied;
-        if (!isApplied) {
-          bf.onclick = function () { vscode.postMessage({ command: "applyFixes", mode: "one", index: rowIdx }); };
-        }
-        tdFix.appendChild(bf);
-        tr.appendChild(tdFix);
-        tb.appendChild(tr);
+        thead.appendChild(hr);
+        tbl.appendChild(thead);
+        var tb = document.createElement("tbody");
+        sectionFindings.forEach(function (f, rowIdx) {
+          var globalIndex = typeof f.globalIndex === "number" ? f.globalIndex : rowIdx;
+          var tr = document.createElement("tr");
+          var isApplied = applied.indexOf(globalIndex) >= 0;
+          if (isApplied) tr.className = "finding-applied";
+          ["severity", "category", "title", "detail", "suggestion"].forEach(function (key) {
+            var td = document.createElement("td");
+            var v = (f && f[key]) != null ? String(f[key]) : "";
+            if (key === "severity") td.className = sevClass(v);
+            if (key === "title" && isApplied) {
+              td.appendChild(document.createTextNode(v + " "));
+              var badge = document.createElement("span");
+              badge.className = "badge-applied";
+              badge.textContent = "Applied";
+              td.appendChild(badge);
+            } else {
+              td.textContent = v;
+            }
+            tr.appendChild(td);
+          });
+          var tdFix = document.createElement("td");
+          var bf = document.createElement("button");
+          bf.type = "button";
+          bf.className = "btn-row-fix";
+          bf.textContent = isApplied ? "Applied" : "Fix";
+          bf.disabled = isApplied;
+          if (!isApplied) {
+            bf.onclick = function () { vscode.postMessage({ command: "applyFixes", mode: "one", index: globalIndex }); };
+          }
+          tdFix.appendChild(bf);
+          tr.appendChild(tdFix);
+          tb.appendChild(tr);
+        });
+        tbl.appendChild(tb);
+        resultEl.appendChild(tbl);
       });
-      tbl.appendChild(tb);
-      resultEl.appendChild(tbl);
     }
 
     function setFixButtons(enabled) {
@@ -359,8 +377,19 @@ export interface ReviewFinding {
 export interface ReviewPayload {
   summary: string;
   findings: ReviewFinding[];
+  sections?: ReviewSectionPayload[];
   /** Row indices (0-based) whose fixes were accepted and applied. */
   appliedIndices?: number[];
+}
+
+export interface ReviewSectionFinding extends ReviewFinding {
+  globalIndex: number;
+}
+
+export interface ReviewSectionPayload {
+  name: string;
+  summary: string;
+  findings: ReviewSectionFinding[];
 }
 
 /** Persisted review + applied-fix tracking (same shape as workspace state). */
@@ -376,6 +405,7 @@ export class ReviewWebviewSession {
   private readonly panel: vscode.WebviewPanel;
   private disposed = false;
   private choiceResolver?: (v: "accept" | "reject") => void;
+  private latestSections: ReviewSectionPayload[] = [];
 
   constructor(
     context: vscode.ExtensionContext,
@@ -414,11 +444,13 @@ export class ReviewWebviewSession {
 
   setReview(payload: ReviewPayload): void {
     if (this.disposed) return;
+    this.latestSections = payload.sections ?? [];
     void this.panel.webview.postMessage({
       type: "review",
       payload: {
         summary: payload.summary,
         findings: payload.findings,
+        sections: payload.sections ?? [],
         appliedIndices: payload.appliedIndices ?? [],
       },
     });
@@ -427,11 +459,22 @@ export class ReviewWebviewSession {
   /** Refresh the findings table after fixes are applied (badges, disabled Fix). */
   refreshFromStored(stored: ReviewTableState): void {
     if (this.disposed) return;
+    const mappedSections = this.latestSections.map((section) => ({
+      ...section,
+      findings: section.findings.map((f) => {
+        const nextFinding = stored.findings[f.globalIndex];
+        return {
+          ...(nextFinding ?? f),
+          globalIndex: f.globalIndex,
+        };
+      }),
+    }));
     void this.panel.webview.postMessage({
       type: "review",
       payload: {
         summary: stored.summary,
         findings: stored.findings,
+        sections: mappedSections,
         appliedIndices: stored.appliedIndices ?? [],
       },
     });

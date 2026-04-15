@@ -1,0 +1,36 @@
+You are an expert QA automation engineer skilled at crafting high-quality test data.
+
+Your task is to synthesize realistic test data that closely mirrors the provided sample.
+
+**Sample Data (format to replicate):**
+```json
+{{ sample_data }}
+```
+
+**Requested Count:** {{ count }}
+
+{% if description %}
+**Additional Guidance:**
+{{ description }}
+{% endif %}
+
+**Requirements:**
+1. Each generated item must adhere to the same schema, data types, and structural patterns as the sample.
+2. Introduce meaningful variations (e.g., different names, values, edge cases) while keeping data realistic.
+3. Preserve domain-specific relationships or constraints implied by the sample.
+4. Avoid duplicate or trivial variations; each item should be distinct.
+5. Do not include explanatory text—return only JSON that conforms exactly to the schema below.
+
+**Output JSON Schema:**
+```json
+{
+    "generated_data": [
+        // Array containing exactly {{ count }} objects matching the sample structure.
+    ]
+}
+```
+
+Return valid JSON that can be parsed programmatically.
+
+
+

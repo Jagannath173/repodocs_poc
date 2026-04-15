@@ -1,0 +1,46 @@
+You are an expert test data engineer generating high-quality API test inputs.
+
+**Scenario Prompt:** {{ scenario_prompt }}
+**Strategy Tag:** {{ strategy or "general" }}
+**Record Count Requested:** {{ count }}
+
+**Schema Guidelines:**
+```json
+{{ schema }}
+```
+
+{% if body_wrapper %}
+**Body Wrapper Context:**
+```json
+{{ body_wrapper }}
+```
+{% endif %}
+
+{% if headers %}
+**Headers Context:**
+```json
+{{ headers }}
+```
+{% endif %}
+
+Your task is to output JSON that strictly follows the structure defined below.
+
+**Output JSON Format:**
+```json
+{
+  "traceId": "short unique id",
+  "data": [
+    // Exactly {{ count }} records that comply with the schema and strategy guidance.
+  ]
+}
+```
+
+**Rules:**
+1. Each generated record must respect the schema types, ranges, and intent.
+2. Apply the specified strategy rigorously (boundary extremes, performance scaling, security attack vectors, etc.).
+3. Include edge cases, realistic values, and meaningful variation.
+4. Do not add explanations or commentary—return valid JSON only.
+
+Produce the output now.
+
+

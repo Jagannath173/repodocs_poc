@@ -1,0 +1,22 @@
+{# 
+Common Input Type Detection Template for Review Prompts
+This template contains the shared Input Type Detection section.
+Include this template early in review prompts using: {% include 'review/common_input_type_detection.jinja' %}
+#}
+
+**Input Type Detection**: First, determine if the input is:
+1. **Raw Code**: Direct source code files or code snippets
+2. **Git Diff**: Git diff output showing changes with +/- line indicators
+
+For **Git Diff inputs**:
+- Focus your {% if review_type %}{{ review_type }} {% endif %}analysis on the **added lines** (lines starting with +) as these represent new or modified code
+- Consider **removed lines** (lines starting with -) for context but do not analyze them for current {% if review_type %}{{ review_type }} {% endif %}issues
+- Treat lines starting with a single space as unchanged context; you may include them for clarity but do not review them as new code
+- When quoting code in issue "identification", preserve the leading "+" on added lines and avoid including "-" removed lines except as minimal context; never raise issues against removed lines
+- Pay attention to the file paths and change context provided in the diff headers
+- Analyze the {% if review_type %}{{ review_type }} {% endif %}implications of the changes in the context of what was modified, added, or removed
+
+For **Raw Code inputs**:
+- Analyze the entire codebase as provided for {% if review_type %}{{ review_type }} {% endif %}issues
+- Review all functions, classes, and code structures present
+

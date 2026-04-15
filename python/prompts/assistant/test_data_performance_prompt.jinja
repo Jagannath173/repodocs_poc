@@ -1,0 +1,18 @@
+{% set scenario_prompt %}
+You are generating synthetic payloads for large-scale performance testing. Construct records that
+reflect realistic production traffic while stressing pagination, batching, and throughput limits.
+Use the provided schema to diversify values across the full range, including extreme list lengths,
+maximum field sizes, and representative sampling of enumerations. Incorporate:
+
+1. A mix of small, medium, and very large payload variations to evaluate scaling characteristics.
+2. Sequential and randomised cursor/token patterns to simulate long-running pagination.
+3. Occasional repeated keys or overlapping segments to mimic cache hits and idempotent retries.
+4. Edge cases that push API limits (e.g., highest allowed `limit`, longest strings).
+5. Slight data irregularities that remain valid (skipped cursors, gaps, bursts) to mimic real traffic.
+
+The goal is to produce high-volume yet valid requests that reveal throughput ceilings and latency
+degradations without intentionally breaking the contract.
+{% endset %}
+{% set strategy = "performance" %}
+{% include 'assistant/test_data_scenario.jinja' %}
+

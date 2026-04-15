@@ -1,0 +1,17 @@
+{% set scenario_prompt %}
+You are performing Equivalence Partitioning for a validation-heavy API. Derive representative values
+for every meaningful partition implied by the schema (valid, invalid, deprecated, edge, default, etc.).
+For each partition:
+
+1. Provide at least one canonical example that should succeed.
+2. Provide at least one example expected to fail with a clear reason (format, state, business rule).
+3. Include grey-area values that challenge boundaries between partitions (e.g., near-expired, nearly valid).
+4. Reflect variation across related fields so combinations expose hidden coupling issues.
+5. If the schema lists custom partitions or enumerations, honour them explicitly.
+
+Ensure the resulting dataset spans all partitions without overlap and avoids redundancy. Clearly reflect
+the intent of each partition through thoughtfully chosen values.
+{% endset %}
+{% set strategy = "equivalence" %}
+{% include 'assistant/test_data_scenario.jinja' %}
+

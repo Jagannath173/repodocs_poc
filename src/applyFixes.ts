@@ -251,7 +251,6 @@ export async function applyFixesFromReview(
       appliedCount += 1;
       await markFindingApplied(originalIndex);
       doc = await vscode.workspace.openTextDocument(uri);
-      await vscode.window.showTextDocument(doc, { preview: false });
     }
 
     void vscode.window.showInformationMessage(

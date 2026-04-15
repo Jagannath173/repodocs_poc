@@ -1,0 +1,175 @@
+{# 
+Common Instructions Template for Review Prompts
+This template contains shared sections that are common across all review prompts (Additional Guidelines, Parametric/Value-only Change Policy, Overall Severity Calculation, Strict Fix Compliance).
+Include this template later in review prompts using: {% include 'review/common_instructions.jinja' %}
+#}
+
+### 🚨 MANDATORY SEVERITY RULE - READ FIRST 🚨
+**IF CODE WORKS AND DOES NOT BREAK THE WORKFLOW, IT CANNOT BE "critical" OR "major".**
+**ONLY mark issues as "critical" or "major" if they COMPLETELY BREAK functionality or cause IMMEDIATE failures.**
+**When unsure, ALWAYS choose "minor" or "cosmetic". Working code is NOT broken code.**
+
+### Additional Guidelines to Overcome Limitations
+
+1. **Application Security Risks**:
+   - Ensure that the code does not introduce any security vulnerabilities. Verify that secure coding practices are followed, especially in handling sensitive data and user inputs.
+   - Include checks for common security vulnerabilities such as SQL injection, XSS, CSRF, and insecure data handling.
+
+2. **Lack of Context**:
+   - Provide detailed explanations of how the code fits into the overall application architecture and business logic. Ensure that the review considers the specific context of the application.
+   - Ask for explanations on how the code integrates with other parts of the system.
+
+3. **Hallucinations**:
+   - Verify the existence and correctness of any libraries or code snippets recommended. Cross-reference with official documentation or trusted sources to avoid incorrect outputs.
+   - Request verification of the correctness of the code snippets provided.
+
+4. **Inconsistencies**:
+   - Standardize the review process to minimize variations in responses. Include specific examples and expected outputs to guide the model.
+   - Ensure consistency in the responses by providing clear and detailed prompts.
+
+5. **Code Quality Issues**:
+   - Set clear expectations for code quality, including adherence to industry standards and best practices. Request code reviews and refactoring suggestions to improve maintainability and readability.
+   - Emphasize the importance of following coding standards and best practices.
+
+6. **Intellectual Property Concerns**:
+   - Use enterprise versions with privacy controls to protect intellectual property. Avoid sharing proprietary code in prompts.
+   - Ensure that any code provided in prompts is not incorporated into future model training data.
+
+7. **False Positives and Blind Spots**:
+   - Include detailed explanations of coding terms and phrases to reduce misinterpretations. Request thorough reviews to identify and address any overlooked issues.
+   - Ensure that the review process includes checks for common pitfalls and potential issues.
+
+8. **Dependence on Prompt Quality**:
+   - Provide clear, specific, and well-constructed prompts. Include examples of good and bad prompts to guide users.
+   - Emphasize the importance of providing detailed and specific input prompts to ensure accurate and relevant recommendations.
+
+By incorporating these additional guidelines, you can mitigate the limitations and improve the effectiveness of your code reviews.
+
+### ⚠️ CRITICAL SEVERITY ASSIGNMENT RULES - MUST BE FOLLOWED ⚠️
+
+**ABSOLUTE RULE: If the code WORKS and does not break the workflow, it MUST NOT be assigned "critical" or "major" severity. Period.**
+
+#### Fundamental Principle:
+**ONLY assign "critical" or "major" severity to issues that:**
+1. **COMPLETELY BREAK the workflow** - Code that prevents execution, compilation, deployment, or causes immediate system failure
+2. **CAUSE ACTUAL BREAKAGE** - Issues that will definitely cause the application to crash, fail, or become unusable
+3. **PREVENT BASIC FUNCTIONALITY** - Code that makes core features impossible to use or access
+4. **CAUSE IMMEDIATE DATA LOSS** - Issues that will definitely cause data corruption or loss
+5. **EXPOSE ACTIVE SECURITY VULNERABILITIES** - Security issues that are actively exploitable and will lead to breaches
+
+#### ABSOLUTE PROHIBITIONS - NEVER assign "critical" or "major" to:
+- ✅ **Code that WORKS and functions correctly** - If it runs and produces expected results, it's NOT critical or major
+- ✅ **Code that is already functioning** - Working code is NOT broken, even if it could be improved
+- ✅ **Best practice suggestions** - Recommendations for improvement are NOT critical/major
+- ✅ **Style or formatting issues** - Code style, naming conventions, formatting are NOT critical/major
+- ✅ **Performance optimizations for working code** - If code performs adequately, optimization suggestions are NOT critical/major
+- ✅ **Code quality improvements** - Refactoring suggestions, better patterns are NOT critical/major
+- ✅ **Standards compliance suggestions** - If code works, standards compliance is NOT critical/major
+- ✅ **Documentation improvements** - Missing or incomplete docs are NOT critical/major
+- ✅ **Deprecated syntax that still works** - If deprecated code functions, it's NOT critical/major
+- ✅ **Configuration optimizations** - Better config values are NOT critical/major if current ones work
+- ✅ **Defense-in-depth suggestions** - Security hardening for already-protected code is NOT critical/major
+- ✅ **Minor inefficiencies** - Small performance issues in working code are NOT critical/major
+- ✅ **Code that handles errors gracefully** - Even if error handling could be better, it's NOT critical/major if it works
+- ✅ **Suggestions for better patterns** - Design pattern improvements are NOT critical/major
+
+#### When to Use Each Severity:
+
+**"critical" - ONLY for:**
+- Code that WILL NOT compile/execute/run at all
+- Code that WILL cause immediate system crashes or failures
+- Code that WILL cause data loss or corruption
+- Code that WILL expose active security vulnerabilities that are immediately exploitable
+- Code that WILL prevent the application from starting or functioning
+
+**"major" - ONLY for:**
+- Code that WILL cause significant bugs that break core functionality
+- Code that WILL cause resource exhaustion leading to system failure
+- Code that WILL cause security vulnerabilities with high exploit potential and clear evidence
+- Code that WILL cause data integrity issues with clear evidence of impact
+
+**"minor" - For:**
+- Code improvements that don't break functionality
+- Best practice suggestions
+- Performance optimizations for working code
+- Style and formatting improvements
+- Documentation enhancements
+
+**"cosmetic" - For:**
+- Style preferences
+- Formatting suggestions
+- Naming convention preferences
+- Code organization suggestions with no functional impact
+
+#### Decision Framework:
+**Before assigning "critical" or "major", ask yourself:**
+1. ❓ Does this code WORK? If YES → NOT critical/major
+2. ❓ Does this code BREAK the workflow? If NO → NOT critical/major
+3. ❓ Will this cause IMMEDIATE failure? If NO → NOT critical/major
+4. ❓ Is this a suggestion for improvement? If YES → NOT critical/major
+5. ❓ Is the code functioning correctly despite the issue? If YES → NOT critical/major
+
+**If ANY answer suggests the code works or doesn't break functionality, it MUST be "minor" or "cosmetic".**
+
+#### Examples of What Should NOT Be Critical/Major:
+
+❌ **WRONG:** Marking code style as "major" - Should be "cosmetic"
+❌ **WRONG:** Marking performance optimization as "critical" for working code - Should be "minor"
+❌ **WRONG:** Marking missing documentation as "major" - Should be "minor" or "cosmetic"
+❌ **WRONG:** Marking best practice suggestion as "critical" - Should be "minor"
+❌ **WRONG:** Marking deprecated but working syntax as "major" - Should be "minor"
+❌ **WRONG:** Marking code that could be refactored as "critical" - Should be "minor"
+
+✅ **CORRECT:** Marking syntax error that prevents compilation as "critical"
+✅ **CORRECT:** Marking null pointer exception that will crash the app as "critical"
+✅ **CORRECT:** Marking SQL injection vulnerability as "critical"
+✅ **CORRECT:** Marking resource leak that will cause OOM as "major"
+
+#### Final Reminder:
+**THIS IS NON-NEGOTIABLE: Working code that doesn't break the workflow CANNOT be "critical" or "major". If you're unsure, default to "minor" or "cosmetic". When in doubt, choose the lower severity.**
+
+#### Parametric/Value-only Change Policy (REQUIRED)
+{% if value_only_policy %}
+{{ value_only_policy }}
+{% else %}
+- Do NOT raise {% if review_type %}{{ review_type }} {% endif %}issues solely for changes in parameter/config values (timeouts, limits, constants, feature flags) when logic and controls remain equivalent.
+- Only flag value changes if they:
+  - violate explicit {% if review_type %}{{ review_type }} {% endif %}policy or compliance thresholds,
+  - break published contracts or cause failing tests in provided context,
+  - introduce clear {% if review_type %}{{ review_type }} {% endif %}risk beyond mere value differences.
+- For git diffs, do not classify value-only adjustments as "major" or "critical" unless one of the above conditions is demonstrably met in the provided context.
+{% endif %}
+
+### Overall Severity Calculation (REQUIRED)
+
+**⚠️ CRITICAL REMINDER BEFORE CALCULATION:**
+- Review each issue's severity assignment against the CRITICAL SEVERITY ASSIGNMENT RULES above
+- If ANY issue is marked "critical" or "major" but the code WORKS and doesn't break functionality, it MUST be changed to "minor" or "cosmetic"
+- Only actual breaking issues should be "critical" or "major"
+- When calculating, if you have doubts about severity assignments, default to lower severities
+
+Compute and populate the "overallSeverity" strictly based on the total number of issues and their severities using the following rules:
+- Map severities to numeric weights: critical=4, major=3, minor=2, cosmetic=1.
+- Let totalIssues = number of items in "issues". Let S = (4*countCritical + 3*countMajor + 2*countMinor + 1*countCosmetic) / max(totalIssues, 1).
+- **IMPORTANT:** Before calculating, verify that all "critical" and "major" issues actually break functionality. If they don't, recategorize them.
+- Assign overallSeverity using thresholds:
+  - If countCritical >= 1 OR S >= 3.5 → overallSeverity = "critical"
+  - Else if 2.5 <= S < 3.5 → overallSeverity = "major"
+  - Else if 1.5 <= S < 2.5 → overallSeverity = "minor"
+  - Else if totalIssues == 0 → overallSeverity = "cosmetic"
+  - Else → overallSeverity = "cosmetic"
+Also include the fields "totalIssues" and a breakdown object "issueCounts" with keys critical, major, minor, cosmetic in the output for transparency.
+
+**FINAL CHECK:** Before finalizing the output, verify that NO "critical" or "major" issues are assigned to working code that doesn't break the workflow.
+
+### Strict Fix Compliance (REQUIRED)
+{% if strict_fix_compliance %}
+{{ strict_fix_compliance }}
+{% else %}
+All suggested "fix" code must:
+1. Be code-only and adhere to all rules in this prompt{% if review_type %}, including the {{ review_type }} rules when applicable{% endif %}.
+2. Not introduce new {% if review_type %}{{ review_type }} {% endif %}issues or violations of the listed requirements.
+3. Prefer best practices and maintain code quality.
+If a fully compliant fix requires unavailable context (e.g., missing schema or dependencies), provide the smallest safe change that still complies with all rules.
+{% endif %}
+

@@ -1,0 +1,20 @@
+{% set scenario_prompt %}
+You are preparing data for Boundary Value Analysis (BVA) of a JSON API. Produce inputs that
+systematically explore minimums, maximums, edge-adjacent values, and clearly invalid extremes inferred
+from the provided schema. When the schema supplies numeric ranges, string length constraints, enums,
+or format hints, you must include:
+
+1. The absolute minimum and absolute maximum values.
+2. Values just inside the valid range (min + 1, max - 1) where applicable.
+3. Values just outside the range (min - 1, max + 1) to trigger validation failures.
+4. Nulls, empty strings, whitespace, zero-equivalents, Unicode edge cases, and other structural edge cases.
+5. Combined stress cases that touch multiple fields at once (e.g., max length with max numeric).
+
+If the schema hints at specific formats (email, phone, etc.), provide both compliant and intentionally
+malformed variants. Ensure the generated records cover both expected-success and expected-failure
+scenarios with clear differentiation. Avoid duplicate records; every item should represent a unique
+boundary condition.
+{% endset %}
+{% set strategy = "boundary" %}
+{% include 'assistant/test_data_scenario.jinja' %}
+

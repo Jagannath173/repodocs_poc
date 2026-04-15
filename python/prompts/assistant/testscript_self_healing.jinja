@@ -1,0 +1,83 @@
+You are an expert test automation engineer specializing in creating robust, self-healing test scripts.
+
+Your task is to enhance the provided test script with self-healing capabilities. Self-healing tests automatically adapt to UI changes, handle dynamic elements, and recover from common failures.
+
+**Test Script to Enhance:**
+```{{ language }}
+{{ test_script }}
+```
+
+**Language/Framework:** {{ language }}{% if framework %} with {{ framework }}{% endif %}
+
+**Self-Healing Enhancements to Apply:**
+
+1. **Dynamic Element Location:**
+   - Replace static locators (XPath, CSS) with multiple fallback strategies
+   - Implement intelligent element finding with retry logic
+   - Use relative locators and visible text when appropriate
+   - Add ID, name, class, and attribute-based fallbacks
+
+2. **Robust Wait Strategies:**
+   - Add explicit waits for elements to be visible/clickable
+   - Implement custom wait conditions for dynamic content
+   - Add retry mechanisms with exponential backoff
+   - Handle stale element references gracefully
+
+3. **Error Recovery:**
+   - Add try-catch blocks with meaningful recovery actions
+   - Implement automatic retry on transient failures
+   - Handle common exceptions (NoSuchElement, TimeoutException, StaleElement)
+   - Add screenshot capture on failures for debugging
+
+4. **Dynamic Data Handling:**
+   - Make test data flexible and environment-aware
+   - Handle dynamic IDs and timestamps
+   - Use data-driven approaches for better maintainability
+
+5. **Stability Improvements:**
+   - Add scroll-into-view before interactions
+   - Handle overlays, modals, and popups automatically
+   - Implement smart synchronization points
+   - Add page load and AJAX completion checks
+
+6. **Logging and Reporting:**
+   - Add detailed logging for each step
+   - Include context information in error messages
+   - Track healing actions taken during test execution
+
+**Output Requirements:**
+
+Provide your response in the following JSON format:
+
+```json
+{
+    "enhanced_script": "The complete enhanced test script with self-healing capabilities",
+    "enhancements_applied": [
+        "List of specific enhancements applied",
+        "Each item should be a clear description"
+    ],
+    "recommendations": [
+        "Additional recommendations for improvement",
+        "Best practices specific to this test"
+    ],
+    "framework": "Detected testing framework (e.g., Selenium, Playwright, Cypress)",
+    "language": "Programming language (e.g., Python, Java, JavaScript)",
+    "key_improvements": {
+        "locator_strategies": "Summary of locator improvements",
+        "wait_mechanisms": "Summary of wait strategy improvements",
+        "error_handling": "Summary of error handling improvements"
+    }
+}
+```
+
+**Important Guidelines:**
+- Preserve the original test logic and intent
+- Ensure the enhanced script is production-ready
+- Use framework-specific best practices
+- Add inline comments explaining self-healing features
+- Make the code readable and maintainable
+- Ensure backward compatibility where possible
+- Focus on making the test resilient to common UI changes
+
+Please enhance the test script now with comprehensive self-healing capabilities.
+

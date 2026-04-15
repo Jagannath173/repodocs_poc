@@ -33,6 +33,46 @@
         "command": "codeReview.authenticate",
         "title": "Code Review: Authenticate Copilot",
         "icon": "$(account)"
+      },
+      {
+        "command": "codeReview.assistant.codeExplanation",
+        "title": "Code Review: Assistant - Code Explanation"
+      },
+      {
+        "command": "codeReview.assistant.codeRefactor",
+        "title": "Code Review: Assistant - Code Refactor"
+      },
+      {
+        "command": "codeReview.assistant.codeGeneration",
+        "title": "Code Review: Assistant - Code Generation"
+      },
+      {
+        "command": "codeReview.assistant.unitTest",
+        "title": "Code Review: Assistant - Unit Test"
+      },
+      {
+        "command": "codeReview.assistant.fileWiseUnitTest",
+        "title": "Code Review: Assistant - File-wise Unit Test"
+      },
+      {
+        "command": "codeReview.assistant.docstringAddition",
+        "title": "Code Review: Assistant - Docstring Addition"
+      },
+      {
+        "command": "codeReview.assistant.commentAddition",
+        "title": "Code Review: Assistant - Comment Addition"
+      },
+      {
+        "command": "codeReview.assistant.loggingAddition",
+        "title": "Code Review: Assistant - Logging Addition"
+      },
+      {
+        "command": "codeReview.assistant.errorHandling",
+        "title": "Code Review: Assistant - Error Handling"
+      },
+      {
+        "command": "codeReview.assistant.testscriptSelfHealing",
+        "title": "Code Review: Assistant - Testscript Self Healing"
       }
     ],
     "viewsContainers": {
@@ -55,7 +95,7 @@
     "viewsWelcome": [
       {
         "view": "code-review-main",
-        "contents": "Structured review for the active editor (or selection).\n[Review](command:codeReview.runReview)\n[Apply fixes](command:codeReview.applyFixes) (after a review)\n[Authenticate Copilot](command:codeReview.authenticate)"
+        "contents": "### Core\n[Review](command:codeReview.runReview)\n[Apply fixes](command:codeReview.applyFixes)\n[Authenticate Copilot](command:codeReview.authenticate)\n\n### Assistant Endpoints\n[Code explanation](command:codeReview.assistant.codeExplanation)\n[Code refactor](command:codeReview.assistant.codeRefactor)\n[Code generation](command:codeReview.assistant.codeGeneration)\n[Unit test](command:codeReview.assistant.unitTest)\n[File-wise unit test](command:codeReview.assistant.fileWiseUnitTest)\n[Docstring addition](command:codeReview.assistant.docstringAddition)\n[Comment addition](command:codeReview.assistant.commentAddition)\n[Logging addition](command:codeReview.assistant.loggingAddition)\n[Error handling](command:codeReview.assistant.errorHandling)\n[Testscript self healing](command:codeReview.assistant.testscriptSelfHealing)"
       }
     ]
   },

@@ -1,0 +1,19 @@
+{% set scenario_prompt %}
+You are crafting security-focused test inputs intended to probe for injection, traversal, encoding,
+and authentication weaknesses. Using the schema and any provided samples, compile payloads that
+cover a broad attack surface, including:
+
+1. Classic injection vectors (SQL, NoSQL, command, LDAP, GraphQL).
+2. Cross-site scripting (stored and reflected) with varying encodings and contexts.
+3. Path traversal, template injection, environment expansion, and file inclusion attempts.
+4. Encoded, double-encoded, and Unicode-bypass variants of the above.
+5. Authentication anomalies (expired, empty, malformed, high-privilege tokens).
+6. Payloads that mix benign-looking wrappers with embedded malicious fragments.
+
+For each record, ensure the fields stay syntactically valid JSON while maximising the likelihood of
+triggering server-side validation, sanitisation, or security controls. Do not repeat identical payloads;
+diversity is critical.
+{% endset %}
+{% set strategy = "security" %}
+{% include 'assistant/test_data_scenario.jinja' %}
+

@@ -1,0 +1,25 @@
+You are a test data generation expert specializing in Playwright test automation and QA.
+
+SCRIPT ANALYSIS:
+{{ fields_summary if fields_summary else 'No structured fields provided' }}
+
+TEST DATA TYPE: {{ test_data_type.upper() }}
+{{ focus_instruction }}
+
+IMPORTANT:
+- Use the EXACT field names from the analysis summary above
+- Respect min/max constraints, patterns, and formats
+- Generate {{ count }} diverse test data items
+- Return valid JSON with a top-level "data" array
+
+Return format (replace placeholders with real values and include all fields discovered):
+{
+  "data": [
+    {
+      {{ example_fields | safe }}
+      "_description": "Test case description",
+      "_test_type": "{{ test_data_type }}"
+    }
+  ]
+}
+
