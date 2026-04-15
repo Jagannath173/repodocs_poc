@@ -127,6 +127,7 @@
             <div class="stat-card">
                 <div class="stat-label">Environment</div>
                 <div class="badge">Internal Venv</div>
+                <div id="syncStatus" style="font-size: 0.7em; color: #a6e3a1; margin-top: 5px;">○ Session Synced</div>
             </div>
         </div>
 
@@ -134,6 +135,17 @@
             <button id="runBtn">
                 <span>▶</span> Run Internal Benchmark
             </button>
+            <button id="authBtn" style="background: #fab387; color: #11111b;">
+                <span>🔑</span> Authenticate
+            </button>
+        </div>
+
+        <div style="margin-bottom: 30px; border-top: 1px solid #313244; padding-top: 20px;">
+            <div class="stat-label">Manual Access Token (Experimental)</div>
+            <div style="display: flex; gap: 10px; margin-top: 10px;">
+                <input type="password" id="manualToken" placeholder="ghu_..." style="flex: 1; padding: 8px; border-radius: 4px; background: #1e1e2e; border: 1px solid #313244; color: white;">
+                <button id="saveTokenBtn" style="padding: 8px 16px; background: #94e2d5;">Save</button>
+            </div>
         </div>
 
         <div class="log-container" id="log">
@@ -144,6 +156,7 @@
     <script>
         const vscode = acquireVsCodeApi();
         const runBtn = document.getElementById('runBtn');
+        const authBtn = document.getElementById('authBtn');
         const logContainer = document.getElementById('log');
         const statusEl = document.getElementById('status');
         const latencyEl = document.getElementById('latency');
@@ -152,6 +165,20 @@
             statusEl.innerText = 'Running...';
             statusEl.style.color = '#fab387';
             vscode.postMessage({ command: 'runInternal' });
+        });
+
+        authBtn.addEventListener('click', () => {
+            statusEl.innerText = 'Authenticating...';
+            statusEl.style.color = '#f9e2af';
+            vscode.postMessage({ command: 'authenticate' });
+        });
+
+        document.getElementById('saveTokenBtn').addEventListener('click', () => {
+             const token = document.getElementById('manualToken').value;
+             if (token) {
+                 vscode.postMessage({ command: 'saveManualToken', token });
+                 statusEl.innerText = 'Token Saved';
+             }
         });
 
         window.addEventListener('message', event => {

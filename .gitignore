@@ -2,3 +2,5 @@ node_modules/
 out/
 python/venv/
 *.vsix
+.env
+python/copilot_token_cache.json
