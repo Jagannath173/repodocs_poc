@@ -1,82 +1,57 @@
 {
-  "name": "internal-python-runner",
-  "displayName": "Internal Python Runner",
-  "description": "VS Code extension that bootstraps a Python venv and runs an internal script.",
+  "name": "code-review",
+  "displayName": "Code Review",
+  "description": "Structured Copilot-powered code review in a table view.",
   "version": "1.0.0",
   "publisher": "local-dev",
   "engines": {
     "vscode": "^1.85.0"
   },
   "categories": [
-    "Other"
+    "Linters"
   ],
   "activationEvents": [
-    "onCommand:internalPythonRunner.runInternalPythonScript",
-    "onCommand:internalPythonRunner.showDashboard",
-    "onCommand:internalPythonRunner.generateRepoDoc",
-    "onCommand:internalPythonRunner.generateFullRepoDoc",
-    "onCommand:internalPythonRunner.authenticateCopilot"
+    "onStartupFinished",
+    "onCommand:codeReview.runReview",
+    "onCommand:codeReview.applyFixes"
   ],
   "main": "./out/extension.js",
   "contributes": {
     "commands": [
       {
-        "command": "internalPythonRunner.showDashboard",
-        "title": "Internal Python Runner: Open Dashboard",
-        "icon": "$(dashboard)"
+        "command": "codeReview.runReview",
+        "title": "Code Review: Review",
+        "icon": "$(checklist)"
       },
       {
-        "command": "internalPythonRunner.generateRepoDoc",
-        "title": "Internal Python Runner: Generate Script Overview",
-        "icon": "$(edit)"
-      },
-      {
-        "command": "internalPythonRunner.generateFullRepoDoc",
-        "title": "Internal Python Runner: Generate Full Repo Architecture",
-        "icon": "$(repo)"
-      },
-      {
-        "command": "internalPythonRunner.authenticateCopilot",
-        "title": "Internal Python Runner: Authenticate Copilot",
-        "icon": "$(key)"
+        "command": "codeReview.applyFixes",
+        "title": "Code Review: Apply fixes from last review",
+        "icon": "$(wand)"
       }
     ],
     "viewsContainers": {
       "activitybar": [
         {
-          "id": "python-poc-explorer",
-          "title": "Python POC",
+          "id": "code-review-sidebar",
+          "title": "Code Review",
           "icon": "media/icon.svg"
         }
       ]
     },
     "views": {
-      "python-poc-explorer": [
+      "code-review-sidebar": [
         {
-          "id": "python-poc-view",
-          "name": "Python VSIX POC"
-        },
-        {
-          "id": "repo-doc-view",
-          "name": "Repo Documentation"
+          "id": "code-review-main",
+          "name": "Review"
         }
       ]
     },
     "viewsWelcome": [
       {
-        "view": "python-poc-view",
-        "contents": "Welcome to the Python VSIX POC.\n[Open Dashboard](command:internalPythonRunner.showDashboard)"
+        "view": "code-review-main",
+        "contents": "Structured review for the active editor (or selection).\n[Review](command:codeReview.runReview)\n[Apply fixes](command:codeReview.applyFixes) (after a review)"
       }
-    ],
-    "menus": {
-      "view/title": [
-        {
-          "command": "internalPythonRunner.showDashboard",
-          "when": "view == python-poc-view",
-          "group": "navigation"
-        }
-      ]
-    }
+    ]
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",
@@ -85,11 +60,25 @@
     "lint": "eslint src --ext ts"
   },
   "devDependencies": {
+    "@types/diff": "^7.0.2",
     "@types/node": "^20.14.12",
     "@types/vscode": "^1.85.0",
     "@typescript-eslint/eslint-plugin": "^8.5.0",
     "@typescript-eslint/parser": "^8.5.0",
     "eslint": "^9.9.0",
     "typescript": "^5.5.4"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Jagannath173/repodocs_poc.git"
+  },
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/Jagannath173/repodocs_poc/issues"
+  },
+  "homepage": "https://github.com/Jagannath173/repodocs_poc#readme",
+  "dependencies": {
+    "diff": "^9.0.0"
   }
 }

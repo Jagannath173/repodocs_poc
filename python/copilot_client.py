@@ -125,7 +125,7 @@ def getproxies():
             proxies = {}
     return proxies
 
-def construct_data(prompt, system_role, previous_question, previous_answer):
+def construct_data(prompt, system_role, previous_question, previous_answer, stream=True):
     """Constructs the request data for the LLM."""
     messages = [
         {"role": "system", "content": system_role},
@@ -144,7 +144,7 @@ def construct_data(prompt, system_role, previous_question, previous_answer):
         "temperature": float(os.environ.get('GITHUB_COPILOT_TEMPERATURE', 0.1)),
         "top_p": 1,
         "n": 1,
-        "stream": True # Enabled for VSIX streaming
+        "stream": stream,
     }
     return data
 
@@ -205,6 +205,15 @@ def get_sessionToken(access_token):
         logger.error(f"Error fetching session token: {e}")
         return None, 0, f"EXCEPTION_{type(e).__name__}"
 
+def _default_system_role():
+    return (
+        "You are an elite software architect and documentation expert. "
+        "Your goal is to provide deep, meaningful technical analysis. "
+        "Avoid generic descriptions. Focus on the 'how' and 'why' of the code. "
+        "Use professional Markdown formatting with bold headers and clear structure."
+    )
+
+
 def generate_response(prompt, sessionToken_b64, stream: bool = True, checkSessionExpiry=False, access_token=''):
     def is_token_expired(sessionToken):
         try:
@@ -237,13 +246,10 @@ def generate_response(prompt, sessionToken_b64, stream: bool = True, checkSessio
     }
 
     try:
-        system_role = (
-            "You are an elite software architect and documentation expert. "
-            "Your goal is to provide deep, meaningful technical analysis. "
-            "Avoid generic descriptions. Focus on the 'how' and 'why' of the code. "
-            "Use professional Markdown formatting with bold headers and clear structure."
-        )
-        data = construct_data(prompt, system_role, "", "")
+        system_role = os.environ.get("COPILOT_SYSTEM_ROLE") or _default_system_role()
+        if os.environ.get("COPILOT_STREAM") is not None:
+            stream = os.environ.get("COPILOT_STREAM", "1").lower() in ("1", "true", "yes")
+        data = construct_data(prompt, system_role, "", "", stream)
         
         # Log the target environment
         logger.info(f"Targeting LLM URL: {os.environ.get('GITHUB_COPILOT_LLM_CHAT_URL')}")
@@ -507,7 +513,7 @@ if __name__ == "__main__":
                     # Pass access_token to allow internal refresh if needed
                     generate_response(prompt, token, checkSessionExpiry=True, access_token=access_token)
                 else:
-                    err_msg = "Error: No active Copilot session. Please run 'Authenticate Copilot' from the VS Code Command Palette or Dashboard."
+                    err_msg = "Error: No active Copilot session. Use Review in the Code Review sidebar to sign in."
                     print(f"data: {json.dumps({'choices':[{'delta':{'content':err_msg}}]})}")
             else:
                 logger.warning("No prompt received via stdin.")
