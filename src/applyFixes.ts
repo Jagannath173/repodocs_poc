@@ -1,10 +1,10 @@
 import * as vscode from "vscode";
+import { diffLines } from "diff";
 import { extensionContext } from "./extension";
 import { ensureCopilotSession } from "./session";
 import { runCopilotInference } from "./pythonRunner";
-import type { ReviewFinding, ReviewPayload } from "./reviewPanel";
-import { FixPreviewPanel } from "./fixPreviewPanel";
-import { notifyReviewUpdated, type ReviewTableState } from "./reviewBridge";
+import { extractFirstJsonObject, type ReviewFinding, type ReviewPayload } from "./reviewPanel";
+import { getReviewPanelForDocument, notifyReviewUpdated, type ReviewTableState } from "./reviewBridge";
 
 export const LAST_REVIEW_STATE_KEY = "codeReview.lastReview";
 
@@ -19,9 +19,7 @@ Rules:
 - Do not add commentary outside the JSON object.`;
 
 function parseFixFileContent(raw: string): string {
-  const trimmed = raw.trim();
-  const fence = /^[\s\S]*?```(?:json)?\s*([\s\S]*?)```[\s\S]*$/m.exec(trimmed);
-  const jsonStr = fence ? fence[1].trim() : trimmed;
+  const jsonStr = extractFirstJsonObject(raw);
   const data = JSON.parse(jsonStr) as unknown;
   if (!data || typeof data !== "object") {
     throw new Error("Fix response must be a JSON object.");
@@ -29,9 +27,25 @@ function parseFixFileContent(raw: string): string {
   const o = data as Record<string, unknown>;
   const fc = o.fileContent;
   if (typeof fc !== "string") {
-    throw new Error('Expected JSON with a string "fileContent" property.');
+    throw new TypeError('Expected JSON with a string "fileContent" property.');
   }
   return fc;
+}
+
+function buildDiffParts(before: string, after: string): Array<{ kind: "add" | "remove" | "same"; text: string }> {
+  const parts = diffLines(before, after);
+  const serialized: Array<{ kind: "add" | "remove" | "same"; text: string }> = [];
+  for (const p of parts) {
+    const kind: "add" | "remove" | "same" = p.added ? "add" : p.removed ? "remove" : "same";
+    const lines = p.value.split(/\r?\n/);
+    const last = lines.length - 1;
+    for (let i = 0; i <= last; i++) {
+      const segment = i < last ? `${lines[i]}\n` : lines[i];
+      const prefix = kind === "add" ? "+ " : kind === "remove" ? "- " : "  ";
+      serialized.push({ kind, text: prefix + segment });
+    }
+  }
+  return serialized;
 }
 
 function buildFixPrompt(
@@ -156,8 +170,11 @@ export async function applyFixesFromReview(
     extra = extraUserInstruction.trim() || undefined;
   }
 
-  const preview = new FixPreviewPanel(extensionContext);
-  preview.reveal();
+  const panel = getReviewPanelForDocument(stored.documentUri);
+  if (!panel) {
+    void vscode.window.showWarningMessage("Open the review tab for this file and run Apply fixes again.");
+    return;
+  }
 
   const total = findings.length;
   let appliedCount = 0;
@@ -170,7 +187,8 @@ export async function applyFixesFromReview(
       const step = i + 1;
       let currentText = doc.getText();
 
-      preview.startStep(step, total, finding.title);
+      panel.startFixStep(step, total, finding.title);
+      panel.addFixLog("Sending fix request to model.", "info");
 
       const prompt = buildFixPrompt(stored.fileName, currentText, stored.summary, finding, extra);
       const state = { text: "" };
@@ -182,44 +200,40 @@ export async function applyFixesFromReview(
           (line) => {
             output.appendLine(line);
             appendAssistantFromSseLine(line, state);
-            preview.scheduleStreamText(state.text);
           },
           { systemRole: FIX_SYSTEM_ROLE, stream: true }
         );
+        panel.addFixLog("Model response received. Building diff preview.", "success");
       } catch (e: unknown) {
         const msg = e instanceof Error ? e.message : String(e);
-        const choicePromise = preview.waitForChoice();
-        preview.showError(`Copilot request failed: ${msg}`);
+        const choicePromise = panel.waitForFixChoice();
+        panel.showFixError(`Copilot request failed: ${msg}`);
         await choicePromise;
-        preview.dispose();
         void vscode.window.showInformationMessage("Apply fixes stopped.");
         return;
       }
-
-      preview.flushStream();
 
       let newContent: string;
       try {
         newContent = parseFixFileContent(state.text);
+        panel.addFixLog("Parsed model JSON successfully.", "success");
       } catch (e: unknown) {
         const msg = e instanceof Error ? e.message : "Could not parse JSON.";
-        const choicePromise = preview.waitForChoice();
-        preview.showError(`Could not parse AI response as fix JSON: ${msg}`);
+        const choicePromise = panel.waitForFixChoice();
+        panel.showFixError(`Could not parse AI response as fix JSON: ${msg}`);
         await choicePromise;
-        preview.dispose();
         void vscode.window.showInformationMessage("Apply fixes stopped.");
         return;
       }
 
-      const choicePromise = preview.waitForChoice();
-      preview.showDiff(currentText, newContent);
+      const choicePromise = panel.waitForFixChoice();
+      panel.showFixDiff(buildDiffParts(currentText, newContent));
       const choice = await choicePromise;
 
       if (choice === "reject") {
         void vscode.window.showInformationMessage(
           `Fix ${step}/${total} rejected. Remaining fixes were not applied.`
         );
-        preview.dispose();
         return;
       }
 
@@ -229,23 +243,23 @@ export async function applyFixesFromReview(
       const applied = await vscode.workspace.applyEdit(edit);
       if (!applied) {
         void vscode.window.showErrorMessage("Editor rejected the change.");
-        preview.dispose();
+        panel.showFixError("Editor rejected the change.");
         return;
       }
 
+      panel.addFixLog("Applied change to file and syncing review state.", "success");
       appliedCount += 1;
       await markFindingApplied(originalIndex);
       doc = await vscode.workspace.openTextDocument(uri);
       await vscode.window.showTextDocument(doc, { preview: false });
     }
 
-    preview.dispose();
     void vscode.window.showInformationMessage(
       `Accepted and applied ${appliedCount} fix step(s). Save the file if needed (${stored.fileName}).`
     );
   } catch (e: unknown) {
-    preview.dispose();
     const msg = e instanceof Error ? e.message : String(e);
+    panel.showFixError(`Apply fixes failed: ${msg}`);
     void vscode.window.showErrorMessage(`Apply fixes: ${msg}`);
   }
 }

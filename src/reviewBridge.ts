@@ -6,6 +6,11 @@ export type { ReviewTableState } from "./reviewPanel";
 export interface ReviewPanelLike {
   refreshFromStored(stored: ReviewTableState): void;
   getDocumentUri(): string | undefined;
+  startFixStep(step: number, total: number, findingTitle: string): void;
+  addFixLog(message: string, level?: "info" | "warn" | "error" | "success"): void;
+  showFixDiff(parts: Array<{ kind: "add" | "remove" | "same"; text: string }>): void;
+  showFixError(message: string): void;
+  waitForFixChoice(): Promise<"accept" | "reject">;
 }
 
 const registered = new Set<ReviewPanelLike>();
@@ -26,4 +31,13 @@ export function notifyReviewUpdated(stored: ReviewTableState): void {
       p.refreshFromStored(stored);
     }
   }
+}
+
+export function getReviewPanelForDocument(documentUri: string): ReviewPanelLike | undefined {
+  for (const p of registered) {
+    if (p.getDocumentUri() === documentUri) {
+      return p;
+    }
+  }
+  return undefined;
 }

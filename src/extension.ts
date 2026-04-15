@@ -2,6 +2,7 @@ import { ensurePythonEnvironment } from "./pythonRunner";
 import { CodeReviewViewProvider } from "./codeReviewView";
 import { runCodeReview } from "./codeReview";
 import { applyFixesFromReview } from "./applyFixes";
+import { openAuthWebviewAndAuthenticate } from "./authPanel";
 import * as vscode from "vscode";
 
 export let extensionContext: vscode.ExtensionContext;
@@ -23,7 +24,10 @@ export function activate(context: vscode.ExtensionContext): void {
       (mode?: "all" | "one", index?: number, extra?: string) => {
         void applyFixesFromReview(mode ?? "all", index, extra);
       }
-    )
+    ),
+    vscode.commands.registerCommand("codeReview.authenticate", () => {
+      void openAuthWebviewAndAuthenticate(context);
+    })
   );
 }
 

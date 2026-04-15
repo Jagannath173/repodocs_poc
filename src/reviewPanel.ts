@@ -24,39 +24,17 @@ function reviewTableHtml(webview: vscode.Webview, nonce: string): string {
   <meta http-equiv="Content-Security-Policy" content="${csp}" />
   <style>
     :root { color-scheme: light dark; }
-    body {
-      margin: 0;
-      padding: 16px 20px 40px;
-      font-family: var(--vscode-font-family);
-      font-size: var(--vscode-font-size);
-      color: var(--vscode-editor-foreground);
-    }
-    .wrap { max-width: 960px; margin: 0 auto; }
-    h1 { font-size: 1.2em; font-weight: 600; margin: 0 0 8px; }
-    .summary {
-      margin-bottom: 20px;
-      padding: 12px 14px;
-      background: var(--vscode-textCodeBlock-background);
-      border-radius: 6px;
-      border: 1px solid var(--vscode-editorWidget-border);
-      line-height: 1.5;
-      white-space: pre-wrap;
-    }
-    table {
-      width: 100%;
-      border-collapse: collapse;
-      font-size: 0.92em;
-    }
-    th, td {
-      border: 1px solid var(--vscode-editorWidget-border);
-      padding: 8px 10px;
-      text-align: left;
-      vertical-align: top;
-    }
-    th {
-      background: var(--vscode-editor-inactiveSelectionBackground);
-      font-weight: 600;
-    }
+    body { margin: 0; padding: 16px 20px 40px; font-family: var(--vscode-font-family); font-size: var(--vscode-font-size); color: var(--vscode-editor-foreground); }
+    .wrap { max-width: 980px; margin: 0 auto; }
+    h1 { font-size: 1.2em; font-weight: 600; margin: 0 0 12px; }
+    .tabs { display: flex; gap: 8px; margin-bottom: 12px; }
+    .tab-btn { border: 1px solid var(--vscode-editorWidget-border); border-radius: 6px; padding: 6px 12px; cursor: pointer; background: var(--vscode-editor-background); color: var(--vscode-editor-foreground); }
+    .tab-btn.active { background: var(--vscode-button-background); color: var(--vscode-button-foreground); border-color: transparent; }
+    .tab-panel.hidden { display: none !important; }
+    .summary { margin-bottom: 16px; padding: 12px 14px; background: var(--vscode-textCodeBlock-background); border-radius: 6px; border: 1px solid var(--vscode-editorWidget-border); line-height: 1.5; white-space: pre-wrap; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.92em; }
+    th, td { border: 1px solid var(--vscode-editorWidget-border); padding: 8px 10px; text-align: left; vertical-align: top; }
+    th { background: var(--vscode-editor-inactiveSelectionBackground); font-weight: 600; }
     tr:nth-child(even) td { background: var(--vscode-editor-inactiveSelectionBackground); opacity: 0.5; }
     .sev-critical { color: var(--vscode-errorForeground); font-weight: 600; }
     .sev-high { color: var(--vscode-charts-red); font-weight: 600; }
@@ -64,154 +42,110 @@ function reviewTableHtml(webview: vscode.Webview, nonce: string): string {
     .sev-low, .sev-info { color: var(--vscode-descriptionForeground); }
     .loading { color: var(--vscode-descriptionForeground); font-style: italic; }
     .hidden { display: none !important; }
-    .stream-wrap { margin-bottom: 16px; }
-    .stream-label {
-      font-size: 0.85em;
-      color: var(--vscode-descriptionForeground);
-      margin-bottom: 6px;
+    #review-result { min-height: 8px; }
+    .apply-toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 14px; }
+    button.btn-apply, button.btn-row-fix, button.primary, button.secondary {
+      cursor: pointer; border: none; border-radius: 4px;
     }
-    .stream-panel {
-      border-radius: 10px;
-      border: 1px solid var(--vscode-editorWidget-border);
-      border-left: 3px solid var(--vscode-editorInfo-foreground, var(--vscode-textLink-foreground));
-      background: var(--vscode-sideBar-background, var(--vscode-editor-background));
-      box-shadow: 0 2px 12px rgba(0,0,0,0.07);
-      overflow: hidden;
-    }
-    .stream-panel-head {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      padding: 8px 12px;
-      font-size: 0.8em;
-      font-weight: 600;
-      letter-spacing: 0.03em;
-      text-transform: uppercase;
-      color: var(--vscode-descriptionForeground);
-      border-bottom: 1px solid var(--vscode-editorWidget-border);
-      background: var(--vscode-editor-inactiveSelectionBackground);
-    }
-    pre.stream-pre,
-    .json-stream {
-      margin: 0;
-      padding: 14px 16px;
-      max-height: 52vh;
-      overflow: auto;
-      white-space: pre-wrap;
-      word-break: break-word;
-      font-family: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, Menlo, monospace);
-      font-size: 0.87em;
-      line-height: 1.6;
-      letter-spacing: 0.01em;
-      tab-size: 2;
-    }
-    .stream-wrap.streaming .json-stream::after {
-      content: "";
-      display: inline-block;
-      width: 0.5ch;
-      height: 1.15em;
-      margin-left: 2px;
-      vertical-align: text-bottom;
-      background: var(--vscode-editorCursor-foreground, var(--vscode-editor-foreground));
-      animation: streamCaret 1s steps(1, end) infinite;
-    }
-    @keyframes streamCaret {
-      0%, 49% { opacity: 1; }
-      50%, 100% { opacity: 0; }
-    }
-    .json-stream .jk { color: var(--vscode-symbolIcon-propertyForeground, #9cdcfe); }
-    .json-stream .js { color: var(--vscode-debugTokenExpression-string, #ce9178); }
-    .json-stream .jn { color: var(--vscode-debugTokenExpression-number, #b5cea8); }
-    .json-stream .jb { color: var(--vscode-debugTokenExpression-boolean, #569cd6); }
-    .json-stream .jp { color: var(--vscode-debugTokenExpression-name, #d4d4d4); }
-    #result { min-height: 8px; }
-    .apply-toolbar {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 8px;
-      align-items: center;
-      margin-bottom: 14px;
-    }
-    button.btn-apply {
-      padding: 6px 12px;
-      font-size: 0.92em;
-      cursor: pointer;
-      color: var(--vscode-button-foreground);
-      background: var(--vscode-button-background);
-      border: none;
-      border-radius: 4px;
-    }
-    button.btn-apply.secondary {
-      color: var(--vscode-button-secondaryForeground);
-      background: var(--vscode-button-secondaryBackground);
-    }
-    button.btn-row-fix {
-      padding: 4px 8px;
-      font-size: 0.85em;
-      cursor: pointer;
-      color: var(--vscode-button-foreground);
-      background: var(--vscode-button-background);
-      border: none;
-      border-radius: 3px;
-    }
-    button.btn-row-fix:disabled {
-      opacity: 0.55;
-      cursor: default;
-    }
-    tr.finding-applied {
-      box-shadow: inset 3px 0 0 var(--vscode-charts-green, #3fb950);
-    }
-    tr.finding-applied td {
-      opacity: 0.95;
-    }
-    .badge-applied {
-      display: inline-block;
-      margin-left: 8px;
-      padding: 1px 8px;
-      font-size: 0.78em;
-      font-weight: 600;
-      text-transform: uppercase;
-      letter-spacing: 0.04em;
-      border-radius: 999px;
-      background: var(--vscode-badge-background);
-      color: var(--vscode-badge-foreground);
-      vertical-align: middle;
-    }
+    button.btn-apply, button.btn-row-fix, button.primary { color: var(--vscode-button-foreground); background: var(--vscode-button-background); }
+    button.btn-apply.secondary, button.secondary { color: var(--vscode-button-secondaryForeground); background: var(--vscode-button-secondaryBackground); }
+    button.btn-apply { padding: 6px 12px; font-size: 0.92em; }
+    button.btn-row-fix { padding: 4px 8px; font-size: 0.85em; }
+    button.btn-row-fix:disabled, button:disabled { opacity: 0.55; cursor: default; }
+    tr.finding-applied { box-shadow: inset 3px 0 0 var(--vscode-charts-green, #3fb950); }
+    tr.finding-applied td { opacity: 0.95; }
+    .badge-applied { display: inline-block; margin-left: 8px; padding: 1px 8px; font-size: 0.78em; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; border-radius: 999px; background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); vertical-align: middle; }
     .err { color: var(--vscode-errorForeground); white-space: pre-wrap; margin-top: 12px; }
     pre.raw { margin-top: 16px; padding: 12px; overflow: auto; max-height: 280px; background: var(--vscode-textCodeBlock-background); border-radius: 6px; font-size: 0.85em; }
+    .log-panel { border-radius: 8px; border: 1px solid var(--vscode-editorWidget-border); border-left: 3px solid var(--vscode-editorInfo-foreground, var(--vscode-textLink-foreground)); background: var(--vscode-editor-inactiveSelectionBackground); overflow: hidden; margin-bottom: 10px; }
+    .log-single { margin: 0; padding: 9px 12px; font-family: var(--vscode-font-family); font-size: 0.87em; line-height: 1.4; color: var(--vscode-descriptionForeground); white-space: pre-wrap; word-break: break-word; }
+    .log-single.info { color: var(--vscode-descriptionForeground); }
+    .log-single.success { color: var(--vscode-charts-green, #3fb950); }
+    .log-single.warn { color: var(--vscode-charts-orange, #d7ba7d); }
+    .log-single.error { color: var(--vscode-errorForeground); }
+    .fix-sub { color: var(--vscode-descriptionForeground); font-size: 0.9em; margin: 8px 0 10px; }
+    .diff-wrap { max-height: 42vh; overflow: auto; border: 1px solid var(--vscode-editorWidget-border); border-radius: 8px; font-family: var(--vscode-editor-font-family, monospace); font-size: 0.82em; line-height: 1.35; }
+    .diff-line { white-space: pre-wrap; word-break: break-word; padding: 1px 8px; border-left: 3px solid transparent; }
+    .diff-line.del { background: rgba(255, 80, 80, 0.12); border-left-color: var(--vscode-charts-red, #f14c4c); }
+    .diff-line.add { background: rgba(80, 200, 120, 0.12); border-left-color: var(--vscode-charts-green, #3fb950); }
+    .diff-line.same { background: var(--vscode-editor-background); }
+    .diff-legend { font-size: 0.8em; color: var(--vscode-descriptionForeground); margin: 12px 0 6px; }
+    .actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 14px; align-items: center; }
+    button.primary, button.secondary { padding: 8px 16px; font-size: 0.95em; }
+    .hint { font-size: 0.85em; color: var(--vscode-descriptionForeground); margin-top: 8px; }
   </style>
 </head>
 <body>
   <div class="wrap">
-    <h1 id="title">Code review</h1>
-    <div id="main">
+    <h1>Code review</h1>
+    <div class="tabs">
+      <button id="tab-review" class="tab-btn active" type="button">Review</button>
+      <button id="tab-fixes" class="tab-btn" type="button">Fixes</button>
+    </div>
+
+    <div id="panel-review" class="tab-panel">
       <p id="status" class="loading">Generating structured review…</p>
-      <div id="stream-wrap" class="stream-wrap hidden">
-        <div class="stream-panel">
-          <div class="stream-panel-head">
-            <span>Structured output</span>
-            <span style="opacity:0.75;font-weight:500">Live · JSON</span>
-          </div>
-          <div id="stream" class="json-stream" role="log" aria-live="polite" aria-relevant="additions text"></div>
-        </div>
+      <div class="log-panel">
+        <div id="review-logs" class="log-single info" role="status" aria-live="polite">Idle</div>
       </div>
-      <div id="result"></div>
+      <div id="review-result" style="margin-top:12px"></div>
+    </div>
+
+    <div id="panel-fixes" class="tab-panel hidden">
+      <div id="fix-header" class="loading">Run Apply fixes to start.</div>
+      <div id="fix-sub" class="fix-sub"></div>
+      <div class="log-panel">
+        <div id="fix-logs" class="log-single info" role="status" aria-live="polite">Idle</div>
+      </div>
+      <div id="diff-section" class="hidden">
+        <div id="diff" class="diff-wrap"></div>
+      </div>
+      <div id="fix-error" class="err hidden"></div>
+      <div class="actions">
+        <button type="button" class="primary" id="btn-accept" disabled>Accept &amp; apply to file</button>
+        <button type="button" class="secondary" id="btn-reject" disabled>Reject</button>
+      </div>
+      <p class="hint" id="fix-hint">Diff will appear here before applying changes.</p>
     </div>
   </div>
+
   <script nonce="${nonce}">
     var vscode = acquireVsCodeApi();
-    function escapeHtml(t) {
-      return String(t).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+    var state = { review: null };
+    var choicePending = false;
+
+    function switchTab(tab) {
+      var revBtn = document.getElementById("tab-review");
+      var fixBtn = document.getElementById("tab-fixes");
+      var revPanel = document.getElementById("panel-review");
+      var fixPanel = document.getElementById("panel-fixes");
+      if (tab === "fixes") {
+        fixBtn.classList.add("active");
+        revBtn.classList.remove("active");
+        fixPanel.classList.remove("hidden");
+        revPanel.classList.add("hidden");
+      } else {
+        revBtn.classList.add("active");
+        fixBtn.classList.remove("active");
+        revPanel.classList.remove("hidden");
+        fixPanel.classList.add("hidden");
+      }
     }
-    function highlightJson(text) {
-      if (!text) return "";
-      var s = escapeHtml(text);
-      s = s.replace(/"((?:[^"\\\\]|\\\\.)*)"\s*:/g, '<span class="jk">"$1"</span><span class="jp">:</span>');
-      s = s.replace(/:\s*"((?:[^"\\\\]|\\\\.)*)"/g, ': <span class="js">"$1"</span>');
-      s = s.replace(/:\s*(true|false|null)\b/g, ': <span class="jb">$1</span>');
-      s = s.replace(/:\s*(-?\\d+\\.?\\d*(?:[eE][+\\-]?\\d+)?)/g, ': <span class="jn">$1</span>');
-      return s;
+
+    document.getElementById("tab-review").addEventListener("click", function () { switchTab("review"); });
+    document.getElementById("tab-fixes").addEventListener("click", function () { switchTab("fixes"); });
+
+    function setStatusLine(id, level, text) {
+      var el = document.getElementById(id);
+      el.className = "log-single " + (level || "info");
+      el.textContent = text || "";
+      el.classList.remove("hidden");
     }
+
+    function hideStatusLine(id) {
+      document.getElementById(id).classList.add("hidden");
+    }
+
     function sevClass(s) {
       var x = (s || "").toLowerCase();
       if (x === "critical") return "sev-critical";
@@ -220,36 +154,136 @@ function reviewTableHtml(webview: vscode.Webview, nonce: string): string {
       if (x === "low") return "sev-low";
       return "sev-info";
     }
+
+    function renderReview(payload) {
+      state.review = payload || { summary: "", findings: [], appliedIndices: [] };
+      var data = state.review;
+      var findings = Array.isArray(data.findings) ? data.findings : [];
+      var applied = Array.isArray(data.appliedIndices) ? data.appliedIndices : [];
+      var resultEl = document.getElementById("review-result");
+      resultEl.innerHTML = "";
+
+      var toolbar = document.createElement("div");
+      toolbar.className = "apply-toolbar";
+      var btnAll = document.createElement("button");
+      btnAll.type = "button";
+      btnAll.className = "btn-apply";
+      btnAll.textContent = "Apply all fixes (sequential)";
+      btnAll.onclick = function () { vscode.postMessage({ command: "applyFixes", mode: "all" }); };
+      var btnCmd = document.createElement("button");
+      btnCmd.type = "button";
+      btnCmd.className = "btn-apply secondary";
+      btnCmd.textContent = "Apply with extra instructions…";
+      btnCmd.onclick = function () { vscode.postMessage({ command: "applyFixes", mode: "all", promptExtra: true }); };
+      var btnAuth = document.createElement("button");
+      btnAuth.type = "button";
+      btnAuth.className = "btn-apply secondary";
+      btnAuth.textContent = "Authenticate Copilot";
+      btnAuth.title = "Open manual Copilot authentication flow.";
+      btnAuth.onclick = function () { vscode.postMessage({ command: "authenticate" }); };
+      toolbar.appendChild(btnAll);
+      toolbar.appendChild(btnCmd);
+      toolbar.appendChild(btnAuth);
+      resultEl.appendChild(toolbar);
+
+      var sum = document.createElement("div");
+      sum.className = "summary";
+      sum.textContent = data.summary || "(No summary)";
+      resultEl.appendChild(sum);
+
+      var tbl = document.createElement("table");
+      var thead = document.createElement("thead");
+      var hr = document.createElement("tr");
+      ["Severity", "Category", "Title", "Detail", "Suggestion", "Fix"].forEach(function (h) {
+        var th = document.createElement("th");
+        th.textContent = h;
+        hr.appendChild(th);
+      });
+      thead.appendChild(hr);
+      tbl.appendChild(thead);
+      var tb = document.createElement("tbody");
+      findings.forEach(function (f, rowIdx) {
+        var tr = document.createElement("tr");
+        var isApplied = applied.indexOf(rowIdx) >= 0;
+        if (isApplied) tr.className = "finding-applied";
+        ["severity", "category", "title", "detail", "suggestion"].forEach(function (key) {
+          var td = document.createElement("td");
+          var v = (f && f[key]) != null ? String(f[key]) : "";
+          if (key === "severity") td.className = sevClass(v);
+          if (key === "title" && isApplied) {
+            td.appendChild(document.createTextNode(v + " "));
+            var badge = document.createElement("span");
+            badge.className = "badge-applied";
+            badge.textContent = "Applied";
+            td.appendChild(badge);
+          } else {
+            td.textContent = v;
+          }
+          tr.appendChild(td);
+        });
+        var tdFix = document.createElement("td");
+        var bf = document.createElement("button");
+        bf.type = "button";
+        bf.className = "btn-row-fix";
+        bf.textContent = isApplied ? "Applied" : "Fix";
+        bf.disabled = isApplied;
+        if (!isApplied) {
+          bf.onclick = function () { vscode.postMessage({ command: "applyFixes", mode: "one", index: rowIdx }); };
+        }
+        tdFix.appendChild(bf);
+        tr.appendChild(tdFix);
+        tb.appendChild(tr);
+      });
+      tbl.appendChild(tb);
+      resultEl.appendChild(tbl);
+    }
+
+    function setFixButtons(enabled) {
+      document.getElementById("btn-accept").disabled = !enabled;
+      document.getElementById("btn-reject").disabled = !enabled;
+      choicePending = enabled;
+    }
+
+    document.getElementById("btn-accept").addEventListener("click", function () {
+      if (!choicePending) return;
+      setFixButtons(false);
+      setStatusLine("fix-logs", "success", "Accepted diff, applying edit to file.");
+      vscode.postMessage({ command: "choice", value: "accept" });
+    });
+    document.getElementById("btn-reject").addEventListener("click", function () {
+      if (!choicePending) return;
+      setFixButtons(false);
+      setStatusLine("fix-logs", "warn", "Rejected this fix step.");
+      vscode.postMessage({ command: "choice", value: "reject" });
+    });
+
     window.addEventListener("message", function (event) {
       var m = event.data;
       if (!m || typeof m !== "object") return;
-      var statusEl = document.getElementById("status");
-      var streamWrap = document.getElementById("stream-wrap");
-      var streamPre = document.getElementById("stream");
-      var resultEl = document.getElementById("result");
+
       if (m.type === "loading") {
-        statusEl.classList.remove("hidden");
-        statusEl.classList.add("loading");
-        statusEl.textContent = m.message || "Generating structured review…";
-        streamWrap.classList.add("hidden");
-        streamWrap.classList.remove("streaming");
-        streamPre.innerHTML = "";
-        resultEl.innerHTML = "";
+        document.getElementById("status").classList.remove("hidden");
+        document.getElementById("status").textContent = m.message || "Generating structured review…";
+        document.getElementById("review-result").innerHTML = "";
+        setStatusLine("review-logs", "info", "Review started.");
+        switchTab("review");
         return;
       }
-      if (m.type === "stream") {
-        statusEl.classList.add("hidden");
-        streamWrap.classList.remove("hidden");
-        streamWrap.classList.add("streaming");
-        streamPre.innerHTML = highlightJson(m.text || "");
-        streamPre.scrollTop = streamPre.scrollHeight;
+      if (m.type === "reviewLog") {
+        setStatusLine("review-logs", m.level || "info", m.message || "");
+        return;
+      }
+      if (m.type === "review") {
+        document.getElementById("status").classList.add("hidden");
+        hideStatusLine("review-logs");
+        renderReview(m.payload || {});
+        switchTab("review");
         return;
       }
       if (m.type === "error") {
-        statusEl.classList.add("hidden");
-        streamWrap.classList.remove("hidden");
-        streamWrap.classList.remove("streaming");
-        if (m.text) streamPre.innerHTML = highlightJson(m.text);
+        document.getElementById("status").classList.add("hidden");
+        setStatusLine("review-logs", "error", m.message || "Review failed.");
+        var resultEl = document.getElementById("review-result");
         resultEl.innerHTML = "";
         var errDiv = document.createElement("div");
         errDiv.className = "err";
@@ -263,93 +297,50 @@ function reviewTableHtml(webview: vscode.Webview, nonce: string): string {
         }
         return;
       }
-      if (m.type === "review") {
-        statusEl.classList.add("hidden");
-        streamWrap.classList.add("hidden");
-        streamWrap.classList.remove("streaming");
-        streamPre.innerHTML = "";
-        var data = m.payload || {};
-        var findings = Array.isArray(data.findings) ? data.findings : [];
-        var applied = Array.isArray(data.appliedIndices) ? data.appliedIndices : [];
-        resultEl.innerHTML = "";
-        var toolbar = document.createElement("div");
-        toolbar.className = "apply-toolbar";
-        var btnAll = document.createElement("button");
-        btnAll.type = "button";
-        btnAll.className = "btn-apply";
-        btnAll.textContent = "Apply all fixes (sequential)";
-        btnAll.title = "Runs the AI once per finding, in order, updating the file each time.";
-        btnAll.onclick = function () {
-          vscode.postMessage({ command: "applyFixes", mode: "all" });
-        };
-        var btnCmd = document.createElement("button");
-        btnCmd.type = "button";
-        btnCmd.className = "btn-apply secondary";
-        btnCmd.textContent = "Apply with extra instructions…";
-        btnCmd.onclick = function () {
-          vscode.postMessage({ command: "applyFixes", mode: "all", promptExtra: true });
-        };
-        toolbar.appendChild(btnAll);
-        toolbar.appendChild(btnCmd);
-        resultEl.appendChild(toolbar);
-        var sum = document.createElement("div");
-        sum.className = "summary";
-        sum.textContent = data.summary || "(No summary)";
-        resultEl.appendChild(sum);
-        var tbl = document.createElement("table");
-        var thead = document.createElement("thead");
-        var hr = document.createElement("tr");
-        ["Severity", "Category", "Title", "Detail", "Suggestion", "Fix"].forEach(function (h) {
-          var th = document.createElement("th");
-          th.textContent = h;
-          hr.appendChild(th);
+
+      if (m.type === "fixStart") {
+        switchTab("fixes");
+        document.getElementById("fix-header").classList.remove("loading");
+        document.getElementById("fix-header").textContent = "Apply fix (" + m.step + " / " + m.total + ")";
+        document.getElementById("fix-sub").textContent = m.findingTitle || "";
+        setStatusLine("fix-logs", "info", "Preparing fix prompt.");
+        document.getElementById("diff").innerHTML = "";
+        document.getElementById("diff-section").classList.add("hidden");
+        document.getElementById("fix-error").classList.add("hidden");
+        document.getElementById("fix-error").textContent = "";
+        document.getElementById("fix-hint").textContent = "Waiting for model response and diff...";
+        setFixButtons(false);
+        return;
+      }
+      if (m.type === "fixLog") {
+        setStatusLine("fix-logs", m.level || "info", m.message || "");
+        return;
+      }
+      if (m.type === "fixDiff") {
+        var root = document.getElementById("diff");
+        root.innerHTML = "";
+        var parts = Array.isArray(m.parts) ? m.parts : [];
+        parts.forEach(function (p) {
+          var line = document.createElement("div");
+          var k = p.kind;
+          line.className = "diff-line " + (k === "add" ? "add" : k === "remove" ? "del" : "same");
+          line.textContent = p.text || "";
+          root.appendChild(line);
         });
-        thead.appendChild(hr);
-        tbl.appendChild(thead);
-        var tb = document.createElement("tbody");
-        findings.forEach(function (f, rowIdx) {
-          var tr = document.createElement("tr");
-          var isApplied = applied.indexOf(rowIdx) >= 0;
-          if (isApplied) tr.className = "finding-applied";
-          ["severity", "category", "title", "detail", "suggestion"].forEach(function (key) {
-            var td = document.createElement("td");
-            var v = (f && f[key]) != null ? String(f[key]) : "";
-            if (key === "severity") td.className = sevClass(v);
-            if (key === "title" && isApplied) {
-              td.appendChild(document.createTextNode(v + " "));
-              var badge = document.createElement("span");
-              badge.className = "badge-applied";
-              badge.textContent = "Applied";
-              td.appendChild(badge);
-            } else {
-              td.textContent = v;
-            }
-            tr.appendChild(td);
-          });
-          var tdFix = document.createElement("td");
-          var bf = document.createElement("button");
-          bf.type = "button";
-          bf.className = "btn-row-fix";
-          bf.textContent = isApplied ? "Applied" : "Fix";
-          bf.title = isApplied ? "This suggestion was applied to the file" : "Apply this suggestion only (AI edit)";
-          bf.disabled = isApplied;
-          if (!isApplied) {
-            bf.onclick = function () {
-              vscode.postMessage({ command: "applyFixes", mode: "one", index: rowIdx });
-            };
-          }
-          tdFix.appendChild(bf);
-          tr.appendChild(tdFix);
-          tb.appendChild(tr);
-        });
-        tbl.appendChild(tb);
-        resultEl.appendChild(tbl);
-        if (findings.length === 0) {
-          var empty = document.createElement("p");
-          empty.className = "loading";
-          empty.textContent = "No findings returned.";
-          resultEl.appendChild(empty);
-        }
+        document.getElementById("diff-section").classList.remove("hidden");
+        document.getElementById("fix-hint").textContent = "Review diff and Accept or Reject.";
+        hideStatusLine("fix-logs");
+        setFixButtons(true);
+        return;
+      }
+      if (m.type === "fixError") {
+        var errEl = document.getElementById("fix-error");
+        errEl.textContent = m.message || "Fix failed.";
+        errEl.classList.remove("hidden");
+        setStatusLine("fix-logs", "error", m.message || "Fix failed.");
+        document.getElementById("fix-hint").textContent = "Reject to stop the sequence.";
+        setFixButtons(false);
+        document.getElementById("btn-reject").disabled = false;
       }
     });
   </script>
@@ -384,8 +375,7 @@ export interface ReviewTableState {
 export class ReviewWebviewSession {
   private readonly panel: vscode.WebviewPanel;
   private disposed = false;
-  private streamDebounce: ReturnType<typeof setTimeout> | undefined;
-  private latestStreamText = "";
+  private choiceResolver?: (v: "accept" | "reject") => void;
 
   constructor(
     context: vscode.ExtensionContext,
@@ -404,10 +394,7 @@ export class ReviewWebviewSession {
     this.panel.onDidDispose(() => {
       unregisterReviewPanel(this);
       this.disposed = true;
-      if (this.streamDebounce !== undefined) {
-        clearTimeout(this.streamDebounce);
-        this.streamDebounce = undefined;
-      }
+      this.choiceResolver?.("reject");
     });
   }
 
@@ -416,45 +403,17 @@ export class ReviewWebviewSession {
   }
 
   setLoading(message?: string): void {
-    if (this.disposed) {
-      return;
-    }
-    if (this.streamDebounce !== undefined) {
-      clearTimeout(this.streamDebounce);
-      this.streamDebounce = undefined;
-    }
-    this.latestStreamText = "";
+    if (this.disposed) return;
     void this.panel.webview.postMessage({ type: "loading", message: message ?? "Generating structured review…" });
   }
 
-  /** Push streamed assistant text to the webview (debounced so the UI stays responsive). */
-  scheduleStreamText(fullText: string): void {
-    this.latestStreamText = fullText;
-    if (this.disposed) {
-      return;
-    }
-    if (this.streamDebounce !== undefined) {
-      clearTimeout(this.streamDebounce);
-    }
-    this.streamDebounce = setTimeout(() => this.flushStream(), 28);
-  }
-
-  flushStream(): void {
-    if (this.streamDebounce !== undefined) {
-      clearTimeout(this.streamDebounce);
-      this.streamDebounce = undefined;
-    }
-    if (this.disposed) {
-      return;
-    }
-    void this.panel.webview.postMessage({ type: "stream", text: this.latestStreamText });
+  addReviewLog(message: string, level: "info" | "warn" | "error" | "success" = "info"): void {
+    if (this.disposed) return;
+    void this.panel.webview.postMessage({ type: "reviewLog", message, level });
   }
 
   setReview(payload: ReviewPayload): void {
-    if (this.disposed) {
-      return;
-    }
-    this.flushStream();
+    if (this.disposed) return;
     void this.panel.webview.postMessage({
       type: "review",
       payload: {
@@ -467,9 +426,7 @@ export class ReviewWebviewSession {
 
   /** Refresh the findings table after fixes are applied (badges, disabled Fix). */
   refreshFromStored(stored: ReviewTableState): void {
-    if (this.disposed) {
-      return;
-    }
+    if (this.disposed) return;
     void this.panel.webview.postMessage({
       type: "review",
       payload: {
@@ -485,16 +442,46 @@ export class ReviewWebviewSession {
   }
 
   setError(message: string, raw?: string, streamedText?: string): void {
-    if (this.disposed) {
-      return;
-    }
-    this.flushStream();
-    void this.panel.webview.postMessage({ type: "error", message, raw, text: streamedText ?? this.latestStreamText });
+    if (this.disposed) return;
+    void this.panel.webview.postMessage({ type: "error", message, raw, text: streamedText ?? "" });
   }
 
-  /** Handle buttons from the review webview (e.g. Apply fixes). */
+  startFixStep(step: number, total: number, findingTitle: string): void {
+    if (this.disposed) return;
+    void this.panel.webview.postMessage({ type: "fixStart", step, total, findingTitle });
+  }
+
+  addFixLog(message: string, level: "info" | "warn" | "error" | "success" = "info"): void {
+    if (this.disposed) return;
+    void this.panel.webview.postMessage({ type: "fixLog", message, level });
+  }
+
+  showFixDiff(parts: Array<{ kind: "add" | "remove" | "same"; text: string }>): void {
+    if (this.disposed) return;
+    void this.panel.webview.postMessage({ type: "fixDiff", parts });
+  }
+
+  showFixError(message: string): void {
+    if (this.disposed) return;
+    void this.panel.webview.postMessage({ type: "fixError", message });
+  }
+
+  waitForFixChoice(): Promise<"accept" | "reject"> {
+    return new Promise((resolve) => {
+      this.choiceResolver = resolve;
+    });
+  }
+
   registerOnMessage(handler: (msg: unknown) => void): vscode.Disposable {
-    const sub = this.panel.webview.onDidReceiveMessage(handler);
+    const sub = this.panel.webview.onDidReceiveMessage((msg: unknown) => {
+      const m = msg as { command?: string; value?: "accept" | "reject" };
+      if (m?.command === "choice" && (m.value === "accept" || m.value === "reject")) {
+        const r = this.choiceResolver;
+        this.choiceResolver = undefined;
+        r?.(m.value);
+      }
+      handler(msg);
+    });
     this.panel.onDidDispose(() => sub.dispose());
     return sub;
   }
@@ -505,9 +492,7 @@ export class ReviewWebviewSession {
 }
 
 export function parseReviewJson(raw: string): ReviewPayload {
-  const trimmed = raw.trim();
-  const fence = /^[\s\S]*?```(?:json)?\s*([\s\S]*?)```[\s\S]*$/m.exec(trimmed);
-  const jsonStr = fence ? fence[1].trim() : trimmed;
+  const jsonStr = extractFirstJsonObject(raw);
   const data = JSON.parse(jsonStr) as unknown;
   if (!data || typeof data !== "object") {
     throw new Error("Review JSON must be an object.");
@@ -518,12 +503,57 @@ export function parseReviewJson(raw: string): ReviewPayload {
   const findings: ReviewFinding[] = rawFindings.map((item) => {
     const f = item && typeof item === "object" ? (item as Record<string, unknown>) : {};
     return {
-      severity: String(f.severity ?? ""),
-      category: String(f.category ?? ""),
-      title: String(f.title ?? ""),
-      detail: String(f.detail ?? ""),
-      suggestion: String(f.suggestion ?? ""),
+      severity: typeof f.severity === "string" ? f.severity : "",
+      category: typeof f.category === "string" ? f.category : "",
+      title: typeof f.title === "string" ? f.title : "",
+      detail: typeof f.detail === "string" ? f.detail : "",
+      suggestion: typeof f.suggestion === "string" ? f.suggestion : "",
     };
   });
   return { summary, findings };
+}
+
+export function extractFirstJsonObject(raw: string): string {
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    throw new Error("Model output is empty.");
+  }
+  const fence = /```(?:json)?\s*([\s\S]*?)```/i.exec(trimmed);
+  const source = fence ? fence[1].trim() : trimmed;
+  const start = source.indexOf("{");
+  if (start < 0) {
+    throw new Error("Could not find JSON object start in model output.");
+  }
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let i = start; i < source.length; i++) {
+    const ch = source[i];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (ch === "\\") {
+        escaped = true;
+      } else if (ch === "\"") {
+        inString = false;
+      }
+      continue;
+    }
+    if (ch === "\"") {
+      inString = true;
+      continue;
+    }
+    if (ch === "{") {
+      depth++;
+      continue;
+    }
+    if (ch === "}") {
+      depth--;
+      if (depth === 0) {
+        return source.slice(start, i + 1);
+      }
+      continue;
+    }
+  }
+  throw new Error("JSON object appears incomplete (missing closing brace).");
 }

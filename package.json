@@ -13,7 +13,8 @@
   "activationEvents": [
     "onStartupFinished",
     "onCommand:codeReview.runReview",
-    "onCommand:codeReview.applyFixes"
+    "onCommand:codeReview.applyFixes",
+    "onCommand:codeReview.authenticate"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -27,6 +28,11 @@
         "command": "codeReview.applyFixes",
         "title": "Code Review: Apply fixes from last review",
         "icon": "$(wand)"
+      },
+      {
+        "command": "codeReview.authenticate",
+        "title": "Code Review: Authenticate Copilot",
+        "icon": "$(account)"
       }
     ],
     "viewsContainers": {
@@ -49,7 +55,7 @@
     "viewsWelcome": [
       {
         "view": "code-review-main",
-        "contents": "Structured review for the active editor (or selection).\n[Review](command:codeReview.runReview)\n[Apply fixes](command:codeReview.applyFixes) (after a review)"
+        "contents": "Structured review for the active editor (or selection).\n[Review](command:codeReview.runReview)\n[Apply fixes](command:codeReview.applyFixes) (after a review)\n[Authenticate Copilot](command:codeReview.authenticate)"
       }
     ]
   },

@@ -1,5 +1,5 @@
 import * as vscode from "vscode";
-import * as path from "path";
+import * as path from "node:path";
 import { runCopilotInference } from "./pythonRunner";
 import { extensionContext } from "./extension";
 import { parseReviewJson, ReviewWebviewSession } from "./reviewPanel";
@@ -52,7 +52,6 @@ export async function runCodeReview(): Promise<void> {
   const output = vscode.window.createOutputChannel("Code Review");
   let assistantText = "";
   let authError = false;
-  let editQueue = Promise.resolve();
 
   try {
     await runCopilotInference(
@@ -80,10 +79,11 @@ export async function runCodeReview(): Promise<void> {
             json.choices?.[0]?.message?.content ||
             json.choices?.[0]?.text;
           if (text) {
-            editQueue = editQueue.then(() => {
-              assistantText += text;
-              panel.scheduleStreamText(assistantText);
-            });
+            assistantText += text;
+            const chunkPreview = text.replace(/\s+/g, " ").trim();
+            if (chunkPreview) {
+              panel.addReviewLog(chunkPreview, "info");
+            }
           }
         } catch {
           /* non-JSON SSE line */
@@ -92,8 +92,7 @@ export async function runCodeReview(): Promise<void> {
       { systemRole: REVIEW_SYSTEM_ROLE }
     );
 
-    await editQueue;
-    panel.flushStream();
+    panel.addReviewLog("Model response finished. Parsing JSON payload.", "info");
 
     if (authError) {
       panel.dispose();
@@ -105,6 +104,7 @@ export async function runCodeReview(): Promise<void> {
     }
 
     const review = parseReviewJson(assistantText);
+    panel.addReviewLog(`Parsed ${review.findings.length} findings. Rendering report.`, "success");
     if (editor) {
       await saveLastReview(toStoredReview(editor.document.uri, fileName, review));
     }
@@ -119,6 +119,8 @@ export async function runCodeReview(): Promise<void> {
         } else {
           void vscode.commands.executeCommand("codeReview.applyFixes", mode, idx, "");
         }
+      } else if (m?.command === "authenticate") {
+        void vscode.commands.executeCommand("codeReview.authenticate");
       }
     });
   } catch (e: unknown) {
