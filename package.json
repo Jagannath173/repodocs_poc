@@ -14,7 +14,8 @@
     "onStartupFinished",
     "onCommand:codeReview.runReview",
     "onCommand:codeReview.applyFixes",
-    "onCommand:codeReview.authenticate"
+    "onCommand:codeReview.authenticate",
+    "onCommand:codeReview.showLogs"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -78,6 +79,11 @@
         "command": "codeReview.sidebar.refresh",
         "title": "Code Review: Refresh sidebar",
         "icon": "$(refresh)"
+      },
+      {
+        "command": "codeReview.showLogs",
+        "title": "Code Review: Show extension logs",
+        "icon": "$(output)"
       }
     ],
     "viewsContainers": {
@@ -108,6 +114,11 @@
           "command": "codeReview.sidebar.refresh",
           "when": "view == code-review-main",
           "group": "navigation@2"
+        },
+        {
+          "command": "codeReview.showLogs",
+          "when": "view == code-review-main",
+          "group": "navigation@3"
         }
       ]
     },

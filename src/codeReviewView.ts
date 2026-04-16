@@ -1,16 +1,25 @@
 import * as vscode from "vscode";
+import { log } from "./logger";
 
 export class CodeReviewViewProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
   private readonly onDidChangeTreeDataEmitter = new vscode.EventEmitter<vscode.TreeItem | undefined>();
   readonly onDidChangeTreeData = this.onDidChangeTreeDataEmitter.event;
 
-  private readonly coreNode = new vscode.TreeItem("Core Actions", vscode.TreeItemCollapsibleState.Expanded);
-  private readonly assistantNode = new vscode.TreeItem("Assistant Actions", vscode.TreeItemCollapsibleState.Expanded);
+  private readonly reviewNode = new vscode.TreeItem("Review", vscode.TreeItemCollapsibleState.Expanded);
+  private readonly authNode = new vscode.TreeItem("Authenticate", vscode.TreeItemCollapsibleState.Expanded);
+  private readonly assistantNode = new vscode.TreeItem("Assistant", vscode.TreeItemCollapsibleState.Expanded);
 
-  private readonly coreItems: vscode.TreeItem[] = [
+  private readonly reviewItems: vscode.TreeItem[] = [
     this.commandItem("Review", "Run structured repository review", "codeReview.runReview", "checklist"),
-    this.commandItem("Apply fixes", "Apply generated fixes to file", "codeReview.applyFixes", "wand"),
-    this.commandItem("Authenticate Copilot", "Sign in and refresh token", "codeReview.authenticate", "account"),
+  ];
+
+  private readonly authItems: vscode.TreeItem[] = [
+    this.staticSidebarItem(
+      "Login",
+      "Placeholder — no action yet. Use Authenticate Copilot to sign in to GitHub Copilot.",
+      "key"
+    ),
+    this.commandItem("Authenticate Copilot", "Sign in to GitHub Copilot (device flow)", "codeReview.authenticate", "account"),
   ];
 
   private readonly assistantItems: vscode.TreeItem[] = [
@@ -27,13 +36,17 @@ export class CodeReviewViewProvider implements vscode.TreeDataProvider<vscode.Tr
   ];
 
   constructor() {
-    this.coreNode.iconPath = new vscode.ThemeIcon("folder-opened");
-    this.assistantNode.iconPath = new vscode.ThemeIcon("folder-opened");
-    this.coreNode.contextValue = "codeReview.group";
+    const groupIcon = new vscode.ThemeIcon("folder-opened");
+    this.reviewNode.iconPath = groupIcon;
+    this.authNode.iconPath = groupIcon;
+    this.assistantNode.iconPath = groupIcon;
+    this.reviewNode.contextValue = "codeReview.group";
+    this.authNode.contextValue = "codeReview.group";
     this.assistantNode.contextValue = "codeReview.group";
   }
 
   refresh(): void {
+    log.info("sidebar", "Sidebar tree refreshed");
     this.onDidChangeTreeDataEmitter.fire(undefined);
   }
 
@@ -43,10 +56,13 @@ export class CodeReviewViewProvider implements vscode.TreeDataProvider<vscode.Tr
 
   getChildren(element?: vscode.TreeItem): Thenable<vscode.TreeItem[]> {
     if (!element) {
-      return Promise.resolve([this.coreNode, this.assistantNode]);
+      return Promise.resolve([this.authNode, this.reviewNode, this.assistantNode]);
     }
-    if (element === this.coreNode) {
-      return Promise.resolve(this.coreItems);
+    if (element === this.reviewNode) {
+      return Promise.resolve(this.reviewItems);
+    }
+    if (element === this.authNode) {
+      return Promise.resolve(this.authItems);
     }
     if (element === this.assistantNode) {
       return Promise.resolve(this.assistantItems);
@@ -61,6 +77,16 @@ export class CodeReviewViewProvider implements vscode.TreeDataProvider<vscode.Tr
     item.command = { command: commandId, title: label };
     item.iconPath = new vscode.ThemeIcon(iconId);
     item.contextValue = "codeReview.action";
+    return item;
+  }
+
+  /** Sidebar label only — no command until Login flow is implemented. */
+  private staticSidebarItem(label: string, description: string, iconId: string): vscode.TreeItem {
+    const item = new vscode.TreeItem(label, vscode.TreeItemCollapsibleState.None);
+    item.description = description;
+    item.tooltip = `${label}\n${description}`;
+    item.iconPath = new vscode.ThemeIcon(iconId);
+    item.contextValue = "codeReview.static";
     return item;
   }
 }

@@ -78,31 +78,16 @@ Follow these steps to generate appropriate unit tests:
 5. Validate both expected outcomes and error handling.
 6. Document each test case with its purpose and expected outcome.
 
-As you generate the unit tests, document your thought process in an inner monologue. This should include:
+Do not include chain-of-thought, inner monologue, or step-by-step reasoning in the output.
 
-1. Initial impressions of the code structure and intended functionality
-2. Identification of functions or methods that need testing
-3. Consideration of edge cases and potential failure points
-4. Strategies for ensuring test clarity and readability
-5. Application of best practices for naming conventions, assertions, and test organization
+## Framework selection
+Pick a framework appropriate for {{ language }} (e.g. Python: `unittest` or `pytest`; JavaScript: `Jest` or `Mocha`; Java: `JUnit`).
 
-## Framework Selection Matrix
-
-```json
-{
-  "language_frameworks": {
-    "Python": ["pytest", "unittest"],
-    "JavaScript": ["Jest", "Mocha"],
-    "Java": ["JUnit", "TestNG"],
-    "TypeScript": ["Jest", "Mocha"],
-    "C#": ["NUnit", "xUnit"]
-  }
-}
-```
-### Output Specifications
-- Return ONLY test code or JSON explanation
-- Maintain original code's language and conventions
-- Include comprehensive comments explaining test rationale
+### Output specifications
+- Return **valid JSON only** (no markdown code fences, no prose before or after the JSON).
+- **remarks** and **details** must be concise and professional (no filler such as “Assistant response generated”).
+- Put executable test code inside JSON string fields; use normal string escaping. Do not wrap test code in outer ``` fences.
+- Maintain the original code's language and conventions.
 
 ## Validation Criteria
 1. Testcase coverage should be min of 80%
@@ -135,23 +120,27 @@ For each unit test you create:
 Additional Guidelines:
 - Avoid using any wrappers such as python, or <language>, or <code>, or ``` around the code.
 
-After generating all the unit tests, provide an overall assessment of the quality of the generated tests and the code being tested.
+After generating all the unit tests, summarize quality in **remarks** (one short paragraph) and strategy in **details**.
 
-Output your review in the following JSON format:
+Use this JSON shape exactly (arrays may be empty only if nothing applies):
 
-```json
 {
-"testcases": [
-  {
-    "description":"describe about the testcase",
-    "testcase":"testcase code",
-    "data":[multiple lists of multiple test datas for given testcase],
-    "confidence_score": "A score indicating the confidence level of the test case out of 10",
-    "intervention_needed": "Description of any human intervention needed if confidence is low"
-  }
-]
+  "quality": "poor|average|good|excellent",
+  "remarks": "Overall assessment of test quality and coverage for this file.",
+  "details": "Brief description of strategy, mocking, and what was prioritized.",
+  "testcases": [
+    {
+      "description": "What behavior this testcase checks",
+      "testcase": "Executable test code as a single string",
+      "data": ["optional", "example", "inputs"],
+      "confidence_score": 8,
+      "intervention_needed": "None, or what the user must adjust to run the test",
+      "scenarioType": "Positive|Negative|Boundary|Exception"
+    }
+  ]
 }
-```
+
+Use an integer 1–10 for **confidence_score**. Omit optional fields you do not need by using empty string or empty array as appropriate.
 
 ## Performance Optimization
 - Minimize test generation overhead

@@ -10,9 +10,10 @@ import {
   ReviewWebviewSession,
 } from "./reviewPanel";
 import { ensureCopilotSession } from "./session";
-import { saveLastReview, toStoredReview } from "./applyFixes";
+import { getStoredReview, saveLastReview, toStoredReview } from "./applyFixes";
 import { openAuthWebviewAndAuthenticate } from "./authPanel";
 import { renderPromptTemplate } from "./promptRenderer";
+import { log, sanitizeForLog } from "./logger";
 
 const REVIEW_SYSTEM_ROLE = "Respond with only a valid JSON object and no extra text.";
 
@@ -55,7 +56,9 @@ const REVIEW_SEQUENCE: ReviewEndpoint[] = [
 ];
 
 export async function runCodeReview(): Promise<void> {
+  log.info("codeReview", "runCodeReview started");
   if (!(await ensureCopilotSession())) {
+    log.warn("codeReview", "Aborted: Copilot session not available");
     return;
   }
 
@@ -66,50 +69,71 @@ export async function runCodeReview(): Promise<void> {
   }
 
   if (!content.trim()) {
+    log.warn("codeReview", "Aborted: no content to review");
     vscode.window.showWarningMessage("Open a file (or select code) to review.");
     return;
   }
 
   const fileName = editor ? path.basename(editor.document.fileName) : "snippet";
   const language = editor?.document.languageId ?? "unknown";
+  const selectionMode = editor && !editor.selection.isEmpty ? "selection" : "fullDocument";
+  log.info("codeReview", "Review context", {
+    fileName,
+    language,
+    selectionMode,
+    charCount: content.length,
+  });
 
   const documentUri = editor ? editor.document.uri.toString() : undefined;
   const panel = new ReviewWebviewSession(extensionContext, `Review: ${fileName}`, documentUri);
   panel.setLoading("Running review suite…");
   panel.registerOnMessage((msg: unknown) => {
-    const m = msg as { command?: string; mode?: string; index?: number; promptExtra?: boolean };
+    const m = msg as { command?: string; mode?: string; index?: number; indices?: number[]; promptExtra?: boolean };
     if (m?.command === "applyFixes") {
-      const mode = m.mode === "one" ? "one" : "all";
+      const mode = m.mode === "one" || m.mode === "selected" ? m.mode : "all";
       const idx = typeof m.index === "number" ? m.index : undefined;
+      const selectedIndices = Array.isArray(m.indices) ? m.indices.filter((n) => typeof n === "number") : undefined;
       if (m.promptExtra) {
-        void vscode.commands.executeCommand("codeReview.applyFixes", mode, idx);
+        void vscode.commands.executeCommand("codeReview.applyFixes", mode, idx, undefined, selectedIndices);
       } else {
-        void vscode.commands.executeCommand("codeReview.applyFixes", mode, idx, "");
+        void vscode.commands.executeCommand("codeReview.applyFixes", mode, idx, "", selectedIndices);
       }
     } else if (m?.command === "authenticate") {
       void vscode.commands.executeCommand("codeReview.authenticate");
     }
   });
 
-  const output = vscode.window.createOutputChannel("Code Review");
   const sections: ReviewSectionPayload[] = [];
   const combinedFindings: ReviewPayload["findings"] = [];
+  const getAppliedIndicesForCurrentDoc = (): number[] => {
+    if (!documentUri) {
+      return [];
+    }
+    const stored = getStoredReview();
+    if (!stored || stored.documentUri !== documentUri) {
+      return [];
+    }
+    return stored.appliedIndices ?? [];
+  };
 
   try {
     for (let i = 0; i < REVIEW_SEQUENCE.length; i++) {
       const endpoint = REVIEW_SEQUENCE[i];
       const label = REVIEW_ENDPOINT_LABELS[endpoint];
+      log.info("codeReview", "Review stage", { stage: `${i + 1}/${REVIEW_SEQUENCE.length}`, endpoint, label });
       const prompt = await renderReviewPrompt(endpoint, content, language);
+      log.debug("codeReview", "Prompt template rendered", { endpoint, promptChars: prompt.length });
       panel.addReviewLog(`Running ${label} review (${i + 1}/${REVIEW_SEQUENCE.length})…`, "info");
       panel.addReviewLog(`[${label}] Started`, "info");
       let assistantText = "";
       let authError = false;
+      panel.setReviewStream("");
 
       await runCopilotInference(
         extensionContext,
         prompt,
         (data) => {
-          output.append(data);
+          log.proxyLine("codeReview", data);
           const trimmed = data.trim();
           if (trimmed.includes("Error: No active Copilot session")) {
             authError = true;
@@ -131,27 +155,35 @@ export async function runCodeReview(): Promise<void> {
               json.choices?.[0]?.text;
             if (text) {
               assistantText += text;
-              const chunkPreview = text.replace(/\s+/g, " ").trim();
-              if (chunkPreview) {
-                panel.addReviewLog(`[${label}] ${chunkPreview}`, "info");
+              panel.setReviewStream(assistantText);
+              log.debug("codeReview", "SSE text delta added", {
+                endpoint,
+                deltaChars: text.length,
+                totalChars: assistantText.length,
+              });
+              if (text.length > 0) {
+                panel.addReviewLog(`[${label}] +${text.length} chars (total ${assistantText.length})`, "info");
               }
             }
           } catch {
-            /* non-JSON SSE line */
+            log.debug("codeReview", "Skipped non-JSON SSE payload", { endpoint, lineChars: trimmed.length });
           }
         },
         { systemRole: REVIEW_SYSTEM_ROLE }
       );
 
       if (authError) {
+        log.warn("codeReview", "Auth required mid-review; opening sign-in");
         panel.dispose();
         const ok = await openAuthWebviewAndAuthenticate(extensionContext);
         if (ok) {
+          log.info("codeReview", "Re-running review after successful sign-in");
           await runCodeReview();
         }
         return;
       }
 
+      log.debug("codeReview", "Inference complete for stage", { endpoint, assistantTextChars: assistantText.length });
       const review = parseEndpointReviewJson(assistantText, endpoint);
       const sectionFindings = review.findings.map((f) => {
         const globalIndex = combinedFindings.length;
@@ -164,30 +196,39 @@ export async function runCodeReview(): Promise<void> {
         findings: sectionFindings,
       });
 
+      log.info("codeReview", "Stage findings parsed", { endpoint, count: sectionFindings.length });
       panel.addReviewLog(`[${label}] Added ${sectionFindings.length} findings`, "success");
-      panel.setReview({
+      const stagePayload: ReviewPayload = {
         summary: `Completed ${i + 1}/${REVIEW_SEQUENCE.length} review stages.`,
         findings: combinedFindings,
         sections,
-        appliedIndices: [],
-      });
+        appliedIndices: getAppliedIndicesForCurrentDoc(),
+      };
+      panel.setReview(stagePayload);
+      if (editor) {
+        await saveLastReview(toStoredReview(editor.document.uri, fileName, stagePayload));
+      }
     }
 
     const finalReview: ReviewPayload = {
       summary: "Combined review completed across all review endpoints.",
       findings: combinedFindings,
       sections,
-      appliedIndices: [],
+      appliedIndices: getAppliedIndicesForCurrentDoc(),
     };
+    log.info("codeReview", "All review stages completed", { findings: combinedFindings.length });
     panel.addReviewLog("All review stages completed.", "success");
     if (editor) {
       await saveLastReview(toStoredReview(editor.document.uri, fileName, finalReview));
+      log.debug("codeReview", "Last review saved to workspace state", { fileName });
     }
     panel.setReview(finalReview);
   } catch (e: unknown) {
-    const msg = e instanceof Error ? e.message : typeof e === "string" ? e : "Unknown error";
-    panel.setError(msg, undefined, "");
-    vscode.window.showErrorMessage(`Code review failed: ${msg}`);
+    const raw = e instanceof Error ? e.message : typeof e === "string" ? e : "Unknown error";
+    const msg = sanitizeForLog(raw);
+    log.error("codeReview", "runCodeReview failed", { error: msg });
+    panel.setError(raw, undefined, "");
+    vscode.window.showErrorMessage(`Code review failed: ${raw}`);
   }
 }
 
@@ -239,7 +280,27 @@ function parseEndpointReviewJson(raw: string, endpoint: ReviewEndpoint): ReviewP
     });
     return { summary, findings };
   } catch {
-    return parseReviewJson(raw);
+    try {
+      return parseReviewJson(raw);
+    } catch {
+      const fallbackSummary = raw.trim()
+        ? `Generated ${REVIEW_ENDPOINT_LABELS[endpoint]} response could not be parsed as JSON. Showing raw output summary.`
+        : `Generated ${REVIEW_ENDPOINT_LABELS[endpoint]} response was empty.`;
+      return {
+        summary: fallbackSummary,
+        findings: raw.trim()
+          ? [
+              {
+                severity: "info",
+                category: endpoint,
+                title: "Unstructured model response",
+                detail: raw.trim().slice(0, 4000),
+                suggestion: "Retry review or adjust prompt/template to enforce JSON output.",
+              },
+            ]
+          : [],
+      };
+    }
   }
 }
 

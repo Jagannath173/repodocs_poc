@@ -22,15 +22,16 @@ Requirements:
    - readability
    - adherence to testing guidelines
 3. Return clear one-by-one test entries with expected/actual style result fields.
-4. Do not include inner monologue.
+4. Do not include inner monologue, filler phrases, or meta lines such as “Assistant response generated.”
 5. Return valid JSON only (no markdown fences).
 6. Do not wrap code in ``` blocks.
+7. Keep **remarks** and **details** concise (each 1–3 sentences) and specific to the code under test.
 
 Return JSON in this exact shape:
 {
   "quality": "poor|average|good|excellent",
-  "remarks": "overall summary",
-  "details": "high-level explanation of test strategy",
+  "remarks": "Brief overall summary of coverage and quality.",
+  "details": "Short test strategy: what you prioritized and how scenarios map to the code.",
   "standardsReview": [
     {
       "area": "Naming standards|Readability|Testing guidelines",

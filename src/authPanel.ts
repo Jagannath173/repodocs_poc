@@ -1,5 +1,7 @@
 import * as vscode from "vscode";
 import { authenticateCopilot } from "./pythonRunner";
+import { log, sanitizeForLog } from "./logger";
+import { AssistantResultPanel } from "./assistantPanel";
 
 function getNonce(): string {
   let text = "";
@@ -136,55 +138,47 @@ function authWebviewHtml(webview: vscode.Webview, nonce: string): string {
  * Shows URL and device code in a webview; closes automatically on success. No toast banners.
  */
 export function openAuthWebviewAndAuthenticate(context: vscode.ExtensionContext): Promise<boolean> {
+  log.info("auth", "Opening Copilot sign-in webview");
   return new Promise((resolve) => {
     let finished = false;
-    const panel = vscode.window.createWebviewPanel(
-      "codeReviewAuth",
-      "Sign in — GitHub Copilot",
-      vscode.ViewColumn.Active,
-      { enableScripts: true, retainContextWhenHidden: true }
-    );
-
-    const nonce = getNonce();
-    panel.webview.html = authWebviewHtml(panel.webview, nonce);
+    const panel = new AssistantResultPanel(context, "Authenticate");
+    panel.setMode("authenticate");
+    panel.setBusy(true);
+    panel.setStatus("Starting sign-in...");
+    panel.setProgressStep("Requesting device code...");
+    panel.setUserQuestion("Authenticate GitHub Copilot");
 
     const done = (success: boolean) => {
       if (finished) {
         return;
       }
       finished = true;
-      panel.dispose();
+      if (success) {
+        log.info("auth", "Copilot sign-in finished successfully");
+        panel.setStatus("Authentication successful.");
+      } else {
+        log.debug("auth", "Sign-in finished without success");
+        panel.setStatus("Authentication ended.");
+      }
       resolve(success);
     };
 
-    panel.webview.onDidReceiveMessage((m: { type?: string; url?: string; code?: string }) => {
-      if (m.type === "openUrl" && m.url) {
-        void vscode.env.openExternal(vscode.Uri.parse(m.url));
-      }
-      if (m.type === "copyCode" && m.code) {
-        void vscode.env.clipboard.writeText(m.code);
-      }
-    });
-
-    panel.onDidDispose(() => {
-      if (!finished) {
-        finished = true;
-        resolve(false);
-      }
-    });
-
-    const output = vscode.window.createOutputChannel("Code Review");
     authenticateCopilot(
       context,
-      (line) => output.appendLine(line),
+      (line) => log.proxyLine("auth", line),
       {
         onAuthRequired: (url, code) => {
-          void panel.webview.postMessage({ type: "auth", url, code });
+          void vscode.env.openExternal(vscode.Uri.parse(url));
+          void vscode.env.clipboard.writeText(code);
+          panel.setAuthData(url, code);
+          panel.setStatus("Waiting for user authentication...");
+          panel.setProgressStep("Waiting for browser authorization...");
         },
         onPollingStatus: (status) => {
-          void panel.webview.postMessage({ type: "poll", status });
+          panel.setStatus(status || "Waiting for authorization...");
         },
         onAuthSuccess: () => {
+          panel.close();
           done(true);
         },
       }
@@ -195,8 +189,9 @@ export function openAuthWebviewAndAuthenticate(context: vscode.ExtensionContext)
         }
       })
       .catch((e: Error) => {
+        log.error("auth", "authenticateCopilot failed", { error: sanitizeForLog(e.message || String(e)) });
         if (!finished) {
-          void panel.webview.postMessage({ type: "error", message: e.message || String(e) });
+          panel.setError(e.message || String(e));
           finished = true;
           resolve(false);
         }

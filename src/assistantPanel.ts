@@ -1,4 +1,5 @@
 import * as vscode from "vscode";
+import { getOrCreateGeniePanel } from "./genieHost";
 
 function getNonce(): string {
   let text = "";
@@ -23,7 +24,16 @@ function panelHtml(webview: vscode.Webview, nonce: string): string {
   <meta http-equiv="Content-Security-Policy" content="${csp}" />
   <style>
     :root { color-scheme: light dark; }
-    body { margin: 0; padding: 16px 20px 28px; font-family: var(--vscode-font-family); color: var(--vscode-editor-foreground); }
+    body {
+      margin: 0;
+      padding: 16px 20px 28px;
+      font-family: var(--vscode-font-family);
+      color: var(--vscode-editor-foreground);
+      overflow-x: auto;
+      overflow-y: auto;
+      min-width: max-content;
+      box-sizing: border-box;
+    }
     h1 { margin: 0 0 10px; font-size: 1.15em; }
     .status-row { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; min-height: 20px; }
     .status { color: var(--vscode-descriptionForeground); font-size: 0.9em; }
@@ -38,37 +48,252 @@ function panelHtml(webview: vscode.Webview, nonce: string): string {
     .head { padding: 8px 12px; font-size: 0.8em; text-transform: uppercase; color: var(--vscode-descriptionForeground); background: var(--vscode-editor-inactiveSelectionBackground); border-bottom: 1px solid var(--vscode-editorWidget-border); }
     .meta { margin-bottom: 10px; }
     .remarks { padding: 10px 12px; background: var(--vscode-textCodeBlock-background); border-radius: 6px; border: 1px solid var(--vscode-editorWidget-border); white-space: pre-wrap; }
+    .user-question {
+      margin-bottom: 14px;
+      padding: 12px 14px;
+      background: var(--vscode-editor-inactiveSelectionBackground);
+      border: 1px solid var(--vscode-editorWidget-border);
+      border-radius: 8px;
+      border-left: 3px solid var(--vscode-textLink-foreground);
+    }
+    .user-question .user-question-body {
+      font-size: 0.92em;
+      line-height: 1.45;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
     .actions { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+    .prompt-box {
+      margin-bottom: 12px;
+      padding: 12px 14px;
+      background: var(--vscode-editor-background);
+      border: 1px solid var(--vscode-editorWidget-border);
+      border-radius: 8px;
+    }
+    .prompt-label {
+      font-size: 0.8em;
+      color: var(--vscode-descriptionForeground);
+      text-transform: uppercase;
+      margin: 0 0 6px;
+    }
+    .prompt-input-row { display: flex; gap: 8px; align-items: stretch; }
+    .prompt-send-icon {
+      min-width: 38px;
+      border-radius: 6px;
+      border: 1px solid var(--vscode-button-border, var(--vscode-editorWidget-border));
+      background: var(--vscode-button-background);
+      color: var(--vscode-button-foreground);
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0 10px;
+      font-size: 1.05em;
+      line-height: 1;
+    }
+    .prompt-send-icon:hover { filter: brightness(1.06); }
+    .prompt-send-icon:disabled { opacity: 0.55; cursor: default; filter: none; }
+    textarea.prompt-input {
+      flex: 1;
+      min-height: 64px;
+      resize: vertical;
+      padding: 8px 10px;
+      border-radius: 6px;
+      border: 1px solid var(--vscode-editorWidget-border);
+      background: var(--vscode-input-background);
+      color: var(--vscode-input-foreground);
+      font-family: var(--vscode-font-family);
+      font-size: 0.92em;
+      line-height: 1.35;
+      box-sizing: border-box;
+    }
+    textarea.prompt-input:focus { outline: 1px solid var(--vscode-focusBorder); }
+    .prompt-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+    .auth-box { border: 1px solid var(--vscode-editorWidget-border); border-radius: 8px; padding: 10px; margin-bottom: 12px; background: var(--vscode-editor-background); }
+    .auth-row { margin-bottom: 10px; }
+    .auth-label { font-size: 0.8em; color: var(--vscode-descriptionForeground); margin-bottom: 4px; }
+    .auth-value-row {
+      display: flex;
+      align-items: stretch;
+      border: 1px solid var(--vscode-editorWidget-border);
+      border-radius: 6px;
+      background: var(--vscode-textCodeBlock-background);
+      margin-bottom: 6px;
+      overflow: hidden;
+    }
+    .auth-value {
+      flex: 1;
+      padding: 8px 10px;
+      font-family: var(--vscode-editor-font-family, monospace);
+      font-size: 0.9em;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+    .auth-copy-icon {
+      min-width: 34px;
+      border: none;
+      border-left: 1px solid var(--vscode-editorWidget-border);
+      background: transparent;
+      color: var(--vscode-descriptionForeground);
+      cursor: pointer;
+      font-size: 0.95em;
+      line-height: 1;
+      padding: 0 8px;
+    }
+    .auth-copy-icon:hover { background: var(--vscode-toolbar-hoverBackground, var(--vscode-list-hoverBackground)); }
+    .auth-wait { font-size: 0.86em; color: var(--vscode-descriptionForeground); margin: 4px 0 8px; }
     button { padding: 6px 12px; border-radius: 4px; border: none; cursor: pointer; }
     button.primary { color: var(--vscode-button-foreground); background: var(--vscode-button-background); }
     button.secondary { color: var(--vscode-button-secondaryForeground); background: var(--vscode-button-secondaryBackground); }
     button:disabled { opacity: 0.5; cursor: default; }
-    pre { margin: 0; padding: 12px; max-height: 58vh; overflow: auto; white-space: pre-wrap; word-break: break-word; font-family: var(--vscode-editor-font-family, monospace); font-size: 0.85em; line-height: 1.45; }
-    .content-wrap { padding: 12px; display: grid; gap: 10px; }
+    pre { margin: 0; padding: 12px; max-height: 58vh; overflow: auto; overflow-x: auto; overflow-y: auto; white-space: pre; word-break: normal; font-family: var(--vscode-editor-font-family, monospace); font-size: 0.85em; line-height: 1.45; }
+    .content-wrap {
+      padding: 12px;
+      display: grid;
+      gap: 10px;
+    }
     .section { border: 1px solid var(--vscode-editorWidget-border); border-radius: 6px; background: var(--vscode-editor-background); }
     .section h3 { margin: 0; padding: 8px 10px; font-size: 0.92em; border-bottom: 1px solid var(--vscode-editorWidget-border); background: var(--vscode-editor-inactiveSelectionBackground); }
     .section .body { padding: 10px; white-space: pre-wrap; line-height: 1.45; }
     table { width: 100%; border-collapse: collapse; font-size: 0.88em; }
     th, td { border: 1px solid var(--vscode-editorWidget-border); padding: 6px 8px; text-align: left; vertical-align: top; white-space: pre-wrap; }
     th { background: var(--vscode-editor-inactiveSelectionBackground); }
-    .json-pre { max-height: 40vh; }
     .step-line { padding: 8px 10px; font-size: 0.87em; color: var(--vscode-descriptionForeground); border: 1px solid var(--vscode-editorWidget-border); border-radius: 6px; margin-bottom: 10px; background: var(--vscode-editor-inactiveSelectionBackground); }
-    .stream-panel { border: 1px solid var(--vscode-editorWidget-border); border-radius: 8px; overflow: hidden; margin-bottom: 12px; }
-    .stream-panel-head { padding: 8px 12px; font-size: 0.8em; text-transform: uppercase; color: var(--vscode-descriptionForeground); background: var(--vscode-editor-inactiveSelectionBackground); border-bottom: 1px solid var(--vscode-editorWidget-border); }
-    .stream-wrap.streaming #stream::after { content: "▋"; opacity: 0.85; margin-left: 2px; animation: streamCaret 1s steps(1, end) infinite; }
+    details.collapse-panel {
+      border: 1px solid var(--vscode-editorWidget-border);
+      border-radius: 8px;
+      overflow: hidden;
+      margin-bottom: 12px;
+      background: var(--vscode-editor-background);
+    }
+    details.collapse-panel > summary {
+      padding: 10px 12px;
+      cursor: pointer;
+      font-size: 0.82em;
+      font-weight: 600;
+      list-style: none;
+      background: var(--vscode-editor-inactiveSelectionBackground);
+      border-bottom: 1px solid transparent;
+      user-select: none;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+    }
+    .explanation-toggle {
+      display: inline-flex;
+      align-items: center;
+      flex-shrink: 0;
+    }
+    .explanation-toggle button {
+      min-width: 26px;
+      min-height: 22px;
+      padding: 0 6px;
+      font-size: 0.82em;
+      line-height: 1;
+      border-radius: 4px;
+      border: 1px solid var(--vscode-button-border, var(--vscode-editorWidget-border));
+      background: var(--vscode-toolbar-hoverBackground, var(--vscode-editor-inactiveSelectionBackground));
+      color: var(--vscode-foreground);
+      cursor: pointer;
+    }
+    .explanation-toggle button:hover {
+      background: var(--vscode-list-hoverBackground);
+    }
+    details.collapse-panel[open] > summary { border-bottom-color: var(--vscode-editorWidget-border); }
+    details.collapse-panel > summary::-webkit-details-marker { display: none; }
+    .stream-wrap.streaming:not([open]) .stream-status::after { content: " (streaming…)"; font-weight: 400; color: var(--vscode-descriptionForeground); }
+    .stream-wrap.streaming[open] #stream::after { content: "▋"; opacity: 0.85; margin-left: 2px; animation: streamCaret 1s steps(1, end) infinite; }
     @keyframes streamCaret { 0%, 49% { opacity: 0; } 50%, 100% { opacity: 1; } }
-    #stream { margin: 0; padding: 10px 12px; max-height: 24vh; overflow: auto; white-space: pre-wrap; word-break: break-word; font-family: var(--vscode-editor-font-family, monospace); font-size: 0.82em; line-height: 1.45; }
-    .diff-wrap { max-height: 44vh; overflow: auto; border: 1px solid var(--vscode-editorWidget-border); border-radius: 6px; font-family: var(--vscode-editor-font-family, monospace); font-size: 0.84em; line-height: 1.35; background: var(--vscode-editor-background); }
-    .diff-line { white-space: pre-wrap; word-break: break-word; padding: 1px 8px; border-left: 3px solid transparent; }
+    #stream { margin: 0; padding: 10px 12px; max-height: 28vh; overflow: auto; overflow-x: auto; overflow-y: auto; white-space: pre; word-break: normal; font-family: var(--vscode-editor-font-family, monospace); font-size: 0.82em; line-height: 1.45; }
+    .diff-wrap { max-height: 44vh; overflow: auto; overflow-x: auto; overflow-y: auto; border: 1px solid var(--vscode-editorWidget-border); border-radius: 6px; font-family: var(--vscode-editor-font-family, monospace); font-size: 0.84em; line-height: 1.35; background: var(--vscode-editor-background); }
+    .diff-line { white-space: pre; word-break: normal; padding: 1px 8px; border-left: 3px solid transparent; min-width: max-content; }
     .diff-line.del { background: rgba(255, 80, 80, 0.12); border-left-color: var(--vscode-charts-red, #f14c4c); }
     .diff-line.add { background: rgba(80, 200, 120, 0.12); border-left-color: var(--vscode-charts-green, #3fb950); }
     .diff-line.same { background: var(--vscode-editor-background); }
+    .generated-picker { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--vscode-editorWidget-border); background: var(--vscode-editor-inactiveSelectionBackground); }
+    .generated-picker label { font-size: 0.8em; color: var(--vscode-descriptionForeground); text-transform: uppercase; }
+    .generated-picker select { flex: 1; min-width: 160px; }
+    .generated-code-pre {
+      margin: 0;
+      padding: 12px;
+      max-height: 48vh;
+      overflow: auto;
+      overflow-x: auto;
+      overflow-y: auto;
+      white-space: pre;
+      word-break: normal;
+      font-family: var(--vscode-editor-font-family, monospace);
+      font-size: 0.84em;
+      line-height: 1.45;
+      background: var(--vscode-editor-background);
+    }
     .hidden { display: none !important; }
     .err { color: var(--vscode-errorForeground); margin-top: 8px; white-space: pre-wrap; }
+    .hint.muted { font-size: 0.85em; color: var(--vscode-descriptionForeground); margin: 0 0 10px; line-height: 1.4; }
+    .session-tabs {
+      display: flex;
+      gap: 6px;
+      flex-wrap: nowrap;
+      overflow-x: auto;
+      overflow-y: hidden;
+      white-space: nowrap;
+      padding-bottom: 4px;
+      margin: 0 0 12px;
+    }
+    .session-tab {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      border: 1px solid var(--vscode-editorWidget-border);
+      border-radius: 999px;
+      background: var(--vscode-editor-inactiveSelectionBackground);
+      padding: 2px 4px 2px 10px;
+    }
+    .session-tab.active {
+      background: var(--vscode-button-background);
+      border-color: var(--vscode-button-background);
+    }
+    .session-tab-label {
+      border: none;
+      background: transparent;
+      color: var(--vscode-foreground);
+      padding: 2px 4px;
+      font-size: 0.82em;
+      cursor: pointer;
+      border-radius: 999px;
+      white-space: nowrap;
+    }
+    .session-tab.active .session-tab-label { color: var(--vscode-button-foreground); }
+    .session-tab-close {
+      min-width: 18px;
+      height: 18px;
+      border: none;
+      border-radius: 999px;
+      background: transparent;
+      color: var(--vscode-descriptionForeground);
+      padding: 0;
+      line-height: 1;
+      font-size: 14px;
+      cursor: pointer;
+    }
+    .session-tab.active .session-tab-close { color: var(--vscode-button-foreground); }
+    .session-tab-close:hover { background: var(--vscode-toolbar-hoverBackground, var(--vscode-list-hoverBackground)); }
   </style>
 </head>
 <body>
-  <h1 id="title">Assistant result</h1>
+  <div id="session-tabs" class="session-tabs"></div>
+  <h1 id="title">Genie</h1>
+  <div id="user-question" class="user-question hidden" aria-label="Prompt">
+    <div id="user-question-body" class="user-question-body"></div>
+  </div>
+  <div id="prompt-box" class="prompt-box hidden" aria-label="Ask a question">
+    <div class="prompt-label">Ask Genie</div>
+    <div class="prompt-input-row">
+      <textarea id="prompt-input" class="prompt-input" placeholder="Describe what should be generated... (Enter to send, Shift+Enter for new line)"></textarea>
+      <button id="btn-send-prompt" class="prompt-send-icon" type="button" title="Send" aria-label="Send">➤</button>
+    </div>
+  </div>
   <div id="root">
     <div class="status-row">
       <div class="wave" id="wave" aria-hidden="true"><span></span><span></span><span></span><span></span></div>
@@ -80,56 +305,90 @@ function panelHtml(webview: vscode.Webview, nonce: string): string {
   <div id="actions" class="actions hidden">
     <button id="btn-apply" class="primary" type="button" disabled>Apply to current file</button>
     <button id="btn-refine" class="secondary hidden" type="button">Refine output...</button>
-    <button id="btn-accept" class="primary hidden" type="button" disabled>Accept refactor</button>
-    <button id="btn-reject" class="secondary hidden" type="button" disabled>Reject</button>
+    <button id="btn-accept" class="primary hidden" type="button" disabled>✓ Accept</button>
+    <button id="btn-reject" class="secondary hidden" type="button" disabled>✕ Reject</button>
   </div>
-  <div id="stream-wrap" class="stream-wrap hidden">
-    <div class="stream-panel">
-      <div class="stream-panel-head">Live response stream</div>
-      <pre id="stream" role="log" aria-live="polite"></pre>
+  <div id="auth-box" class="auth-box hidden">
+    <div class="auth-row">
+      <div class="auth-label">Authentication URL</div>
+      <div class="auth-value-row">
+        <div id="auth-url" class="auth-value"></div>
+        <button id="btn-copy-auth-url" class="auth-copy-icon" type="button" title="Copy URL" aria-label="Copy URL">⧉</button>
+      </div>
     </div>
+    <div class="auth-row">
+      <div class="auth-label">Device code</div>
+      <div class="auth-value-row">
+        <div id="auth-code" class="auth-value"></div>
+        <button id="btn-copy-auth-code" class="auth-copy-icon" type="button" title="Copy code" aria-label="Copy code">⧉</button>
+      </div>
+    </div>
+    <div id="auth-wait" class="auth-wait"></div>
   </div>
-  <div id="diff-panel" class="panel hidden">
-    <div class="head">Suggested git diff</div>
+  <details id="stream-wrap" class="stream-wrap collapse-panel hidden">
+    <summary><span class="stream-status">Live response stream</span></summary>
+    <pre id="stream" role="log" aria-live="polite"></pre>
+  </details>
+  <details id="diff-panel" class="collapse-panel hidden">
+    <summary><span id="diff-panel-head">Diff preview</span></summary>
     <div id="diff" class="diff-wrap"></div>
-  </div>
-  <div id="rendered-panel" class="panel hidden">
-    <div class="head">Rendered explanation</div>
+  </details>
+  <details id="rendered-panel" class="collapse-panel hidden">
+    <summary>
+      <span>Explanation</span>
+      <span class="explanation-toggle" role="toolbar" aria-label="Toggle explanation">
+        <button type="button" id="explain-toggle" title="Hide explanation">▲</button>
+      </span>
+    </summary>
     <div id="out" class="content-wrap"></div>
-  </div>
-  <div id="json-panel" class="panel hidden">
-    <div class="head">JSON output</div>
-    <pre id="json" class="json-pre"></pre>
+  </details>
+  <div id="generated-code-panel" class="panel hidden">
+    <div class="head">Generated code</div>
+    <div id="generated-picker" class="generated-picker hidden">
+      <label for="generated-file-select">File</label>
+      <select id="generated-file-select"></select>
+    </div>
+    <pre id="generated-code" class="generated-code-pre"></pre>
   </div>
   <div id="err" class="err"></div>
   <script nonce="${nonce}">
-    var hasCode = false;
-    var reviewMode = false;
     var vscode = acquireVsCodeApi();
-    document.getElementById("btn-refine").addEventListener("click", function () {
-      vscode.postMessage({ command: "refineRequest" });
-    });
-    document.getElementById("btn-apply").addEventListener("click", function () {
-      if (!hasCode) return;
-      vscode.postMessage({ command: "applyCurrent" });
-    });
-    document.getElementById("btn-accept").addEventListener("click", function () {
-      if (!reviewMode) return;
-      setDecisionButtons(false);
-      vscode.postMessage({ command: "fixDecision", value: "accept" });
-    });
-    document.getElementById("btn-reject").addEventListener("click", function () {
-      if (!reviewMode) return;
-      setDecisionButtons(false);
-      vscode.postMessage({ command: "fixDecision", value: "reject" });
-    });
+    var sessions = {};
+    var sessionOrder = [];
+    var activeSessionId = "";
+    var generatedFiles = [];
+    var renderedPanelEl = document.getElementById("rendered-panel");
+    var explainToggleBtn = document.getElementById("explain-toggle");
+    var tabsEl = document.getElementById("session-tabs");
 
-    function clearEl(el) {
-      while (el.firstChild) {
-        el.removeChild(el.firstChild);
-      }
+    function newSession(title) {
+      return {
+        title: title || "Assistant result",
+        status: "",
+        busy: false,
+        step: "",
+        userQuestion: "",
+        err: "",
+        endpoint: "",
+        hasCode: false,
+        reviewMode: false,
+        remarks: "",
+        structuredData: null,
+        displayText: "",
+        generatedCode: "",
+        generatedFiles: [],
+        diffParts: [],
+        explainOpen: true,
+        streamOpen: false,
+        streamText: "",
+        authUrl: "",
+        authCode: "",
+      };
     }
 
+    function clearEl(el) {
+      while (el.firstChild) el.removeChild(el.firstChild);
+    }
     function addParagraph(root, title, text) {
       if (!text) return;
       var sec = document.createElement("section");
@@ -143,20 +402,17 @@ function panelHtml(webview: vscode.Webview, nonce: string): string {
       sec.appendChild(body);
       root.appendChild(sec);
     }
-
     function renderTable(root, title, rows) {
       if (!Array.isArray(rows) || !rows.length) return false;
       var normalized = rows.filter(function (x) { return x && typeof x === "object"; });
       if (!normalized.length) return false;
       var headers = Object.keys(normalized[0]);
       if (!headers.length) return false;
-
       var sec = document.createElement("section");
       sec.className = "section";
       var h = document.createElement("h3");
       h.textContent = title;
       sec.appendChild(h);
-
       var body = document.createElement("div");
       body.className = "body";
       var table = document.createElement("table");
@@ -186,28 +442,39 @@ function panelHtml(webview: vscode.Webview, nonce: string): string {
       root.appendChild(sec);
       return true;
     }
-
-    function renderStructured(root, data, fallbackText) {
+    function omitGeneratedCodeForExplanation(data, endpoint) {
+      if (endpoint !== "codeGeneration" || !data || typeof data !== "object") return data;
+      var skip = { generatedCode: 1, remarks: 1, summary: 1, delivery: 1 };
+      var o = {};
+      Object.keys(data).forEach(function (k) {
+        if (!skip[k]) o[k] = data[k];
+      });
+      return o;
+    }
+    function renderStructured(root, data, fallbackText, endpoint) {
       clearEl(root);
-      if (!data || typeof data !== "object") {
-        addParagraph(root, "Explanation", fallbackText || "No structured explanation available.");
+      var view = omitGeneratedCodeForExplanation(data, endpoint);
+      if (endpoint === "codeReview") {
+        renderCodeReview(root, view, fallbackText);
         return;
       }
-      addParagraph(root, "Summary", data.summary || fallbackText || "");
-
-      if (data.inputOutput && typeof data.inputOutput === "object") {
+      if (!view || typeof view !== "object") {
+        if (endpoint !== "codeGeneration" && fallbackText && String(fallbackText).trim()) {
+          addParagraph(root, "Explanation", fallbackText);
+        }
+        return;
+      }
+      if (endpoint !== "codeGeneration") addParagraph(root, "Summary", view.summary || fallbackText || "");
+      if (view.inputOutput && typeof view.inputOutput === "object") {
         var ioRows = [];
         ["inputs", "outputs", "sideEffects"].forEach(function (key) {
-          var val = data.inputOutput[key];
-          if (Array.isArray(val) && val.length) {
-            ioRows.push({ section: key, details: val.join("\\n") });
-          }
+          var val = view.inputOutput[key];
+          if (Array.isArray(val) && val.length) ioRows.push({ section: key, details: val.join("\\n") });
         });
         renderTable(root, "Input / Output", ioRows);
       }
-
-      if (Array.isArray(data.explanation)) {
-        data.explanation.forEach(function (item, idx) {
+      if (Array.isArray(view.explanation)) {
+        view.explanation.forEach(function (item, idx) {
           if (!item || typeof item !== "object") return;
           var sectionTitle = item.section || ("Section " + (idx + 1));
           addParagraph(root, sectionTitle + " - Overview", item.overview || "");
@@ -215,41 +482,141 @@ function panelHtml(webview: vscode.Webview, nonce: string): string {
           renderTable(root, sectionTitle + " - Key components", item.keyComponents);
           renderTable(root, sectionTitle + " - Logic flow", item.logicFlow);
           renderTable(root, sectionTitle + " - Algorithms", item.algorithms);
-          if (Array.isArray(item.edgeCases) && item.edgeCases.length) {
-            addParagraph(root, sectionTitle + " - Edge cases", item.edgeCases.join("\\n"));
-          }
-          if (item.complexity) {
-            addParagraph(root, sectionTitle + " - Complexity", item.complexity);
-          }
+          if (Array.isArray(item.edgeCases) && item.edgeCases.length) addParagraph(root, sectionTitle + " - Edge cases", item.edgeCases.join("\\n"));
+          if (item.complexity) addParagraph(root, sectionTitle + " - Complexity", item.complexity);
         });
       }
-
-      renderTable(root, "Examples", data.examples);
-      renderTable(root, "Glossary", data.glossary);
-      addParagraph(root, "Remarks", data.remarks || "");
-
-      Object.keys(data).forEach(function (key) {
-        if (["summary", "inputOutput", "explanation", "examples", "glossary", "remarks"].indexOf(key) >= 0) {
-          return;
-        }
-        var value = data[key];
+      renderTable(root, "Examples", view.examples);
+      renderTable(root, "Glossary", view.glossary);
+      addParagraph(root, "Remarks", view.remarks || "");
+      Object.keys(view).forEach(function (key) {
+        if (["summary", "inputOutput", "explanation", "examples", "glossary", "remarks"].indexOf(key) >= 0) return;
+        var value = view[key];
         if (Array.isArray(value)) {
-          if (!renderTable(root, key, value) && value.length) {
-            addParagraph(root, key, value.map(function (x) { return String(x); }).join("\\n"));
-          }
+          if (!renderTable(root, key, value) && value.length) addParagraph(root, key, value.map(function (x) { return String(x); }).join("\\n"));
           return;
         }
-        if (typeof value === "string" && value.trim()) {
-          addParagraph(root, key, value);
-        }
+        if (typeof value === "string" && value.trim()) addParagraph(root, key, value);
       });
     }
+    function renderCodeReview(root, view, fallbackText) {
+      if (!view || typeof view !== "object") {
+        // Do not render placeholders while review is still warming up.
+        return;
+      }
+      var applied = Array.isArray(view.appliedIndices) ? view.appliedIndices : [];
+      var toolbar = document.createElement("div");
+      toolbar.className = "actions";
+      var btnAll = document.createElement("button");
+      btnAll.type = "button";
+      btnAll.className = "primary";
+      btnAll.textContent = "Apply all fixes (sequential)";
+      btnAll.onclick = function () { vscode.postMessage({ command: "applyFixes", mode: "all", sessionId: activeSessionId }); };
+      var btnExtra = document.createElement("button");
+      btnExtra.type = "button";
+      btnExtra.className = "secondary";
+      btnExtra.textContent = "Apply with extra instructions...";
+      btnExtra.onclick = function () { vscode.postMessage({ command: "applyFixes", mode: "all", promptExtra: true, sessionId: activeSessionId }); };
+      toolbar.appendChild(btnAll);
+      toolbar.appendChild(btnExtra);
+      root.appendChild(toolbar);
 
+      var overallSummary = "";
+      if (typeof view.summary === "string" && view.summary.trim()) {
+        overallSummary = view.summary.trim();
+      } else if (fallbackText && String(fallbackText).trim()) {
+        overallSummary = String(fallbackText).trim();
+      }
+      if (overallSummary) {
+        addParagraph(root, "Summary", overallSummary);
+      }
+
+      var fallbackGlobalIndex = 0;
+      function renderFindingsTable(sectionTitle, findings) {
+        if (!Array.isArray(findings) || !findings.length) return;
+        var title = document.createElement("h3");
+        title.textContent = sectionTitle;
+        title.style.margin = "8px 0";
+        root.appendChild(title);
+
+        var tableWrap = document.createElement("div");
+        tableWrap.className = "section";
+        tableWrap.style.overflowX = "auto";
+        var table = document.createElement("table");
+        var thead = document.createElement("thead");
+        var trh = document.createElement("tr");
+        ["Index", "Severity", "Category", "Title", "Detail", "Suggestion", "Fix"].forEach(function (h) {
+          var th = document.createElement("th");
+          th.textContent = h;
+          trh.appendChild(th);
+        });
+        thead.appendChild(trh);
+        table.appendChild(thead);
+        var tbody = document.createElement("tbody");
+        findings.forEach(function (f, idx) {
+          var item = f && typeof f === "object" ? f : {};
+          var globalIndex = typeof item.globalIndex === "number" ? item.globalIndex : fallbackGlobalIndex;
+          fallbackGlobalIndex += 1;
+          var isApplied = applied.indexOf(globalIndex) >= 0;
+          var tr = document.createElement("tr");
+          var cells = [
+            String(idx + 1),
+            String(item.severity || ""),
+            String(item.category || ""),
+            String(item.title || ""),
+            String(item.detail || ""),
+            String(item.suggestion || ""),
+          ];
+          cells.forEach(function (c) {
+            var td = document.createElement("td");
+            td.textContent = c;
+            tr.appendChild(td);
+          });
+          var fixTd = document.createElement("td");
+          var fixBtn = document.createElement("button");
+          fixBtn.type = "button";
+          fixBtn.className = isApplied ? "secondary" : "primary";
+          fixBtn.disabled = isApplied;
+          fixBtn.textContent = isApplied ? "Applied" : "Fix";
+          if (!isApplied) {
+            fixBtn.onclick = function () {
+              vscode.postMessage({ command: "applyFixes", mode: "one", index: globalIndex, sessionId: activeSessionId });
+            };
+          }
+          fixTd.appendChild(fixBtn);
+          tr.appendChild(fixTd);
+          tbody.appendChild(tr);
+        });
+        table.appendChild(tbody);
+        tableWrap.appendChild(table);
+        root.appendChild(tableWrap);
+      }
+
+      var sections = Array.isArray(view.sections) ? view.sections : [];
+      var renderedAnySection = false;
+      sections.forEach(function (sec, idx) {
+        if (!sec || typeof sec !== "object") return;
+        var findings = Array.isArray(sec.findings) ? sec.findings : [];
+        if (!findings.length) return;
+        renderedAnySection = true;
+        var sectionName = sec.name || ("Section " + (idx + 1));
+        if (typeof sec.summary === "string" && sec.summary.trim()) {
+          addParagraph(root, sectionName + " Summary", sec.summary.trim());
+        }
+        renderFindingsTable(sectionName + " Issues", findings);
+      });
+
+      if (!renderedAnySection) {
+        var findings = Array.isArray(view.findings) ? view.findings : [];
+        if (findings.length) {
+          renderFindingsTable("Issues", findings);
+        }
+      }
+    }
     function renderDiff(parts) {
       var diffRoot = document.getElementById("diff");
       diffRoot.innerHTML = "";
-      var hasParts = Array.isArray(parts) && parts.length > 0;
-      if (!hasParts) return false;
+      if (!Array.isArray(parts) || !parts.length) return false;
       parts.forEach(function (p) {
         var line = document.createElement("div");
         var k = p.kind;
@@ -259,105 +626,363 @@ function panelHtml(webview: vscode.Webview, nonce: string): string {
       });
       return true;
     }
-
     function setDecisionButtons(enabled) {
       document.getElementById("btn-accept").disabled = !enabled;
       document.getElementById("btn-reject").disabled = !enabled;
     }
-
-    window.addEventListener("message", function (event) {
-      var m = event.data;
-      if (!m || typeof m !== "object") return;
-      if (m.type === "title") document.getElementById("title").textContent = m.text || "Assistant result";
-      if (m.type === "status") document.getElementById("status").textContent = m.text || "";
-      if (m.type === "busy") {
-        var root = document.getElementById("root");
-        if (m.value) root.classList.add("busy"); else root.classList.remove("busy");
+    function syncExplanationToggleIcon() {
+      var s = sessions[activeSessionId];
+      if (!s) return;
+      var open = !!renderedPanelEl.open;
+      s.explainOpen = open;
+      explainToggleBtn.textContent = open ? "▲" : "▼";
+      explainToggleBtn.title = open ? "Hide explanation" : "Show explanation";
+      explainToggleBtn.setAttribute("aria-label", open ? "Hide explanation" : "Show explanation");
+    }
+    function renderTabs() {
+      tabsEl.innerHTML = "";
+      sessionOrder.forEach(function (id, idx) {
+        var s = sessions[id];
+        if (!s) return;
+        var tab = document.createElement("div");
+        tab.className = "session-tab" + (id === activeSessionId ? " active" : "");
+        var btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "session-tab-label";
+        btn.textContent = s.title || ("Run " + (idx + 1));
+        btn.onclick = function () {
+          activeSessionId = id;
+          renderTabs();
+          renderSession();
+        };
+        var close = document.createElement("button");
+        close.type = "button";
+        close.className = "session-tab-close";
+        close.title = "Close tab";
+        close.setAttribute("aria-label", "Close tab");
+        close.textContent = "×";
+        close.onclick = function (e) {
+          e.preventDefault();
+          e.stopPropagation();
+          closeSession(id, true);
+        };
+        tab.appendChild(btn);
+        tab.appendChild(close);
+        tabsEl.appendChild(tab);
+      });
+    }
+    function renderEmptyState() {
+      document.getElementById("title").textContent = "Genie";
+      document.getElementById("user-question").classList.add("hidden");
+      document.getElementById("prompt-box").classList.add("hidden");
+      var pi = document.getElementById("prompt-input");
+      if (pi) pi.value = "";
+      document.getElementById("status").textContent = "";
+      document.getElementById("root").classList.remove("busy");
+      document.getElementById("step").classList.add("hidden");
+      document.getElementById("actions").classList.add("hidden");
+      document.getElementById("stream-wrap").classList.add("hidden");
+      document.getElementById("diff-panel").classList.add("hidden");
+      document.getElementById("rendered-panel").classList.add("hidden");
+      document.getElementById("generated-code-panel").classList.add("hidden");
+      document.getElementById("meta").classList.add("hidden");
+      document.getElementById("err").textContent = "";
+    }
+    function closeSession(id, notifyHost) {
+      if (!sessions[id]) return;
+      delete sessions[id];
+      sessionOrder = sessionOrder.filter(function (sid) { return sid !== id; });
+      if (notifyHost) {
+        vscode.postMessage({ command: "closeSession", sessionId: id });
       }
-      if (m.type === "step") {
-        var step = document.getElementById("step");
-        if (m.text) {
-          step.textContent = "Step: " + m.text;
+      if (activeSessionId === id) {
+        activeSessionId = sessionOrder.length ? sessionOrder[sessionOrder.length - 1] : "";
+      }
+      renderTabs();
+      if (activeSessionId) renderSession(); else renderEmptyState();
+    }
+    function renderSession() {
+      var s = sessions[activeSessionId];
+      if (!s) return;
+      document.getElementById("title").textContent = s.title || "Genie";
+      var promptBox = document.getElementById("prompt-box");
+      var promptInput = document.getElementById("prompt-input");
+      var sendPromptBtn = document.getElementById("btn-send-prompt");
+      var uqb = document.getElementById("user-question-body");
+      var uq = document.getElementById("user-question");
+      if ((s.userQuestion || "").trim()) {
+        uqb.textContent = s.userQuestion;
+        uq.classList.remove("hidden");
+      } else {
+        uqb.textContent = "";
+        uq.classList.add("hidden");
+      }
+      var needsPrompt = s.endpoint === "codeGeneration" && !(s.userQuestion || "").trim() && !s.busy;
+      if (needsPrompt) {
+        promptBox.classList.remove("hidden");
+        sendPromptBtn.disabled = false;
+        promptInput.disabled = false;
+      } else {
+        promptBox.classList.add("hidden");
+        sendPromptBtn.disabled = true;
+        promptInput.disabled = true;
+      }
+      var hasAuthData = s.endpoint === "authenticate" && (s.authUrl || s.authCode);
+      var statusEl = document.getElementById("status");
+      statusEl.textContent = hasAuthData ? "" : (s.status || "");
+      var root = document.getElementById("root");
+      if (s.busy) root.classList.add("busy"); else root.classList.remove("busy");
+      var step = document.getElementById("step");
+      var authWaitEl = document.getElementById("auth-wait");
+      if (s.step) {
+        step.textContent = "Step: " + s.step;
+        if (!hasAuthData) {
           step.classList.remove("hidden");
         } else {
           step.classList.add("hidden");
         }
+      } else {
+        step.classList.add("hidden");
       }
-      if (m.type === "stream") {
-        var sw = document.getElementById("stream-wrap");
-        var st = document.getElementById("stream");
-        if (m.text) {
-          sw.classList.remove("hidden");
-          sw.classList.add("streaming");
-          st.textContent = m.text;
-          st.scrollTop = st.scrollHeight;
-        } else {
-          st.textContent = "";
-          sw.classList.add("hidden");
-          sw.classList.remove("streaming");
-        }
+      var sw = document.getElementById("stream-wrap");
+      var st = document.getElementById("stream");
+      if (s.streamText) {
+        sw.classList.remove("hidden");
+        st.textContent = s.streamText;
+        if (s.busy) sw.classList.add("streaming"); else sw.classList.remove("streaming");
+        sw.open = !!s.streamOpen;
+      } else {
+        st.textContent = "";
+        sw.classList.add("hidden");
+        sw.classList.remove("streaming");
       }
-      if (m.type === "result") {
-        var meta = document.getElementById("meta");
-        var out = document.getElementById("out");
-        var json = document.getElementById("json");
-        var actions = document.getElementById("actions");
-        var renderedPanel = document.getElementById("rendered-panel");
-        var jsonPanel = document.getElementById("json-panel");
-        var diffPanel = document.getElementById("diff-panel");
-        var btnApply = document.getElementById("btn-apply");
-        var btnAccept = document.getElementById("btn-accept");
-        var btnReject = document.getElementById("btn-reject");
-        var btnRefine = document.getElementById("btn-refine");
-        var canApply = !!m.hasCode;
-        actions.classList.remove("hidden");
-        renderedPanel.classList.remove("hidden");
-        jsonPanel.classList.remove("hidden");
-        meta.innerHTML = "";
-        if (m.remarks) {
-          var r = document.createElement("div");
-          r.className = "remarks";
-          r.textContent = m.remarks;
-          meta.appendChild(r);
-          meta.classList.remove("hidden");
+      var actions = document.getElementById("actions");
+      actions.classList.remove("hidden");
+      var btnApply = document.getElementById("btn-apply");
+      var btnRefine = document.getElementById("btn-refine");
+      var btnAccept = document.getElementById("btn-accept");
+      var btnReject = document.getElementById("btn-reject");
+      if (s.reviewMode) {
+        btnApply.classList.add("hidden");
+        if (s.endpoint === "codeGeneration") {
+          btnRefine.classList.remove("hidden");
+          btnAccept.textContent = "✓ Accept";
         } else {
-          meta.classList.add("hidden");
-        }
-        renderStructured(out, m.structuredData, m.displayText || "");
-        json.textContent = m.jsonText || m.displayText || "";
-        hasCode = canApply;
-        reviewMode = !!m.reviewMode && hasCode;
-        if (reviewMode) {
-          btnApply.classList.add("hidden");
           btnRefine.classList.add("hidden");
-          btnAccept.classList.remove("hidden");
-          btnReject.classList.remove("hidden");
-          var hasDiff = renderDiff(m.diffParts);
-          if (hasDiff) {
-            diffPanel.classList.remove("hidden");
-          } else {
-            diffPanel.classList.add("hidden");
-          }
-          setDecisionButtons(hasCode);
-        } else {
-          if (canApply) {
-            btnApply.classList.remove("hidden");
-          } else {
-            btnApply.classList.add("hidden");
-          }
-          if (m.endpoint === "codeGeneration") {
-            btnRefine.classList.remove("hidden");
-          } else {
-            btnRefine.classList.add("hidden");
-          }
-          btnAccept.classList.add("hidden");
-          btnReject.classList.add("hidden");
-          btnApply.disabled = !canApply;
-          setDecisionButtons(false);
-          diffPanel.classList.add("hidden");
+          btnAccept.textContent = "✓ Accept";
         }
+        btnAccept.classList.remove("hidden");
+        btnReject.classList.remove("hidden");
+        btnReject.textContent = "✕ Reject";
+        setDecisionButtons(!!s.hasCode);
+      } else {
+        if (s.hasCode) btnApply.classList.remove("hidden"); else btnApply.classList.add("hidden");
+        if (s.endpoint === "codeGeneration") btnRefine.classList.remove("hidden"); else btnRefine.classList.add("hidden");
+        btnAccept.textContent = "✓ Accept";
+        btnAccept.classList.add("hidden");
+        btnReject.classList.add("hidden");
+        btnApply.disabled = !s.hasCode;
+        setDecisionButtons(false);
       }
-      if (m.type === "error") document.getElementById("err").textContent = m.text || "";
+      var diffPanel = document.getElementById("diff-panel");
+      if (s.reviewMode && renderDiff(s.diffParts)) {
+        diffPanel.classList.remove("hidden");
+        diffPanel.open = true;
+      } else {
+        diffPanel.classList.add("hidden");
+        diffPanel.open = false;
+      }
+      var meta = document.getElementById("meta");
+      meta.innerHTML = "";
+      if (s.remarks && s.endpoint !== "codeGeneration") {
+        var r = document.createElement("div");
+        r.className = "remarks";
+        r.textContent = s.remarks;
+        meta.appendChild(r);
+        meta.classList.remove("hidden");
+      } else {
+        meta.classList.add("hidden");
+      }
+      var out = document.getElementById("out");
+      var renderedPanel = document.getElementById("rendered-panel");
+      var hasExplanationContent =
+        !!((s.streamText && String(s.streamText).trim()) ||
+          (s.displayText && String(s.displayText).trim()) ||
+          (s.structuredData && typeof s.structuredData === "object" && Object.keys(s.structuredData).length));
+      if (hasExplanationContent) {
+        renderedPanel.classList.remove("hidden");
+        renderedPanel.open = s.explainOpen !== false;
+        syncExplanationToggleIcon();
+        renderStructured(out, s.structuredData, s.displayText || "", s.endpoint || "");
+      } else {
+        renderedPanel.classList.add("hidden");
+        clearEl(out);
+      }
+      var gcp = document.getElementById("generated-code-panel");
+      var gpp = document.getElementById("generated-picker");
+      var gfs = document.getElementById("generated-file-select");
+      var gct = document.getElementById("generated-code");
+      generatedFiles = Array.isArray(s.generatedFiles) ? s.generatedFiles : [];
+      var genText = s.endpoint === "codeGeneration" && s.generatedCode && String(s.generatedCode).trim() ? String(s.generatedCode) : "";
+      if (generatedFiles.length > 1) {
+        gfs.innerHTML = "";
+        generatedFiles.forEach(function (f, idx) {
+          var opt = document.createElement("option");
+          opt.value = String(idx);
+          opt.textContent = f.relativePath || ("file " + (idx + 1));
+          gfs.appendChild(opt);
+        });
+        gpp.classList.remove("hidden");
+        gct.textContent = String(generatedFiles[0].code || "");
+      } else if (generatedFiles.length === 1) {
+        gpp.classList.add("hidden");
+        gct.textContent = String(generatedFiles[0].code || "");
+      } else if (genText) {
+        gpp.classList.add("hidden");
+        gct.textContent = genText;
+      } else {
+        gpp.classList.add("hidden");
+        gct.textContent = "";
+      }
+      gfs.onchange = function () {
+        var idx = Number(gfs.value || 0);
+        var selected = generatedFiles[idx];
+        gct.textContent = selected && selected.code ? String(selected.code) : "";
+      };
+      var authBox = document.getElementById("auth-box");
+      var authUrl = document.getElementById("auth-url");
+      var authCode = document.getElementById("auth-code");
+      if (s.endpoint === "authenticate" && (s.authUrl || s.authCode)) {
+        authUrl.textContent = s.authUrl || "";
+        authCode.textContent = s.authCode || "";
+        authWaitEl.textContent = [s.status, s.step ? ("Step: " + s.step) : ""].filter(Boolean).join("  ");
+        authBox.classList.remove("hidden");
+      } else {
+        authUrl.textContent = "";
+        authCode.textContent = "";
+        authWaitEl.textContent = "";
+        authBox.classList.add("hidden");
+      }
+      document.getElementById("err").textContent = s.err || "";
+    }
+
+    document.getElementById("btn-refine").addEventListener("click", function () {
+      if (!activeSessionId) return;
+      vscode.postMessage({ command: "refineRequest", sessionId: activeSessionId });
+    });
+    document.getElementById("btn-apply").addEventListener("click", function () {
+      var s = sessions[activeSessionId];
+      if (!s || !s.hasCode) return;
+      vscode.postMessage({ command: "applyCurrent", sessionId: activeSessionId });
+    });
+    document.getElementById("btn-accept").addEventListener("click", function () {
+      var s = sessions[activeSessionId];
+      if (!s || !s.reviewMode) return;
+      setDecisionButtons(false);
+      vscode.postMessage({ command: "fixDecision", value: "accept", sessionId: activeSessionId });
+    });
+    document.getElementById("btn-reject").addEventListener("click", function () {
+      var s = sessions[activeSessionId];
+      if (!s || !s.reviewMode) return;
+      setDecisionButtons(false);
+      vscode.postMessage({ command: "fixDecision", value: "reject", sessionId: activeSessionId });
+    });
+    document.getElementById("btn-copy-auth-url").addEventListener("click", function () {
+      var s = sessions[activeSessionId];
+      if (!s || !s.authUrl) return;
+      vscode.postMessage({ command: "copyText", sessionId: activeSessionId, value: s.authUrl });
+    });
+    document.getElementById("btn-copy-auth-code").addEventListener("click", function () {
+      var s = sessions[activeSessionId];
+      if (!s || !s.authCode) return;
+      vscode.postMessage({ command: "copyText", sessionId: activeSessionId, value: s.authCode });
+    });
+    function trySendPrompt() {
+      if (!activeSessionId) return;
+      var s = sessions[activeSessionId];
+      if (!s || s.endpoint !== "codeGeneration") return;
+      var input = document.getElementById("prompt-input");
+      var text = (input && input.value != null) ? String(input.value) : "";
+      var q = text.trim();
+      if (!q) return;
+      s.userQuestion = q;
+      renderSession();
+      vscode.postMessage({ command: "submitPrompt", sessionId: activeSessionId, value: q });
+    }
+    document.getElementById("btn-send-prompt").addEventListener("click", trySendPrompt);
+    document.getElementById("prompt-input").addEventListener("keydown", function (e) {
+      if (e.key !== "Enter") return;
+      if (e.shiftKey) return;
+      e.preventDefault();
+      trySendPrompt();
+    });
+    explainToggleBtn.addEventListener("click", function (e) {
+      e.preventDefault();
+      e.stopPropagation();
+      renderedPanelEl.open = !renderedPanelEl.open;
+      syncExplanationToggleIcon();
+    });
+    renderedPanelEl.addEventListener("toggle", syncExplanationToggleIcon);
+    document.getElementById("stream-wrap").addEventListener("toggle", function () {
+      var s = sessions[activeSessionId];
+      if (!s) return;
+      s.streamOpen = !!document.getElementById("stream-wrap").open;
+    });
+
+    window.addEventListener("message", function (event) {
+      var m = event.data;
+      if (!m || typeof m !== "object") return;
+      if (m.type === "createSession") {
+        if (!m.sessionId) return;
+        if (!sessions[m.sessionId]) {
+          sessions[m.sessionId] = newSession(m.title || "Assistant result");
+          sessionOrder.push(m.sessionId);
+        }
+        activeSessionId = m.sessionId;
+        renderTabs();
+        renderSession();
+        return;
+      }
+      if (m.type === "closeSession") {
+        if (m.sessionId) {
+          closeSession(m.sessionId, false);
+        }
+        return;
+      }
+      var sid = m.sessionId;
+      if (!sid || !sessions[sid]) return;
+      var s = sessions[sid];
+      if (m.type === "title") s.title = m.text || s.title;
+      if (m.type === "mode") s.endpoint = m.endpoint || s.endpoint;
+      if (m.type === "status") s.status = m.text || "";
+      if (m.type === "busy") s.busy = !!m.value;
+      if (m.type === "step") s.step = m.text || "";
+      if (m.type === "stream") s.streamText = m.text || "";
+      if (m.type === "userQuestion") s.userQuestion = m.text != null ? String(m.text) : "";
+      if (m.type === "result") {
+        s.remarks = m.remarks || "";
+        s.displayText = m.displayText || "";
+        s.structuredData = m.structuredData || null;
+        s.reviewMode = !!m.reviewMode && !!m.hasCode;
+        s.hasCode = !!m.hasCode;
+        s.endpoint = m.endpoint || s.endpoint;
+        s.generatedCode = m.generatedCode || "";
+        s.generatedFiles = Array.isArray(m.generatedFiles) ? m.generatedFiles : [];
+        s.diffParts = Array.isArray(m.diffParts) ? m.diffParts : [];
+        s.streamOpen = false;
+      }
+      if (m.type === "authData") {
+        s.endpoint = "authenticate";
+        s.authUrl = m.url != null ? String(m.url) : "";
+        s.authCode = m.code != null ? String(m.code) : "";
+      }
+      if (m.type === "error") s.err = m.text || "";
+      if (sid === activeSessionId) {
+        renderTabs();
+        renderSession();
+      } else {
+        renderTabs();
+      }
     });
   </script>
 </body>
@@ -373,43 +998,230 @@ export interface AssistantRenderPayload {
   diffParts?: Array<{ kind: "add" | "remove" | "same"; text: string }>;
   endpoint?: string;
   applyCode?: string;
+  /** Code generation only: whether to edit the open buffer or create a new file. */
+  codeGenDelivery?: "modifyCurrent" | "newFile";
+  /** Code generation + newFile: path relative to workspace root. */
+  newFileRelativePath?: string;
+  /** Code generation only: optional list when multiple files are generated. */
+  generatedFiles?: Array<{ relativePath: string; code: string }>;
 }
 
-export class AssistantResultPanel {
+type GenieCommand =
+  | "applyCurrent"
+  | "fixDecision"
+  | "refineRequest"
+  | "closeSession"
+  | "copyText"
+  | "applyFixes"
+  | "authenticate"
+  | "submitPrompt";
+
+class GeniePanelHost {
+  private static instance: GeniePanelHost | undefined;
   private readonly panel: vscode.WebviewPanel;
-  constructor(context: vscode.ExtensionContext, title: string) {
-    this.panel = vscode.window.createWebviewPanel("assistantResult", title, vscode.ViewColumn.Beside, {
+  private readonly messageDisposables: vscode.Disposable[] = [];
+  private readonly listeners = new Map<
+    string,
+    {
+      apply: Set<() => void>;
+      refine: Set<() => void>;
+      fixDecision: Set<(value: "accept" | "reject") => void>;
+      messages: Set<(msg: unknown) => void>;
+    }
+  >();
+
+  private constructor() {
+    this.panel = getOrCreateGeniePanel("genie", "genieHost", vscode.ViewColumn.Beside, {
       enableScripts: true,
       retainContextWhenHidden: true,
+      localResourceRoots: [],
     });
     const nonce = getNonce();
     this.panel.webview.html = panelHtml(this.panel.webview, nonce);
-    void this.panel.webview.postMessage({ type: "title", text: title });
+    this.messageDisposables.push(
+      this.panel.webview.onDidReceiveMessage((msg: { command?: GenieCommand; sessionId?: string; value?: string | "accept" | "reject" }) => {
+        const sessionId = msg?.sessionId;
+        if (!sessionId) {
+          return;
+        }
+        if (msg.command === "copyText" && typeof msg.value === "string") {
+          void vscode.env.clipboard.writeText(msg.value);
+          return;
+        }
+        if (msg.command === "closeSession") {
+          const target = this.listeners.get(sessionId);
+          if (target) {
+            target.messages.forEach((handler) => handler(msg));
+          }
+          if (this.listeners.size <= 1) {
+            this.panel.dispose();
+          } else {
+            this.listeners.delete(sessionId);
+          }
+          return;
+        }
+        const target = this.listeners.get(sessionId);
+        if (!target) {
+          return;
+        }
+        target.messages.forEach((handler) => handler(msg));
+        if (msg.command === "applyCurrent") {
+          target.apply.forEach((handler) => handler());
+        } else if (msg.command === "refineRequest") {
+          target.refine.forEach((handler) => handler());
+        } else if (msg.command === "fixDecision") {
+          const decision = msg.value;
+          if (decision === "accept" || decision === "reject") {
+            target.fixDecision.forEach((handler) => handler(decision));
+          }
+        }
+      })
+    );
+    this.panel.onDidDispose(() => {
+      this.messageDisposables.forEach((d) => d.dispose());
+      this.listeners.clear();
+      GeniePanelHost.instance = undefined;
+    });
+  }
+
+  static getOrCreate(): GeniePanelHost {
+    if (!GeniePanelHost.instance) {
+      GeniePanelHost.instance = new GeniePanelHost();
+    } else {
+      GeniePanelHost.instance.panel.reveal(vscode.ViewColumn.Beside, false);
+    }
+    return GeniePanelHost.instance;
+  }
+
+  createSession(sessionId: string, title: string): void {
+    if (!this.listeners.has(sessionId)) {
+      this.listeners.set(sessionId, { apply: new Set(), refine: new Set(), fixDecision: new Set(), messages: new Set() });
+    }
+    void this.postMessage({ type: "createSession", sessionId, title });
+  }
+
+  onApplyRequested(sessionId: string, handler: () => void): vscode.Disposable {
+    const session = this.listeners.get(sessionId);
+    if (!session) {
+      return new vscode.Disposable(() => undefined);
+    }
+    session.apply.add(handler);
+    return new vscode.Disposable(() => {
+      const s = this.listeners.get(sessionId);
+      if (!s) return;
+      s.apply.delete(handler);
+      this.cleanupSession(sessionId);
+    });
+  }
+
+  onRefineRequested(sessionId: string, handler: () => void): vscode.Disposable {
+    const session = this.listeners.get(sessionId);
+    if (!session) {
+      return new vscode.Disposable(() => undefined);
+    }
+    session.refine.add(handler);
+    return new vscode.Disposable(() => {
+      const s = this.listeners.get(sessionId);
+      if (!s) return;
+      s.refine.delete(handler);
+      this.cleanupSession(sessionId);
+    });
+  }
+
+  onFixDecisionRequested(sessionId: string, handler: (value: "accept" | "reject") => void): vscode.Disposable {
+    const session = this.listeners.get(sessionId);
+    if (!session) {
+      return new vscode.Disposable(() => undefined);
+    }
+    session.fixDecision.add(handler);
+    return new vscode.Disposable(() => {
+      const s = this.listeners.get(sessionId);
+      if (!s) return;
+      s.fixDecision.delete(handler);
+      this.cleanupSession(sessionId);
+    });
+  }
+
+  onMessage(sessionId: string, handler: (msg: unknown) => void): vscode.Disposable {
+    const session = this.listeners.get(sessionId);
+    if (!session) {
+      return new vscode.Disposable(() => undefined);
+    }
+    session.messages.add(handler);
+    return new vscode.Disposable(() => {
+      const s = this.listeners.get(sessionId);
+      if (!s) return;
+      s.messages.delete(handler);
+      this.cleanupSession(sessionId);
+    });
+  }
+
+  postMessage(message: Record<string, unknown>): Thenable<boolean> {
+    return this.panel.webview.postMessage(message);
+  }
+
+  closeSession(sessionId: string): void {
+    if (this.listeners.size <= 1) {
+      this.panel.dispose();
+      return;
+    }
+    this.listeners.delete(sessionId);
+    void this.postMessage({ type: "closeSession", sessionId });
+  }
+
+  private cleanupSession(sessionId: string): void {
+    const s = this.listeners.get(sessionId);
+    if (!s) return;
+    if (!s.apply.size && !s.refine.size && !s.fixDecision.size && !s.messages.size) {
+      this.listeners.delete(sessionId);
+    }
+  }
+}
+
+export class AssistantResultPanel {
+  private readonly host: GeniePanelHost;
+  private readonly sessionId: string;
+  constructor(context: vscode.ExtensionContext, title: string) {
+    void context;
+    this.host = GeniePanelHost.getOrCreate();
+    this.sessionId = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    this.host.createSession(this.sessionId, title);
   }
 
   setStatus(text: string): void {
-    void this.panel.webview.postMessage({ type: "status", text });
+    void this.host.postMessage({ type: "status", sessionId: this.sessionId, text });
   }
 
   setBusy(value: boolean): void {
-    void this.panel.webview.postMessage({ type: "busy", value });
+    void this.host.postMessage({ type: "busy", sessionId: this.sessionId, value });
   }
 
   setProgressStep(text: string): void {
-    void this.panel.webview.postMessage({ type: "step", text });
+    void this.host.postMessage({ type: "step", sessionId: this.sessionId, text });
   }
 
   setStreamText(text: string): void {
-    void this.panel.webview.postMessage({ type: "stream", text });
+    void this.host.postMessage({ type: "stream", sessionId: this.sessionId, text });
   }
 
   setMode(endpoint: string): void {
-    void this.panel.webview.postMessage({ type: "mode", endpoint });
+    void this.host.postMessage({ type: "mode", sessionId: this.sessionId, endpoint });
+  }
+
+  /** Shown at the top of the panel so the user can recall their question or code context. */
+  setUserQuestion(text: string): void {
+    void this.host.postMessage({ type: "userQuestion", sessionId: this.sessionId, text });
+  }
+
+  setAuthData(url: string, code: string): void {
+    void this.host.postMessage({ type: "authData", sessionId: this.sessionId, url, code });
   }
 
   setResult(payload: AssistantRenderPayload): void {
-    void this.panel.webview.postMessage({
+    const apply = payload.applyCode?.trim() ?? "";
+    void this.host.postMessage({
       type: "result",
+      sessionId: this.sessionId,
       remarks: payload.remarks,
       displayText: payload.displayText,
       jsonText: payload.jsonText ?? payload.displayText,
@@ -417,35 +1229,36 @@ export class AssistantResultPanel {
       reviewMode: Boolean(payload.reviewMode),
       diffParts: payload.diffParts ?? [],
       endpoint: payload.endpoint,
-      hasCode: Boolean(payload.applyCode?.trim()),
+      hasCode: Boolean(apply),
+      generatedCode: payload.endpoint === "codeGeneration" ? apply : "",
+      codeGenDelivery: payload.codeGenDelivery ?? "",
+      newFileRelativePath: payload.newFileRelativePath ?? "",
+      generatedFiles: payload.generatedFiles ?? [],
     });
   }
 
   setError(text: string): void {
-    void this.panel.webview.postMessage({ type: "error", text });
+    void this.host.postMessage({ type: "error", sessionId: this.sessionId, text });
   }
 
   onApplyRequested(handler: () => void): vscode.Disposable {
-    return this.panel.webview.onDidReceiveMessage((msg: { command?: string }) => {
-      if (msg?.command === "applyCurrent") {
-        handler();
-      }
-    });
+    return this.host.onApplyRequested(this.sessionId, handler);
   }
 
   onFixDecisionRequested(handler: (value: "accept" | "reject") => void): vscode.Disposable {
-    return this.panel.webview.onDidReceiveMessage((msg: { command?: string; value?: "accept" | "reject" }) => {
-      if (msg?.command === "fixDecision" && (msg.value === "accept" || msg.value === "reject")) {
-        handler(msg.value);
-      }
-    });
+    return this.host.onFixDecisionRequested(this.sessionId, handler);
   }
 
   onRefineRequested(handler: () => void): vscode.Disposable {
-    return this.panel.webview.onDidReceiveMessage((msg: { command?: string }) => {
-      if (msg?.command === "refineRequest") {
-        handler();
-      }
-    });
+    return this.host.onRefineRequested(this.sessionId, handler);
   }
+
+  onMessage(handler: (msg: unknown) => void): vscode.Disposable {
+    return this.host.onMessage(this.sessionId, handler);
+  }
+
+  close(): void {
+    this.host.closeSession(this.sessionId);
+  }
+
 }

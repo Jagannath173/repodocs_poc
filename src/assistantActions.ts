@@ -1,4 +1,7 @@
 import * as vscode from "vscode";
+import * as path from "node:path";
+import * as os from "node:os";
+import * as fs from "node:fs/promises";
 import { diffLines } from "diff";
 import { extensionContext } from "./extension";
 import { ensureCopilotSession } from "./session";
@@ -6,6 +9,7 @@ import { runCopilotInference } from "./pythonRunner";
 import { AssistantRenderPayload, AssistantResultPanel } from "./assistantPanel";
 import { extractFirstJsonObject } from "./reviewPanel";
 import { renderPromptTemplate } from "./promptRenderer";
+import { log, sanitizeForLog } from "./logger";
 
 const ASSISTANT_PROMPT_FILES = {
   codeExplanation: "assistant/code_explanation.jinja",
@@ -35,12 +39,20 @@ const ASSISTANT_LABELS: Record<AssistantEndpoint, string> = {
 
 export type AssistantEndpoint = keyof typeof ASSISTANT_PROMPT_FILES;
 
+type GeneratedFile = {
+  relativePath: string;
+  code: string;
+};
+
 export async function runAssistantEndpoint(endpoint: AssistantEndpoint): Promise<void> {
+  log.info("assistant", "Assistant action starting", { endpoint });
   if (!(await ensureCopilotSession())) {
+    log.warn("assistant", "Aborted: no Copilot session", { endpoint });
     return;
   }
   const editor = vscode.window.activeTextEditor;
   if (!editor && endpoint !== "codeGeneration") {
+    log.warn("assistant", "Aborted: no active editor", { endpoint });
     void vscode.window.showWarningMessage("Open a code file and try again.");
     return;
   }
@@ -49,30 +61,46 @@ export async function runAssistantEndpoint(endpoint: AssistantEndpoint): Promise
   const selected = editor && !editor.selection.isEmpty ? editor.document.getText(editor.selection) : "";
   const code = editor ? selected || editor.document.getText() : "";
   if (!code.trim() && endpoint !== "codeGeneration") {
+    log.warn("assistant", "Aborted: empty code buffer", { endpoint });
     void vscode.window.showWarningMessage("Select code or open a non-empty file before running this action.");
     return;
   }
   const targetRange = editor && !editor.selection.isEmpty ? editor.selection : undefined;
   const panel = new AssistantResultPanel(extensionContext, `Assistant: ${ASSISTANT_LABELS[endpoint]}`);
   panel.setMode(endpoint);
-  panel.setBusy(true);
-  panel.setStatus("Preparing prompt...");
-  panel.setProgressStep("Preparing prompt template...");
+  if (endpoint === "codeGeneration") {
+    panel.setBusy(false);
+    panel.setStatus("Type your question below, then click Send (Ctrl+Enter).");
+    panel.setProgressStep("Waiting for your prompt...");
+  } else {
+    panel.setBusy(true);
+    panel.setStatus("Preparing prompt...");
+    panel.setProgressStep("Preparing prompt template...");
+  }
   let applyCode = "";
   const sourceUri = editor?.document.uri;
   let waitingForDecision = false;
   let running = false;
   let requestRefinementAndRegenerate: () => Promise<void> = async () => {};
 
+  let lastCodeGenDelivery: "modifyCurrent" | "newFile" | undefined;
+  let lastNewFileRelativePath = "";
+  let lastGeneratedFiles: GeneratedFile[] = [];
+
   panel.onFixDecisionRequested((value) => {
     if (!waitingForDecision) {
       return;
     }
     if (value === "accept") {
-      void applyAssistantOutput(applyCode, sourceUri, targetRange);
-      panel.setStatus("Accepted and applied.");
+      if (endpoint === "codeGeneration" && lastCodeGenDelivery === "newFile") {
+        void createGeneratedFilesInWorkspace(lastGeneratedFiles, lastNewFileRelativePath, applyCode);
+        panel.setStatus("File(s) created.");
+      } else {
+        void applyAssistantOutput(applyCode, sourceUri, targetRange);
+        panel.setStatus("Accepted and applied.");
+      }
     } else {
-      panel.setStatus("Refactor suggestion rejected.");
+      panel.setStatus("Suggestion rejected — no changes applied.");
     }
     waitingForDecision = false;
   });
@@ -82,17 +110,18 @@ export async function runAssistantEndpoint(endpoint: AssistantEndpoint): Promise
   });
 
   panel.onApplyRequested(() => {
-    if (endpoint === "codeRefactor") {
-      panel.setStatus("Use Accept or Reject in diff preview.");
+    if (endpoint === "codeRefactor" || (endpoint === "codeGeneration" && waitingForDecision)) {
+      panel.setStatus("Use Accept or Reject in the assistant panel after reviewing the editor diff.");
       return;
     }
     void applyAssistantOutput(applyCode, sourceUri, targetRange);
   });
 
   try {
-    const generationQuestion = endpoint === "codeGeneration" ? await askGenerationQuestion() : undefined;
+    const generationQuestion = endpoint === "codeGeneration" ? await askGenerationQuestion(panel) : undefined;
     const baseVars = await collectAssistantVars(endpoint, code, language, generationQuestion);
     if (!baseVars) {
+      log.info("assistant", "User cancelled or skipped variable collection", { endpoint });
       panel.setStatus("Cancelled.");
       panel.setBusy(false);
       return;
@@ -104,6 +133,9 @@ export async function runAssistantEndpoint(endpoint: AssistantEndpoint): Promise
       }
       running = true;
       try {
+        lastCodeGenDelivery = undefined;
+        lastNewFileRelativePath = "";
+        lastGeneratedFiles = [];
         panel.setBusy(true);
         panel.setStreamText("");
         panel.setProgressStep("Preparing prompt template...");
@@ -112,18 +144,29 @@ export async function runAssistantEndpoint(endpoint: AssistantEndpoint): Promise
           vars.refinement = refinementNote.trim();
         }
 
+        panel.setUserQuestion(describeUserIntent(endpoint, vars));
+
         const prompt = await renderPromptTemplate(extensionContext.extensionPath, ASSISTANT_PROMPT_FILES[endpoint], vars);
+        log.debug("assistant", "Prompt ready", { endpoint, promptChars: prompt.length });
         panel.setStatus("Calling model...");
         panel.setProgressStep("Calling model and streaming response...");
         const raw = await runInferenceWithStreaming(prompt, panel);
+        log.debug("assistant", "Model response received", { endpoint, responseChars: raw.length });
         panel.setProgressStep("Parsing model response...");
         panel.setStatus("Rendering output...");
-        const rendered = buildAssistantRenderPayload(raw, code, endpoint);
+        const rendered = buildAssistantRenderPayload(raw, code, endpoint, {
+          userPrompt: vars.prompt ?? "",
+        });
         applyCode = rendered.applyCode ?? "";
+        lastCodeGenDelivery = rendered.codeGenDelivery;
+        lastNewFileRelativePath = rendered.newFileRelativePath?.trim() ?? "";
+        lastGeneratedFiles = rendered.generatedFiles ?? [];
         panel.setResult(rendered);
-        if (endpoint === "codeRefactor" && applyCode.trim()) {
+        const needsDiffDecision =
+          (endpoint === "codeRefactor" && applyCode.trim()) || (endpoint === "codeGeneration" && applyCode.trim() && rendered.reviewMode);
+        if (needsDiffDecision) {
           waitingForDecision = true;
-          panel.setStatus("Review the diff, then Accept or Reject.");
+          panel.setStatus("Review the diff below, then use Accept or Reject here.");
         } else {
           waitingForDecision = false;
           panel.setStatus("");
@@ -152,8 +195,10 @@ export async function runAssistantEndpoint(endpoint: AssistantEndpoint): Promise
     };
 
     await runOnce();
+    log.info("assistant", "Assistant action completed", { endpoint });
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : typeof e === "string" ? e : "Unknown error";
+    log.error("assistant", "Assistant action failed", { endpoint, error: sanitizeForLog(msg) });
     panel.setError(msg);
     panel.setStatus("Failed.");
     panel.setBusy(false);
@@ -166,6 +211,7 @@ async function runInferenceWithStreaming(panelPrompt: string, panel: AssistantRe
     extensionContext,
     panelPrompt,
     (data) => {
+      log.proxyLine("assistant", data);
       appendAssistantFromSseLine(data, state);
       if (state.chunkText) {
         panel.setStreamText(state.chunkText);
@@ -203,6 +249,29 @@ function appendAssistantFromSseLine(line: string, state: { text: string; chunkTe
   }
 }
 
+/** Summary of what the user asked for — shown at the top of the assistant webview. */
+function describeUserIntent(endpoint: AssistantEndpoint, vars: Record<string, string>): string {
+  if (endpoint === "codeGeneration") {
+    const main = vars.prompt?.trim() ?? "";
+    const ref = vars.refinement?.trim();
+    if (ref) {
+      return [main, ref].filter(Boolean).join("\n\n");
+    }
+    return main || "(empty prompt)";
+  }
+  const label = ASSISTANT_LABELS[endpoint];
+  const lang = vars.language || "unknown";
+  const code = vars.code ?? "";
+  const n = code.length;
+  if (n === 0) {
+    return `${label} · ${lang}\n\nNo code was included.`;
+  }
+  if (n <= 2000) {
+    return `${label} · ${lang}\n\n` + code;
+  }
+  return `${label} · ${lang}\n\n(${n} characters — see your editor for the full buffer.)`;
+}
+
 async function collectAssistantVars(
   endpoint: AssistantEndpoint,
   code: string,
@@ -226,14 +295,30 @@ async function collectAssistantVars(
   return vars;
 }
 
-async function askGenerationQuestion(): Promise<string | undefined> {
-  const question = await vscode.window.showInputBox({
-    title: "Code generation",
-    prompt: "Write your question",
-    placeHolder: "Describe what should be generated...",
-    ignoreFocusOut: true,
+async function askGenerationQuestion(panel: AssistantResultPanel): Promise<string | undefined> {
+  return await new Promise((resolve) => {
+    let done = false;
+    const finish = (value: string | undefined) => {
+      if (done) {
+        return;
+      }
+      done = true;
+      disposable.dispose();
+      resolve(value);
+    };
+    const disposable = panel.onMessage((raw) => {
+      const msg = raw as { command?: string; value?: unknown };
+      if (msg?.command === "submitPrompt" && typeof msg.value === "string") {
+        const q = msg.value.trim();
+        if (q) {
+          finish(q);
+        }
+      }
+      if (msg?.command === "closeSession") {
+        finish(undefined);
+      }
+    });
   });
-  return question?.trim() ? question.trim() : undefined;
 }
 
 async function collectRepositoryContext(): Promise<string> {
@@ -257,23 +342,75 @@ async function collectRepositoryContext(): Promise<string> {
   return `${header}\nRepository files (sample):\n- ${relPaths.join("\n- ")}`;
 }
 
-function buildAssistantRenderPayload(raw: string, beforeText: string, endpoint: AssistantEndpoint): AssistantRenderPayload {
+function defaultRemarksForEndpoint(endpoint: AssistantEndpoint): string {
+  if (endpoint === "unitTest") {
+    return "Unit test coverage and scenarios are summarized below.";
+  }
+  if (endpoint === "fileWiseUnitTest") {
+    return "File-wise unit tests are listed below.";
+  }
+  return "Response ready.";
+}
+
+function buildAssistantRenderPayload(
+  raw: string,
+  beforeText: string,
+  endpoint: AssistantEndpoint,
+  opts?: { userPrompt?: string }
+): AssistantRenderPayload {
   try {
     const obj = JSON.parse(extractFirstJsonObject(raw)) as Record<string, unknown>;
     const remarks =
-      (typeof obj.remarks === "string" && obj.remarks) ||
-      (typeof obj.details === "string" && obj.details) ||
-      "Assistant response generated.";
+      (typeof obj.remarks === "string" && obj.remarks.trim()) ||
+      (typeof obj.details === "string" && obj.details.trim()) ||
+      defaultRemarksForEndpoint(endpoint);
 
     const applyCode = extractApplyCode(obj, endpoint);
+    const generatedFiles = extractGeneratedFiles(obj, endpoint);
     const displayText = buildDisplayText(obj);
     const jsonText = JSON.stringify(obj, null, 2);
-    const reviewMode = endpoint === "codeRefactor";
-    const diffParts = reviewMode && applyCode ? buildDiffParts(beforeText, applyCode) : undefined;
-    return { remarks, displayText, applyCode, jsonText, structuredData: obj, reviewMode, diffParts, endpoint };
+
+    let codeGenDelivery: "modifyCurrent" | "newFile" | undefined;
+    let newFileRelativePath: string | undefined;
+
+    const primaryCode = applyCode ?? generatedFiles?.[0]?.code ?? "";
+    if (endpoint === "codeGeneration" && primaryCode.trim()) {
+      const parsed = parseCodeGenDelivery(obj);
+      const resolved = resolveCodeGenDelivery(opts?.userPrompt ?? "", beforeText, primaryCode, parsed);
+      codeGenDelivery = resolved.mode;
+      newFileRelativePath = resolved.newFilePath;
+    }
+
+    const isCodegen = endpoint === "codeGeneration" && Boolean(primaryCode.trim()) && codeGenDelivery;
+
+    let reviewMode =
+      endpoint === "codeRefactor" ? Boolean(applyCode?.trim()) : Boolean(isCodegen);
+
+    let diffParts: Array<{ kind: "add" | "remove" | "same"; text: string }> | undefined;
+    if (endpoint === "codeRefactor" && applyCode?.trim()) {
+      diffParts = buildDiffParts(beforeText, applyCode);
+    } else if (isCodegen && codeGenDelivery === "modifyCurrent" && primaryCode) {
+      diffParts = buildDiffParts(beforeText, primaryCode);
+    } else if (isCodegen && codeGenDelivery === "newFile" && primaryCode) {
+      diffParts = buildNewFileOnlyDiff(primaryCode);
+    }
+
+    return {
+      remarks,
+      displayText,
+      applyCode: primaryCode,
+      jsonText,
+      structuredData: obj,
+      reviewMode,
+      diffParts,
+      endpoint,
+      codeGenDelivery,
+      newFileRelativePath,
+      generatedFiles,
+    };
   } catch {
     return {
-      remarks: "Assistant response generated.",
+      remarks: defaultRemarksForEndpoint(endpoint),
       displayText: raw.trim(),
       jsonText: raw.trim(),
       structuredData: undefined,
@@ -281,8 +418,214 @@ function buildAssistantRenderPayload(raw: string, beforeText: string, endpoint: 
       diffParts: undefined,
       endpoint,
       applyCode: undefined,
+      generatedFiles: undefined,
     };
   }
+}
+
+function parseCodeGenDelivery(obj: Record<string, unknown>): { mode: "modifyCurrent" | "newFile"; newFilePath?: string } | undefined {
+  const d = obj.delivery;
+  if (!d || typeof d !== "object") {
+    return undefined;
+  }
+  const o = d as Record<string, unknown>;
+  const m = typeof o.mode === "string" ? o.mode.toLowerCase().replace(/\s+/g, "_") : "";
+  const pathRaw =
+    (typeof o.newFileRelativePath === "string" && o.newFileRelativePath.trim()) ||
+    (typeof o.newFilePath === "string" && o.newFilePath.trim()) ||
+    "";
+  if (m === "create_new_file" || m === "new_file" || m === "createfile") {
+    return { mode: "newFile", newFilePath: pathRaw || undefined };
+  }
+  if (m === "create_multiple_files" || m === "multiple_files" || m === "multi_file") {
+    return { mode: "newFile", newFilePath: pathRaw || undefined };
+  }
+  if (
+    m === "modify_current_file" ||
+    m === "modify_current" ||
+    m === "replace_in_editor" ||
+    m === "modify"
+  ) {
+    return { mode: "modifyCurrent" };
+  }
+  return undefined;
+}
+
+function extractGeneratedFiles(obj: Record<string, unknown>, endpoint: AssistantEndpoint): GeneratedFile[] | undefined {
+  if (endpoint !== "codeGeneration") {
+    return undefined;
+  }
+  const raw = obj.generatedFiles;
+  if (!Array.isArray(raw)) {
+    return undefined;
+  }
+  const out: GeneratedFile[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") {
+      continue;
+    }
+    const o = item as Record<string, unknown>;
+    const relRaw =
+      (typeof o.relativePath === "string" && o.relativePath) ||
+      (typeof o.newFileRelativePath === "string" && o.newFileRelativePath) ||
+      (typeof o.path === "string" && o.path) ||
+      "";
+    const codeRaw =
+      (typeof o.code === "string" && o.code) ||
+      (typeof o.generatedCode === "string" && o.generatedCode) ||
+      "";
+    const relativePath = sanitizeRelativeFilePath(relRaw);
+    if (!relativePath || !codeRaw.trim()) {
+      continue;
+    }
+    out.push({ relativePath, code: codeRaw });
+  }
+  return out.length ? out : undefined;
+}
+
+function sanitizeRelativeFilePath(p: string): string {
+  const n = p.replace(/\\/g, "/").trim().replace(/^[/\\]+/, "");
+  if (!n || n.includes("..")) {
+    return "";
+  }
+  return n;
+}
+
+function guessNewFilePathFromPrompt(userPrompt: string): string | undefined {
+  const tick = userPrompt.match(/`([^`\n]+\.[a-zA-Z0-9]{1,8})`/);
+  if (tick) {
+    const s = sanitizeRelativeFilePath(tick[1]);
+    return s || undefined;
+  }
+  const q = userPrompt.match(/["']([\w./-]+\.[a-zA-Z0-9]{1,8})["']/);
+  if (q) {
+    const s = sanitizeRelativeFilePath(q[1]);
+    return s || undefined;
+  }
+  return undefined;
+}
+
+function resolveCodeGenDelivery(
+  userPrompt: string,
+  editorCode: string,
+  generatedCode: string,
+  parsed?: { mode: "modifyCurrent" | "newFile"; newFilePath?: string }
+): { mode: "modifyCurrent" | "newFile"; newFilePath?: string } {
+  if (parsed?.mode === "newFile") {
+    const p =
+      sanitizeRelativeFilePath(parsed.newFilePath ?? "") ||
+      guessNewFilePathFromPrompt(userPrompt) ||
+      "generated_module.txt";
+    return { mode: "newFile", newFilePath: p };
+  }
+  if (parsed?.mode === "modifyCurrent") {
+    return { mode: "modifyCurrent" };
+  }
+  const hint =
+    /\bnew file\b|\bcreate (a )?file\b|\bseparate file\b|\badd (a )?(new )?file\b|\banother file\b/i.test(userPrompt);
+  if (hint) {
+    const p = guessNewFilePathFromPrompt(userPrompt) || "generated_module.txt";
+    return { mode: "newFile", newFilePath: p };
+  }
+  if (!editorCode.trim() && generatedCode.trim()) {
+    const p = guessNewFilePathFromPrompt(userPrompt) || "generated_module.txt";
+    return { mode: "newFile", newFilePath: p };
+  }
+  return { mode: "modifyCurrent" };
+}
+
+async function revealDocumentInEditor(uri: vscode.Uri): Promise<void> {
+  const doc = await vscode.workspace.openTextDocument(uri);
+  await vscode.window.showTextDocument(doc, { preview: false, preserveFocus: false });
+}
+
+async function createGeneratedFileInWorkspace(relativePath: string, content: string): Promise<void> {
+  const trimmed = content.trim();
+  if (!trimmed) {
+    void vscode.window.showWarningMessage("No generated code to write.");
+    return;
+  }
+
+  const baseName = path.basename(sanitizeRelativeFilePath(relativePath) || "generated_module.txt") || "generated_module.txt";
+  const ws = vscode.workspace.workspaceFolders?.[0];
+
+  let writtenUri: vscode.Uri | undefined;
+
+  if (ws) {
+    const rel = sanitizeRelativeFilePath(relativePath) || baseName;
+    const abs = path.join(ws.uri.fsPath, rel);
+    try {
+      await ensureDirectoryForFile(abs);
+      await fs.writeFile(abs, trimmed, "utf8");
+      writtenUri = vscode.Uri.file(abs);
+      void vscode.window.showInformationMessage(`Created ${rel}`);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      void vscode.window.showErrorMessage(`Could not create file: ${msg}`);
+      return;
+    }
+  } else {
+    const picked = await vscode.window.showSaveDialog({
+      title: "Save generated file",
+      saveLabel: "Create file",
+      defaultUri: vscode.Uri.file(path.join(os.homedir(), baseName)),
+    });
+    if (!picked) {
+      return;
+    }
+    const abs = picked.fsPath;
+    try {
+      await ensureDirectoryForFile(abs);
+      await fs.writeFile(abs, trimmed, "utf8");
+      writtenUri = vscode.Uri.file(abs);
+      void vscode.window.showInformationMessage(`Saved ${path.basename(abs)}`);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      void vscode.window.showErrorMessage(`Could not create file: ${msg}`);
+      return;
+    }
+  }
+
+  if (writtenUri) {
+    await revealDocumentInEditor(writtenUri);
+  }
+}
+
+async function createGeneratedFilesInWorkspace(
+  generatedFiles: GeneratedFile[] | undefined,
+  fallbackRelativePath: string,
+  fallbackCode: string
+): Promise<void> {
+  const files = generatedFiles?.length
+    ? generatedFiles
+    : [{ relativePath: fallbackRelativePath || "generated_module.txt", code: fallbackCode }];
+
+  for (const file of files) {
+    await createGeneratedFileInWorkspace(file.relativePath, file.code);
+  }
+}
+
+/** Creates every missing parent directory. Safe when the file sits at the workspace root. */
+async function ensureDirectoryForFile(absoluteFilePath: string): Promise<void> {
+  const dir = path.dirname(absoluteFilePath);
+  const normalizedDir = path.normalize(dir);
+  const root = path.parse(absoluteFilePath).root;
+  if (normalizedDir && normalizedDir !== root) {
+    await fs.mkdir(normalizedDir, { recursive: true });
+  }
+}
+
+/** New file on disk: show diff as additions only (green), no removals. */
+function buildNewFileOnlyDiff(content: string): Array<{ kind: "add" | "remove" | "same"; text: string }> {
+  const normalized = content.replace(/\r\n/g, "\n");
+  if (!normalized) {
+    return [];
+  }
+  const lines = normalized.split("\n");
+  return lines.map((line, i) => ({
+    kind: "add" as const,
+    text: "+ " + line + (i < lines.length - 1 ? "\n" : ""),
+  }));
 }
 
 function buildDiffParts(before: string, after: string): Array<{ kind: "add" | "remove" | "same"; text: string }> {
@@ -330,6 +673,13 @@ function extractApplyCode(obj: Record<string, unknown>, endpoint: AssistantEndpo
     }
   }
 
+  if (endpoint === "codeGeneration") {
+    const files = extractGeneratedFiles(obj, endpoint);
+    if (files?.length) {
+      return files[0].code;
+    }
+  }
+
   return undefined;
 }
 
@@ -371,7 +721,8 @@ async function applyAssistantOutput(
   edit.replace(doc.uri, range, applyCode);
   const ok = await vscode.workspace.applyEdit(edit);
   if (ok) {
-    void vscode.window.showInformationMessage("Assistant output applied to current file.");
+    await revealDocumentInEditor(targetUri);
+    void vscode.window.showInformationMessage("Code applied in the editor.");
   } else {
     void vscode.window.showErrorMessage("Could not apply assistant output to current file.");
   }

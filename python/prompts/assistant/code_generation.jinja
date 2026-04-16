@@ -36,6 +36,13 @@ Quality requirements:
 5. Keep complexity manageable and avoid unnecessary code.
 6. If assumptions are made, state them clearly.
 
+Delivery decision (required — choose one):
+- "modify_current_file": The user wants to change code in the file/descriptor they have open (snippet or whole file). Use this when they ask to fix, extend, refactor in place, or replace existing code.
+- "create_new_file": The output is meant as a **new** file (new module, CLI script, test file, etc.) and should not overwrite the open buffer. Use when they ask for a new file, separate module, new test file, or the open editor has no/irrelevant code.
+- "create_multiple_files": The user asked for multiple files or the best implementation requires multiple files. Include all files in `generatedFiles`.
+
+When mode is create_new_file, set "newFileRelativePath" to a sensible path relative to the workspace root (e.g. "src/lib/helper.py", "tests/test_foo.py"). Use repository_context file names as a guide. No ".." segments.
+
 Return valid JSON only (no markdown fences) in this format:
 {
   "quality": "poor|average|good|excellent",
@@ -51,5 +58,22 @@ Return valid JSON only (no markdown fences) in this format:
   "validationChecklist": [
     "how to validate behavior"
   ],
-  "generatedCode": "full generated code text"
+  "delivery": {
+    "mode": "modify_current_file",
+    "newFileRelativePath": "when mode is create_new_file: relative path e.g. src/lib/helper.py; otherwise empty string"
+  },
+  "generatedCode": "full generated code text for primary file (always required)",
+  "generatedFiles": [
+    {
+      "relativePath": "path relative to workspace root, e.g. src/utils/math.ts",
+      "code": "full file content"
+    }
+  ]
 }
+
+Production-grade expectations for generated code:
+- Prefer deterministic, maintainable code over shortcuts.
+- Validate inputs and return clear errors.
+- Include minimal, meaningful comments only where logic is non-obvious.
+- Avoid TODOs/placeholders/stubs in final code.
+- Keep naming, formatting, and module boundaries consistent with repository_context.

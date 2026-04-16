@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
 import { registerReviewPanel, unregisterReviewPanel } from "./reviewBridge";
+import { AssistantResultPanel } from "./assistantPanel";
 
 function getNonce(): string {
   let text = "";
@@ -39,9 +40,18 @@ function reviewTableHtml(webview: vscode.Webview, nonce: string): string {
       color: var(--vscode-editor-foreground);
       line-height: 1.45;
     }
-    .wrap { max-width: 980px; margin: 0 auto; }
+    .wrap { width: 100%; max-width: 100%; margin: 0 auto; box-sizing: border-box; }
     h1 { font-size: 1.2em; font-weight: 600; margin: 0 0 var(--spacing-md); }
-    .tabs { display: flex; gap: var(--spacing-xs); margin-bottom: var(--spacing-md); }
+    .tabs {
+      display: flex;
+      gap: var(--spacing-xs);
+      margin-bottom: var(--spacing-md);
+      flex-wrap: nowrap;
+      overflow-x: auto;
+      overflow-y: hidden;
+      white-space: nowrap;
+      padding-bottom: 4px;
+    }
     .tab-btn {
       border: 1px solid var(--vscode-editorWidget-border);
       border-radius: 6px;
@@ -63,8 +73,16 @@ function reviewTableHtml(webview: vscode.Webview, nonce: string): string {
       white-space: pre-wrap;
     }
     .section-title { margin: var(--spacing-md) 0 var(--spacing-xs); font-size: 1em; font-weight: 600; }
-    table { width: 100%; border-collapse: collapse; font-size: 0.92em; }
-    th, td { border: 1px solid var(--vscode-editorWidget-border); padding: 8px 10px; text-align: left; vertical-align: top; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.92em; table-layout: fixed; }
+    th, td {
+      border: 1px solid var(--vscode-editorWidget-border);
+      padding: 8px 10px;
+      text-align: left;
+      vertical-align: top;
+      white-space: pre-wrap;
+      word-break: break-word;
+      overflow-wrap: anywhere;
+    }
     th { background: var(--vscode-editor-inactiveSelectionBackground); font-weight: 600; }
     tr:nth-child(even) td { background: var(--vscode-editor-inactiveSelectionBackground); opacity: 0.5; }
     .sev-critical { color: var(--vscode-errorForeground); font-weight: 600; }
@@ -73,7 +91,7 @@ function reviewTableHtml(webview: vscode.Webview, nonce: string): string {
     .sev-low, .sev-info { color: var(--vscode-descriptionForeground); }
     .loading { color: var(--vscode-descriptionForeground); font-style: italic; }
     .hidden { display: none !important; }
-    #review-result { min-height: 8px; }
+    #review-result { min-height: 8px; width: 100%; box-sizing: border-box; overflow-x: auto; }
     .apply-toolbar { display: flex; flex-wrap: wrap; gap: var(--spacing-xs); align-items: center; margin-bottom: var(--spacing-md); }
     button.btn-apply, button.btn-row-fix, button.primary, button.secondary {
       cursor: pointer; border: none; border-radius: 4px;
@@ -122,13 +140,15 @@ function reviewTableHtml(webview: vscode.Webview, nonce: string): string {
     .diff-wrap {
       max-height: 42vh;
       overflow: auto;
+      overflow-x: auto;
+      overflow-y: auto;
       border: 1px solid var(--vscode-editorWidget-border);
       border-radius: var(--panel-radius);
       font-family: var(--vscode-editor-font-family, monospace);
       font-size: 0.82em;
       line-height: 1.35;
     }
-    .diff-line { white-space: pre-wrap; word-break: break-word; padding: 1px 8px; border-left: 3px solid transparent; }
+    .diff-line { white-space: pre; word-break: normal; padding: 1px 8px; border-left: 3px solid transparent; min-width: max-content; }
     .diff-line.del { background: rgba(255, 80, 80, 0.12); border-left-color: var(--vscode-charts-red, #f14c4c); }
     .diff-line.add { background: rgba(80, 200, 120, 0.12); border-left-color: var(--vscode-charts-green, #3fb950); }
     .diff-line.same { background: var(--vscode-editor-background); }
@@ -136,6 +156,40 @@ function reviewTableHtml(webview: vscode.Webview, nonce: string): string {
     .actions { display: flex; gap: var(--spacing-sm); flex-wrap: wrap; margin-top: var(--spacing-md); align-items: center; }
     button.primary, button.secondary { padding: 8px 16px; font-size: 0.95em; }
     .hint { font-size: 0.85em; color: var(--vscode-descriptionForeground); margin-top: var(--spacing-xs); }
+    details.collapse-panel {
+      border: 1px solid var(--vscode-editorWidget-border);
+      border-radius: var(--panel-radius);
+      margin-bottom: var(--spacing-md);
+      overflow: hidden;
+      background: var(--vscode-editor-background);
+    }
+    details.collapse-panel > summary {
+      padding: 10px 12px;
+      cursor: pointer;
+      font-size: 0.82em;
+      font-weight: 600;
+      list-style: none;
+      background: var(--vscode-editor-inactiveSelectionBackground);
+      user-select: none;
+    }
+    details.collapse-panel > summary::-webkit-details-marker { display: none; }
+    details.collapse-panel[open] > summary { border-bottom: 1px solid var(--vscode-editorWidget-border); }
+    details.collapse-panel .collapse-body { padding: 0; }
+    details.collapse-panel .log-single { border: none; border-radius: 0; }
+    #review-stream-wrap { margin-top: var(--spacing-sm); }
+    #review-stream {
+      margin: 0;
+      padding: 10px 12px;
+      max-height: 24vh;
+      overflow: auto;
+      overflow-x: auto;
+      overflow-y: auto;
+      white-space: pre;
+      word-break: normal;
+      font-family: var(--vscode-editor-font-family, monospace);
+      font-size: 0.82em;
+      line-height: 1.4;
+    }
   </style>
 </head>
 <body>
@@ -148,18 +202,28 @@ function reviewTableHtml(webview: vscode.Webview, nonce: string): string {
 
     <div id="panel-review" class="tab-panel">
       <p id="status" class="loading">Generating structured review…</p>
-      <div class="log-panel">
-        <div id="review-logs" class="log-single info" role="status" aria-live="polite">Idle</div>
-      </div>
+      <details id="review-stream-wrap" class="collapse-panel hidden">
+        <summary>Live review stream</summary>
+        <pre id="review-stream" role="log" aria-live="polite"></pre>
+      </details>
+      <details id="review-log-details" class="collapse-panel hidden">
+        <summary>Review activity log</summary>
+        <div class="collapse-body">
+          <div id="review-logs" class="log-single info" role="status" aria-live="polite">Idle</div>
+        </div>
+      </details>
       <div id="review-result" style="margin-top:12px"></div>
     </div>
 
     <div id="panel-fixes" class="tab-panel hidden">
       <div id="fix-header" class="loading">Run Apply fixes to start.</div>
       <div id="fix-sub" class="fix-sub"></div>
-      <div class="log-panel">
-        <div id="fix-logs" class="log-single info" role="status" aria-live="polite">Idle</div>
-      </div>
+      <details id="fix-log-details" class="collapse-panel">
+        <summary>Fix activity log</summary>
+        <div class="collapse-body">
+          <div id="fix-logs" class="log-single info" role="status" aria-live="polite">Idle</div>
+        </div>
+      </details>
       <div id="diff-section" class="hidden">
         <div id="diff" class="diff-wrap"></div>
       </div>
@@ -209,6 +273,15 @@ function reviewTableHtml(webview: vscode.Webview, nonce: string): string {
       document.getElementById(id).classList.add("hidden");
     }
 
+    function showReviewLogPanel(show) {
+      var d = document.getElementById("review-log-details");
+      if (show) {
+        d.classList.remove("hidden");
+      } else {
+        d.classList.add("hidden");
+      }
+    }
+
     function sevClass(s) {
       var x = (s || "").toLowerCase();
       if (x === "critical") return "sev-critical";
@@ -223,6 +296,7 @@ function reviewTableHtml(webview: vscode.Webview, nonce: string): string {
       var data = state.review;
       var findings = Array.isArray(data.findings) ? data.findings : [];
       var applied = Array.isArray(data.appliedIndices) ? data.appliedIndices : [];
+      var selected = {};
       var sections = Array.isArray(data.sections) ? data.sections : [];
       if (!sections.length) {
         sections = [{
@@ -239,8 +313,21 @@ function reviewTableHtml(webview: vscode.Webview, nonce: string): string {
       var btnAll = document.createElement("button");
       btnAll.type = "button";
       btnAll.className = "btn-apply";
-      btnAll.textContent = "Apply all fixes (sequential)";
+      btnAll.textContent = "Apply all fixes (combined)";
       btnAll.onclick = function () { vscode.postMessage({ command: "applyFixes", mode: "all" }); };
+      var btnSelected = document.createElement("button");
+      btnSelected.type = "button";
+      btnSelected.className = "btn-apply secondary";
+      btnSelected.textContent = "Apply selected fixes (combined)";
+      btnSelected.disabled = true;
+      btnSelected.onclick = function () {
+        var indices = Object.keys(selected)
+          .filter(function (k) { return selected[k]; })
+          .map(function (k) { return Number(k); })
+          .filter(function (n) { return Number.isFinite(n) && n >= 0; });
+        if (!indices.length) return;
+        vscode.postMessage({ command: "applyFixes", mode: "selected", indices: indices });
+      };
       var btnCmd = document.createElement("button");
       btnCmd.type = "button";
       btnCmd.className = "btn-apply secondary";
@@ -253,6 +340,7 @@ function reviewTableHtml(webview: vscode.Webview, nonce: string): string {
       btnAuth.title = "Open manual Copilot authentication flow.";
       btnAuth.onclick = function () { vscode.postMessage({ command: "authenticate" }); };
       toolbar.appendChild(btnAll);
+      toolbar.appendChild(btnSelected);
       toolbar.appendChild(btnCmd);
       toolbar.appendChild(btnAuth);
       resultEl.appendChild(toolbar);
@@ -301,6 +389,16 @@ function reviewTableHtml(webview: vscode.Webview, nonce: string): string {
             tr.appendChild(td);
           });
           var tdFix = document.createElement("td");
+          var cb = document.createElement("input");
+          cb.type = "checkbox";
+          cb.style.marginRight = "8px";
+          cb.disabled = isApplied;
+          cb.onchange = function () {
+            selected[String(globalIndex)] = !!cb.checked;
+            var anySelected = Object.keys(selected).some(function (k) { return selected[k]; });
+            btnSelected.disabled = !anySelected;
+          };
+          tdFix.appendChild(cb);
           var bf = document.createElement("button");
           bf.type = "button";
           bf.className = "btn-row-fix";
@@ -345,23 +443,47 @@ function reviewTableHtml(webview: vscode.Webview, nonce: string): string {
         document.getElementById("status").classList.remove("hidden");
         document.getElementById("status").textContent = m.message || "Generating structured review…";
         document.getElementById("review-result").innerHTML = "";
+        document.getElementById("review-stream-wrap").classList.add("hidden");
+        document.getElementById("review-stream").textContent = "";
+        showReviewLogPanel(true);
         setStatusLine("review-logs", "info", "Review started.");
         switchTab("review");
         return;
       }
+      if (m.type === "reviewStream") {
+        var streamWrap = document.getElementById("review-stream-wrap");
+        var streamEl = document.getElementById("review-stream");
+        var txt = m.text != null ? String(m.text) : "";
+        if (txt.trim()) {
+          streamWrap.classList.remove("hidden");
+          streamEl.textContent = txt;
+          streamEl.scrollTop = streamEl.scrollHeight;
+        } else {
+          streamEl.textContent = "";
+          streamWrap.classList.add("hidden");
+        }
+        return;
+      }
       if (m.type === "reviewLog") {
+        showReviewLogPanel(true);
         setStatusLine("review-logs", m.level || "info", m.message || "");
         return;
       }
       if (m.type === "review") {
         document.getElementById("status").classList.add("hidden");
-        hideStatusLine("review-logs");
+        var streamWrapOnDone = document.getElementById("review-stream-wrap");
+        if (streamWrapOnDone) {
+          streamWrapOnDone.open = false;
+        }
+        showReviewLogPanel(false);
         renderReview(m.payload || {});
         switchTab("review");
         return;
       }
       if (m.type === "error") {
         document.getElementById("status").classList.add("hidden");
+        showReviewLogPanel(true);
+        document.getElementById("review-log-details").open = true;
         setStatusLine("review-logs", "error", m.message || "Review failed.");
         var resultEl = document.getElementById("review-result");
         resultEl.innerHTML = "";
@@ -369,12 +491,6 @@ function reviewTableHtml(webview: vscode.Webview, nonce: string): string {
         errDiv.className = "err";
         errDiv.textContent = m.message || "Review failed.";
         resultEl.appendChild(errDiv);
-        if (m.raw) {
-          var pre = document.createElement("pre");
-          pre.className = "raw";
-          pre.textContent = m.raw;
-          resultEl.appendChild(pre);
-        }
         return;
       }
 
@@ -464,30 +580,28 @@ export interface ReviewTableState {
 }
 
 export class ReviewWebviewSession {
-  private readonly panel: vscode.WebviewPanel;
+  private readonly panel: AssistantResultPanel;
   private disposed = false;
   private choiceResolver?: (v: "accept" | "reject") => void;
   private latestSections: ReviewSectionPayload[] = [];
+  private readonly subscriptions: vscode.Disposable[] = [];
 
   constructor(
     context: vscode.ExtensionContext,
     title: string,
     private readonly documentUri: string | undefined
   ) {
+    void title;
     registerReviewPanel(this);
-    this.panel = vscode.window.createWebviewPanel(
-      "codeReviewResult",
-      title,
-      vscode.ViewColumn.Beside,
-      { enableScripts: true, retainContextWhenHidden: true, localResourceRoots: [] }
+    this.panel = new AssistantResultPanel(context, "Review");
+    this.panel.setMode("codeReview");
+    this.subscriptions.push(
+      this.panel.onFixDecisionRequested((value) => {
+        const r = this.choiceResolver;
+        this.choiceResolver = undefined;
+        r?.(value);
+      })
     );
-    const nonce = getNonce();
-    this.panel.webview.html = reviewTableHtml(this.panel.webview, nonce);
-    this.panel.onDidDispose(() => {
-      unregisterReviewPanel(this);
-      this.disposed = true;
-      this.choiceResolver?.("reject");
-    });
   }
 
   getDocumentUri(): string | undefined {
@@ -496,26 +610,46 @@ export class ReviewWebviewSession {
 
   setLoading(message?: string): void {
     if (this.disposed) return;
-    void this.panel.webview.postMessage({ type: "loading", message: message ?? "Generating structured review…" });
+    this.panel.setStatus(message ?? "Generating structured review…");
+    this.panel.setBusy(true);
+    this.panel.setProgressStep("Review started");
   }
 
   addReviewLog(message: string, level: "info" | "warn" | "error" | "success" = "info"): void {
     if (this.disposed) return;
-    void this.panel.webview.postMessage({ type: "reviewLog", message, level });
+    this.panel.setProgressStep(`[${level}] ${message}`);
+  }
+
+  setReviewStream(text: string): void {
+    if (this.disposed) return;
+    this.panel.setStreamText(text);
   }
 
   setReview(payload: ReviewPayload): void {
     if (this.disposed) return;
     this.latestSections = payload.sections ?? [];
-    void this.panel.webview.postMessage({
-      type: "review",
-      payload: {
+    const formattedFindings = (payload.findings ?? [])
+      .map((f, i) => {
+        return `${i + 1}. [${f.severity || "info"}] ${f.title || "Issue"}\nCategory: ${f.category || "-"}\nDetail: ${f.detail || "-"}\nSuggestion: ${f.suggestion || "-"}`;
+      })
+      .join("\n\n");
+    this.panel.setResult({
+      remarks: payload.summary || "Review completed.",
+      displayText: formattedFindings || "No findings.",
+      endpoint: "codeReview",
+      reviewMode: false,
+      diffParts: [],
+      applyCode: "",
+      structuredData: {
         summary: payload.summary,
         findings: payload.findings,
         sections: payload.sections ?? [],
         appliedIndices: payload.appliedIndices ?? [],
-      },
+      } as unknown as Record<string, unknown>,
     });
+    this.panel.setStatus("Review completed.");
+    this.panel.setBusy(false);
+    this.panel.setProgressStep("Done.");
   }
 
   /** Refresh the findings table after fixes are applied (badges, disabled Fix). */
@@ -531,44 +665,55 @@ export class ReviewWebviewSession {
         };
       }),
     }));
-    void this.panel.webview.postMessage({
-      type: "review",
-      payload: {
-        summary: stored.summary,
-        findings: stored.findings,
-        sections: mappedSections,
-        appliedIndices: stored.appliedIndices ?? [],
-      },
+    this.setReview({
+      summary: stored.summary,
+      findings: stored.findings,
+      sections: mappedSections,
+      appliedIndices: stored.appliedIndices ?? [],
     });
   }
 
   onDispose(callback: () => void): void {
-    this.panel.onDidDispose(callback);
+    void callback;
   }
 
   setError(message: string, raw?: string, streamedText?: string): void {
     if (this.disposed) return;
-    void this.panel.webview.postMessage({ type: "error", message, raw, text: streamedText ?? "" });
+    const text = [message, raw, streamedText].filter(Boolean).join("\n\n");
+    this.panel.setError(text);
+    this.panel.setBusy(false);
   }
 
   startFixStep(step: number, total: number, findingTitle: string): void {
     if (this.disposed) return;
-    void this.panel.webview.postMessage({ type: "fixStart", step, total, findingTitle });
+    this.panel.setBusy(true);
+    this.panel.setStatus(`Apply fix (${step}/${total})`);
+    this.panel.setProgressStep(findingTitle || `Fix step ${step}`);
   }
 
   addFixLog(message: string, level: "info" | "warn" | "error" | "success" = "info"): void {
     if (this.disposed) return;
-    void this.panel.webview.postMessage({ type: "fixLog", message, level });
+    this.panel.setProgressStep(`[${level}] ${message}`);
   }
 
   showFixDiff(parts: Array<{ kind: "add" | "remove" | "same"; text: string }>): void {
     if (this.disposed) return;
-    void this.panel.webview.postMessage({ type: "fixDiff", parts });
+    this.panel.setResult({
+      remarks: "Review diff and accept or reject.",
+      displayText: "",
+      endpoint: "codeRefactor",
+      reviewMode: true,
+      diffParts: parts,
+      applyCode: "pending",
+      structuredData: {},
+    });
+    this.panel.setBusy(false);
   }
 
   showFixError(message: string): void {
     if (this.disposed) return;
-    void this.panel.webview.postMessage({ type: "fixError", message });
+    this.panel.setError(message);
+    this.panel.setBusy(false);
   }
 
   waitForFixChoice(): Promise<"accept" | "reject"> {
@@ -578,21 +723,17 @@ export class ReviewWebviewSession {
   }
 
   registerOnMessage(handler: (msg: unknown) => void): vscode.Disposable {
-    const sub = this.panel.webview.onDidReceiveMessage((msg: unknown) => {
-      const m = msg as { command?: string; value?: "accept" | "reject" };
-      if (m?.command === "choice" && (m.value === "accept" || m.value === "reject")) {
-        const r = this.choiceResolver;
-        this.choiceResolver = undefined;
-        r?.(m.value);
-      }
-      handler(msg);
-    });
-    this.panel.onDidDispose(() => sub.dispose());
-    return sub;
+    return this.panel.onMessage(handler);
   }
 
   dispose(): void {
-    this.panel.dispose();
+    this.disposed = true;
+    unregisterReviewPanel(this);
+    this.choiceResolver?.("reject");
+    while (this.subscriptions.length) {
+      const d = this.subscriptions.pop();
+      d?.dispose();
+    }
   }
 }
 
