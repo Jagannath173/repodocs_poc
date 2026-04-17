@@ -560,6 +560,8 @@ export interface ReviewPayload {
   sections?: ReviewSectionPayload[];
   /** Row indices (0-based) whose fixes were accepted and applied. */
   appliedIndices?: number[];
+  /** Stable keys for fixes already applied on this file across reruns. */
+  appliedFindingKeys?: string[];
   /** Row indices (0-based) where the user rejected the fix preview (can Retry). */
   rejectedIndices?: number[];
 }
@@ -581,6 +583,7 @@ export interface ReviewTableState {
   summary: string;
   findings: ReviewFinding[];
   appliedIndices?: number[];
+  appliedFindingKeys?: string[];
   rejectedIndices?: number[];
 }
 
@@ -598,7 +601,7 @@ export class ReviewWebviewSession {
   ) {
     void title;
     registerReviewPanel(this);
-    this.panel = new AssistantResultPanel(context, "Review");
+    this.panel = new AssistantResultPanel(context, "Review", "review");
     this.panel.setMode("codeReview");
     this.subscriptions.push(
       this.panel.onFixDecisionRequested((value) => {
@@ -615,6 +618,16 @@ export class ReviewWebviewSession {
 
   setLoading(message?: string): void {
     if (this.disposed) return;
+    this.panel.setResult({
+      remarks: "",
+      displayText: "",
+      endpoint: "codeReview",
+      reviewMode: false,
+      diffParts: [],
+      applyCode: "",
+      structuredData: {},
+    });
+    this.panel.setStreamText("");
     this.panel.setStatus(message ?? "Generating structured review…");
     this.panel.setBusy(true);
     this.panel.setProgressStep("Review started");
@@ -650,6 +663,7 @@ export class ReviewWebviewSession {
         findings: payload.findings,
         sections: payload.sections ?? [],
         appliedIndices: payload.appliedIndices ?? [],
+        appliedFindingKeys: payload.appliedFindingKeys ?? [],
         rejectedIndices: payload.rejectedIndices ?? [],
       } as unknown as Record<string, unknown>,
     });
@@ -676,6 +690,7 @@ export class ReviewWebviewSession {
       findings: stored.findings,
       sections: mappedSections,
       appliedIndices: stored.appliedIndices ?? [],
+      appliedFindingKeys: stored.appliedFindingKeys ?? [],
       rejectedIndices: stored.rejectedIndices ?? [],
     });
   }

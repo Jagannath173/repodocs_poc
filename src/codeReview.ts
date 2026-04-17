@@ -10,8 +10,7 @@ import {
   ReviewWebviewSession,
 } from "./reviewPanel";
 import { ensureCopilotSession } from "./session";
-import { getStoredReview, saveLastReview, toStoredReview } from "./applyFixes";
-import { notifyReviewUpdated } from "./reviewBridge";
+import { findAppliedIndicesByKeys, getStoredReview, makeFindingKey, saveLastReview, toStoredReview } from "./applyFixes";
 import { isFindingAlreadySatisfiedByFile } from "./reviewFilter";
 import { openAuthWebviewAndAuthenticate } from "./authPanel";
 import { renderPromptTemplate } from "./promptRenderer";
@@ -93,19 +92,10 @@ export async function runCodeReview(): Promise<void> {
 
   const documentUri = editor ? editor.document.uri.toString() : undefined;
   const panel = new ReviewWebviewSession(extensionContext, `Review: ${fileName}`, documentUri);
-
-  if (documentUri) {
-    const stored = getStoredReview();
-    if (stored?.documentUri === documentUri) {
-      const next = {
-        ...stored,
-        rejectedIndices: [] as number[],
-        appliedIndices: [] as number[],
-      };
-      await saveLastReview(next);
-      notifyReviewUpdated(next);
-    }
-  }
+  const priorStored = documentUri ? getStoredReview() : undefined;
+  const priorAppliedKeys =
+    priorStored?.documentUri === documentUri ? (priorStored?.appliedFindingKeys ?? []) : [];
+  const priorAppliedKeySet = new Set(priorAppliedKeys);
 
   panel.setLoading("Running review suite…");
   panel.registerOnMessage((msg: unknown) => {
@@ -198,17 +188,22 @@ export async function runCodeReview(): Promise<void> {
       log.debug("codeReview", "Inference complete for stage", { endpoint, assistantTextChars: assistantText.length });
       const review = parseEndpointReviewJson(assistantText, endpoint);
       const filtered = review.findings.filter((f) => !isFindingAlreadySatisfiedByFile(content, f));
-      const skipped = review.findings.length - filtered.length;
-      if (skipped > 0) {
-        panel.addReviewLog(`[${label}] Skipped ${skipped} finding(s) whose suggestions already match the file.`, "info");
+      const skippedSatisfied = review.findings.length - filtered.length;
+      if (skippedSatisfied > 0) {
+        panel.addReviewLog(`[${label}] Skipped ${skippedSatisfied} finding(s) whose suggestions already match the file.`, "info");
       }
-      if (filtered.length === 0) {
-        if (review.findings.length > 0) {
+      const unseen = filtered.filter((f) => !priorAppliedKeySet.has(makeFindingKey(f)));
+      const skippedApplied = filtered.length - unseen.length;
+      if (skippedApplied > 0) {
+        panel.addReviewLog(`[${label}] Skipped ${skippedApplied} previously applied finding(s).`, "info");
+      }
+      if (unseen.length === 0) {
+        if (review.findings.length > 0 || skippedApplied > 0) {
           panel.addReviewLog(`[${label}] No new rows — all suggestions for this stage already appear in the file.`, "info");
         }
         continue;
       }
-      const sectionFindings = filtered.map((f) => {
+      const sectionFindings = unseen.map((f) => {
         const globalIndex = combinedFindings.length;
         combinedFindings.push(f);
         return { ...f, globalIndex };
@@ -225,7 +220,8 @@ export async function runCodeReview(): Promise<void> {
         summary: `Completed ${i + 1}/${REVIEW_SEQUENCE.length} review stages.`,
         findings: combinedFindings,
         sections,
-        appliedIndices: [],
+        appliedIndices: findAppliedIndicesByKeys(combinedFindings, priorAppliedKeys),
+        appliedFindingKeys: priorAppliedKeys,
         rejectedIndices: [],
       };
       panel.setReview(stagePayload);
@@ -238,7 +234,8 @@ export async function runCodeReview(): Promise<void> {
       summary: "Combined review completed across all review endpoints.",
       findings: combinedFindings,
       sections,
-      appliedIndices: [],
+      appliedIndices: findAppliedIndicesByKeys(combinedFindings, priorAppliedKeys),
+      appliedFindingKeys: priorAppliedKeys,
       rejectedIndices: [],
     };
     log.info("codeReview", "All review stages completed", { findings: combinedFindings.length });

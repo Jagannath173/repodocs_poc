@@ -67,7 +67,11 @@ export async function runAssistantEndpoint(endpoint: AssistantEndpoint): Promise
     return;
   }
   const targetRange = editor && !editor.selection.isEmpty ? editor.selection : undefined;
-  const panel = new AssistantResultPanel(extensionContext, `Assistant: ${ASSISTANT_LABELS[endpoint]}`);
+  const panel = new AssistantResultPanel(
+    extensionContext,
+    `Assistant: ${ASSISTANT_LABELS[endpoint]}`,
+    `assistant:${endpoint}`
+  );
   panel.setMode(endpoint);
   if (endpoint === "codeGeneration") {
     panel.setBusy(false);
@@ -564,7 +568,15 @@ function resolveCodeGenDelivery(
 
 async function revealDocumentInEditor(uri: vscode.Uri): Promise<void> {
   const doc = await vscode.workspace.openTextDocument(uri);
-  await vscode.window.showTextDocument(doc, { preview: false, preserveFocus: false });
+  const preferredColumn =
+    vscode.window.visibleTextEditors[0]?.viewColumn ??
+    vscode.window.activeTextEditor?.viewColumn ??
+    vscode.ViewColumn.One;
+  await vscode.window.showTextDocument(doc, {
+    viewColumn: preferredColumn,
+    preview: false,
+    preserveFocus: false,
+  });
 }
 
 async function createGeneratedFileInWorkspace(relativePath: string, content: string): Promise<void> {
@@ -817,17 +829,78 @@ async function applyRefactorWithEditorPreview(
   const afterText = baseText.slice(0, start) + applyCode + baseText.slice(end);
 
   panel.setBusy(true);
-  panel.setStatus("Applying...");
-  panel.setProgressStep("Opening in-editor preview...");
+  panel.setStatus("Applying in current file...");
+  panel.setProgressStep("Streaming refactored lines into editor...");
   try {
-    const choice = await previewFixInEditorAndWait(doc, baseText, afterText, "Refactor preview");
+    await revealDocumentInEditor(targetUri);
+    await streamRefactorApplyInEditor(panel, targetUri, baseText, afterText, start, end, applyCode);
+    panel.setStatus("Review block-wise changes in editor and choose Accept/Reject at the bottom.");
+    panel.setProgressStep("Waiting for in-editor Accept/Reject...");
+    const latestDoc = await vscode.workspace.openTextDocument(targetUri);
+    const choice = await previewFixInEditorAndWait(latestDoc, baseText, afterText, "Refactor preview");
     if (choice === "accept") {
       panel.setStatus("Accepted and applied.");
     } else {
       panel.setStatus("Rejected — no changes applied.");
     }
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    panel.setStatus("Failed to apply refactor.");
+    panel.setError(msg);
+    void vscode.window.showErrorMessage(`Could not apply refactor: ${msg}`);
   } finally {
     panel.setBusy(false);
     panel.setProgressStep("Done.");
   }
+}
+
+async function streamRefactorApplyInEditor(
+  panel: AssistantResultPanel,
+  targetUri: vscode.Uri,
+  baseText: string,
+  afterText: string,
+  startOffset: number,
+  endOffset: number,
+  applyCode: string
+): Promise<void> {
+  const normalized = applyCode.replace(/\r\n/g, "\n");
+  const lines = normalized.split("\n");
+  const total = Math.max(lines.length, 1);
+  const batch = total > 600 ? 10 : total > 250 ? 6 : total > 120 ? 3 : 1;
+
+  for (let i = batch; i <= total; i += batch) {
+    const upto = Math.min(i, total);
+    const partial = lines.slice(0, upto).join("\n");
+    const partialText = baseText.slice(0, startOffset) + partial + baseText.slice(endOffset);
+    const partialOk = await applyFullDocumentText(targetUri, partialText);
+    if (!partialOk) {
+      throw new Error("Editor rejected a partial streaming update.");
+    }
+    panel.setProgressStep(`Applying in editor... ${upto}/${total} lines`);
+    if (upto < total) {
+      await delay(10);
+    }
+  }
+  // Ensure exact final content (also covers edge-cases around trailing newline joins).
+  const finalOk = await applyFullDocumentText(targetUri, afterText);
+  if (!finalOk) {
+    throw new Error("Editor rejected the final refactor update.");
+  }
+
+  const verifyDoc = await vscode.workspace.openTextDocument(targetUri);
+  if (verifyDoc.getText() !== afterText) {
+    throw new Error("Final editor content does not match generated refactor output.");
+  }
+}
+
+async function applyFullDocumentText(targetUri: vscode.Uri, text: string): Promise<boolean> {
+  const liveDoc = await vscode.workspace.openTextDocument(targetUri);
+  const edit = new vscode.WorkspaceEdit();
+  const fullRange = new vscode.Range(liveDoc.positionAt(0), liveDoc.positionAt(liveDoc.getText().length));
+  edit.replace(liveDoc.uri, fullRange, text);
+  return vscode.workspace.applyEdit(edit);
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }

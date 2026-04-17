@@ -17,6 +17,7 @@ Respond with ONLY valid JSON (no markdown outside JSON) in this exact shape:
 Rules:
 - "fileContent" must be the full file text after the edit, not a diff and not a fragment.
 - Preserve the file's style, imports, and formatting unless the suggestion requires changing them.
+- Follow "Additional instructions from the developer" when present.
 - Do not add commentary outside the JSON object.`;
 
 function parseFixFileContent(raw: string): string {
@@ -41,7 +42,7 @@ function buildFixPrompt(
   extraInstruction?: string
 ): string {
   const extra = extraInstruction?.trim()
-    ? `\n\nAdditional instructions from the developer: ${extraInstruction.trim()}`
+    ? `\n\nAdditional instructions from the developer (must follow these while implementing this finding): ${extraInstruction.trim()}`
     : "";
   return `File name: ${fileName}
 
@@ -52,7 +53,7 @@ ${fileContent}
 
 Review summary: ${summary}
 
-Apply ONLY the following single finding next (do not address other issues):
+Apply ONLY the following single finding next (do not address other issues unless required by the additional instructions):
 - Title: ${finding.title}
 - Severity: ${finding.severity} | Category: ${finding.category}
 - Detail: ${finding.detail}
@@ -95,6 +96,30 @@ export function getStoredReview(): StoredReview | undefined {
   return extensionContext.workspaceState.get<StoredReview>(LAST_REVIEW_STATE_KEY);
 }
 
+export function makeFindingKey(finding: ReviewFinding): string {
+  const norm = (v: string): string => v.trim().toLowerCase().replace(/\s+/g, " ");
+  return [
+    norm(finding.title || ""),
+    norm(finding.category || ""),
+    norm(finding.severity || ""),
+    norm(finding.suggestion || ""),
+  ].join("|");
+}
+
+export function findAppliedIndicesByKeys(findings: ReviewFinding[], appliedKeys: string[]): number[] {
+  if (!appliedKeys.length) {
+    return [];
+  }
+  const keySet = new Set(appliedKeys);
+  const matched: number[] = [];
+  for (let i = 0; i < findings.length; i++) {
+    if (keySet.has(makeFindingKey(findings[i]))) {
+      matched.push(i);
+    }
+  }
+  return matched;
+}
+
 const fixOperationQueues = new Map<string, Promise<void>>();
 
 /**
@@ -132,13 +157,20 @@ async function markFindingApplied(originalIndex: number): Promise<void> {
   if (!s) {
     return;
   }
+  const finding = s.findings[originalIndex];
+  const findingKey = finding ? makeFindingKey(finding) : "";
   const applied = new Set(s.appliedIndices ?? []);
   applied.add(originalIndex);
+  const appliedKeys = new Set(s.appliedFindingKeys ?? []);
+  if (findingKey) {
+    appliedKeys.add(findingKey);
+  }
   const rejected = new Set(s.rejectedIndices ?? []);
   rejected.delete(originalIndex);
   const next: StoredReview = {
     ...s,
     appliedIndices: Array.from(applied).sort((a, b) => a - b),
+    appliedFindingKeys: Array.from(appliedKeys).sort(),
     rejectedIndices: Array.from(rejected).sort((a, b) => a - b),
   };
   await saveLastReview(next);
@@ -206,6 +238,18 @@ export async function applyFixesFromReview(
     return;
   }
 
+  const persistedAppliedByKey = findAppliedIndicesByKeys(stored.findings, stored.appliedFindingKeys ?? []);
+  if (persistedAppliedByKey.length) {
+    const mergedApplied = new Set([...(stored.appliedIndices ?? []), ...persistedAppliedByKey]);
+    const nextStored: StoredReview = {
+      ...stored,
+      appliedIndices: Array.from(mergedApplied).sort((a, b) => a - b),
+    };
+    await saveLastReview(nextStored);
+    notifyReviewUpdated(nextStored);
+    stored.appliedIndices = nextStored.appliedIndices;
+  }
+
   const uri = vscode.Uri.parse(stored.documentUri);
   let doc = await vscode.workspace.openTextDocument(uri);
   let targetIndices: number[];
@@ -262,18 +306,26 @@ export async function applyFixesFromReview(
 
   const total = targetIndices.length;
   let appliedCount = 0;
+  let rejectedCount = 0;
+  let failedCount = 0;
 
   const hasQueuedWork = fixOperationQueues.has(stored.documentUri);
   if (hasQueuedWork) {
     panel.addFixLog("Another fix run is in progress for this file. Your request is queued.", "warn");
   }
 
-  const isBulkAllMode = mode === "all";
+  const isBulkRun = mode !== "one";
+  if (isBulkRun) {
+    panel.setApplyingFixAll(true);
+  }
+  if (mode === "one" && typeof targetIndices[0] === "number") {
+    panel.setApplyingFixIndex(targetIndices[0]);
+  }
 
   await runWithDocumentFixQueue(stored.documentUri, async () => {
     try {
-      if (isBulkAllMode) {
-        panel.setApplyingFixAll(true);
+      if (extra) {
+        panel.addFixLog("Applying fixes with your extra instructions.", "info");
       }
       for (let step = 0; step < targetIndices.length; step++) {
         const originalIndex = targetIndices[step];
@@ -304,10 +356,15 @@ export async function applyFixesFromReview(
         } catch (e: unknown) {
           const msg = e instanceof Error ? e.message : String(e);
           log.error("applyFixes", "Copilot request failed for fix step", { step: step + 1, error: sanitizeForLog(msg) });
-          panel.showFixError(`Copilot request failed: ${msg}`);
-          void vscode.window.showInformationMessage("Apply fixes stopped.");
+          failedCount += 1;
+          panel.addFixLog(`Step ${step + 1}/${total} failed (request): ${msg}`, "error");
           panel.setApplyingFixIndex(null);
-          return;
+          if (!isBulkRun) {
+            panel.showFixError(`Copilot request failed: ${msg}`);
+            void vscode.window.showInformationMessage("Apply fixes stopped.");
+            return;
+          }
+          continue;
         }
 
         let afterText: string;
@@ -317,19 +374,29 @@ export async function applyFixesFromReview(
         } catch (e: unknown) {
           const msg = e instanceof Error ? e.message : "Could not parse JSON.";
           log.error("applyFixes", "Could not parse fix JSON", { step: step + 1, error: sanitizeForLog(msg) });
-          panel.showFixError(`Could not parse AI response as fix JSON: ${msg}`);
-          void vscode.window.showInformationMessage("Apply fixes stopped.");
+          failedCount += 1;
+          panel.addFixLog(`Step ${step + 1}/${total} failed (parse): ${msg}`, "error");
           panel.setApplyingFixIndex(null);
-          return;
+          if (!isBulkRun) {
+            panel.showFixError(`Could not parse AI response as fix JSON: ${msg}`);
+            void vscode.window.showInformationMessage("Apply fixes stopped.");
+            return;
+          }
+          continue;
         }
 
         const previewTitle = finding.title || `Fix (${step + 1}/${total})`;
         const choice = await previewFixInEditorAndWait(doc, baseText, afterText, previewTitle);
         if (choice === "reject") {
           await markFindingRejected(originalIndex);
-          void vscode.window.showInformationMessage("Fix preview rejected. This finding is marked Rejected in Genie.");
+          rejectedCount += 1;
+          panel.addFixLog(`Step ${step + 1}/${total} rejected. Continuing with next finding.`, "warn");
           panel.setApplyingFixIndex(null);
-          return;
+          if (!isBulkRun) {
+            void vscode.window.showInformationMessage("Fix preview rejected. This finding is marked Rejected in Genie.");
+            return;
+          }
+          continue;
         }
 
         await markFindingApplied(originalIndex);
@@ -339,9 +406,15 @@ export async function applyFixesFromReview(
       }
 
       log.info("applyFixes", "Apply fixes completed", { appliedCount, total });
-      void vscode.window.showInformationMessage(
-        `Accepted and applied ${appliedCount} fix step(s). Save the file if needed (${stored.fileName}).`
-      );
+      if (isBulkRun) {
+        void vscode.window.showInformationMessage(
+          `Fix-all completed: applied ${appliedCount}/${total}, rejected ${rejectedCount}, failed ${failedCount}.`
+        );
+      } else {
+        void vscode.window.showInformationMessage(
+          `Accepted and applied ${appliedCount} fix step(s). Save the file if needed (${stored.fileName}).`
+        );
+      }
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       log.error("applyFixes", "applyFixesFromReview failed", { error: sanitizeForLog(msg) });
@@ -349,7 +422,7 @@ export async function applyFixesFromReview(
       void vscode.window.showErrorMessage(`Apply fixes: ${msg}`);
     } finally {
       panel.setApplyingFixIndex(null);
-      if (isBulkAllMode) {
+      if (isBulkRun) {
         panel.setApplyingFixAll(false);
       }
     }
@@ -364,6 +437,7 @@ export function toStoredReview(uri: vscode.Uri, fileName: string, payload: Revie
     summary: payload.summary,
     findings: payload.findings,
     appliedIndices: payload.appliedIndices ?? [],
+    appliedFindingKeys: payload.appliedFindingKeys ?? [],
     rejectedIndices: payload.rejectedIndices ?? [],
   };
 }

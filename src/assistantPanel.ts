@@ -64,8 +64,30 @@ function panelHtml(webview: vscode.Webview, nonce: string): string {
       white-space: pre-wrap;
       word-break: break-word;
     }
+    .actions-shell {
+      border: 1px solid var(--vscode-editorWidget-border);
+      border-radius: 8px;
+      overflow: hidden;
+      margin-bottom: 10px;
+      background: var(--vscode-editor-background);
+    }
+    .actions-shell-head {
+      padding: 8px 12px;
+      font-size: 0.8em;
+      text-transform: uppercase;
+      color: var(--vscode-descriptionForeground);
+      background: var(--vscode-editor-inactiveSelectionBackground);
+      border-bottom: 1px solid var(--vscode-editorWidget-border);
+    }
     .actions { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+    .actions.in-shell { padding: 10px 12px; margin-bottom: 0; }
     .actions.align-right { justify-content: flex-end; }
+    #btn-apply.is-applying {
+      cursor: wait;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+    }
     .prompt-box {
       margin-bottom: 12px;
       padding: 12px 14px;
@@ -234,6 +256,101 @@ function panelHtml(webview: vscode.Webview, nonce: string): string {
     .hidden { display: none !important; }
     .err { color: var(--vscode-errorForeground); margin-top: 8px; white-space: pre-wrap; }
     .hint.muted { font-size: 0.85em; color: var(--vscode-descriptionForeground); margin: 0 0 10px; line-height: 1.4; }
+    .review-complete-card {
+      border: 1px solid var(--vscode-editorWidget-border);
+      border-left: 4px solid var(--vscode-charts-green, #3fb950);
+      border-radius: 8px;
+      background:
+        linear-gradient(
+          135deg,
+          rgba(63, 185, 80, 0.14) 0%,
+          rgba(63, 185, 80, 0.06) 38%,
+          rgba(0, 0, 0, 0) 100%
+        ),
+        var(--vscode-editor-inactiveSelectionBackground);
+      box-shadow:
+        0 0 0 1px rgba(63, 185, 80, 0.16),
+        0 10px 24px rgba(0, 0, 0, 0.22);
+      padding: 14px 16px;
+      margin: 8px 0 10px;
+      position: relative;
+      overflow: hidden;
+    }
+    .review-complete-card::after {
+      content: "";
+      position: absolute;
+      top: -22px;
+      right: -22px;
+      width: 86px;
+      height: 86px;
+      border-radius: 50%;
+      background: radial-gradient(circle, rgba(63, 185, 80, 0.35) 0%, rgba(63, 185, 80, 0) 72%);
+      pointer-events: none;
+    }
+    .review-complete-title {
+      font-size: 1.02em;
+      font-weight: 700;
+      color: var(--vscode-charts-green, #3fb950);
+      margin: 0 0 6px;
+      letter-spacing: 0.01em;
+      text-shadow: 0 0 10px rgba(63, 185, 80, 0.2);
+    }
+    .review-complete-sub {
+      font-size: 0.88em;
+      color: var(--vscode-descriptionForeground);
+      margin: 0;
+      opacity: 0.95;
+    }
+    .review-complete-metrics {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-top: 11px;
+    }
+    .review-complete-chip {
+      display: inline-flex;
+      align-items: center;
+      padding: 3px 10px;
+      border-radius: 999px;
+      font-size: 0.78em;
+      font-weight: 600;
+      letter-spacing: 0.01em;
+      border: 1px solid rgba(63, 185, 80, 0.3);
+      background: rgba(63, 185, 80, 0.1);
+      color: var(--vscode-foreground);
+    }
+    .review-complete-only-wrap {
+      min-height: 34vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 6vh 12px;
+      box-sizing: border-box;
+    }
+    .review-complete-only-wrap .review-complete-card {
+      width: 100%;
+      max-width: 720px;
+      margin: 0 auto;
+    }
+    .review-complete-only-text {
+      font-size: 1.05em;
+      font-weight: 700;
+      color: var(--vscode-charts-green, #3fb950);
+      text-align: center;
+      letter-spacing: 0.01em;
+    }
+    #rendered-panel.complete-only {
+      border: none;
+      background: transparent;
+    }
+    #rendered-panel.complete-only > summary {
+      display: none;
+    }
+    #rendered-panel.complete-only #out {
+      padding: 0;
+      gap: 0;
+      background: transparent;
+    }
     .session-tabs {
       display: flex;
       gap: 6px;
@@ -441,9 +558,11 @@ function panelHtml(webview: vscode.Webview, nonce: string): string {
   </div>
   <div id="step" class="step-line hidden"></div>
   <div id="meta" class="meta hidden"></div>
-  <div id="actions-top-anchor"></div>
-  <div id="actions" class="actions hidden">
-    <button id="btn-apply" class="primary" type="button" disabled>Apply to current file</button>
+  <div id="actions-shell" class="actions-shell hidden">
+    <div class="actions-shell-head">Actions</div>
+  </div>
+  <div id="actions" class="actions in-shell hidden">
+    <button id="btn-apply" class="primary" type="button" disabled>Apply</button>
     <button id="btn-refine" class="secondary hidden" type="button">Refine output...</button>
     <button id="btn-accept" class="primary hidden" type="button" disabled>✓ Accept</button>
     <button id="btn-reject" class="secondary hidden" type="button" disabled>✕ Reject</button>
@@ -482,6 +601,7 @@ function panelHtml(webview: vscode.Webview, nonce: string): string {
     </summary>
     <div id="out" class="content-wrap"></div>
   </details>
+  <div id="refactor-actions-anchor"></div>
   <div id="generated-code-panel" class="panel hidden">
     <div class="head">Generated code</div>
     <div id="generated-picker" class="generated-picker hidden">
@@ -490,7 +610,6 @@ function panelHtml(webview: vscode.Webview, nonce: string): string {
     </div>
     <pre id="generated-code" class="generated-code-pre"></pre>
   </div>
-  <div id="actions-bottom-anchor"></div>
   <div id="err" class="err"></div>
   <script nonce="${nonce}">
 (function () {
@@ -539,18 +658,36 @@ function panelHtml(webview: vscode.Webview, nonce: string): string {
         authCode: "",
         fixApplyingIndex: null,
         fixApplyingAll: false,
+        applyingCurrent: false,
       };
     }
 
     function clearEl(el) {
       while (el.firstChild) el.removeChild(el.firstChild);
     }
+    function formatHeadingLabel(text) {
+      var raw = text == null ? "" : String(text);
+      var normalized = raw
+        .replace(/[_-]+/g, " ")
+        .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+        .replace(/\s+/g, " ")
+        .trim();
+      if (!normalized) return "";
+      return normalized
+        .split(" ")
+        .map(function (word) {
+          if (!word) return "";
+          if (/^[A-Z0-9]{2,5}$/.test(word)) return word;
+          return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
+        })
+        .join(" ");
+    }
     function addParagraph(root, title, text) {
       if (!text) return;
       var sec = document.createElement("section");
       sec.className = "section";
       var h = document.createElement("h3");
-      h.textContent = title;
+      h.textContent = formatHeadingLabel(title);
       var body = document.createElement("div");
       body.className = "body";
       body.textContent = String(text);
@@ -567,7 +704,7 @@ function panelHtml(webview: vscode.Webview, nonce: string): string {
       var sec = document.createElement("section");
       sec.className = "section";
       var h = document.createElement("h3");
-      h.textContent = title;
+      h.textContent = formatHeadingLabel(title);
       sec.appendChild(h);
       var body = document.createElement("div");
       body.className = "body";
@@ -576,7 +713,7 @@ function panelHtml(webview: vscode.Webview, nonce: string): string {
       var trh = document.createElement("tr");
       headers.forEach(function (header) {
         var th = document.createElement("th");
-        th.textContent = header;
+        th.textContent = formatHeadingLabel(header);
         trh.appendChild(th);
       });
       thead.appendChild(trh);
@@ -668,6 +805,38 @@ function panelHtml(webview: vscode.Webview, nonce: string): string {
       if (x === "low") return "sev-low";
       return "sev-info";
     }
+    function isReviewCaughtUpOnly(view) {
+      if (!view || typeof view !== "object") {
+        return false;
+      }
+      var applied = Array.isArray(view.appliedIndices) ? view.appliedIndices : [];
+      var sections = Array.isArray(view.sections) ? view.sections : [];
+      var totalFindings = Array.isArray(view.findings) ? view.findings.length : 0;
+      if (totalFindings > 0) {
+        return false;
+      }
+      if (sections.length) {
+        for (var si = 0; si < sections.length; si++) {
+          var sec = sections[si];
+          var findings = sec && Array.isArray(sec.findings) ? sec.findings : [];
+          for (var fi = 0; fi < findings.length; fi++) {
+            var f = findings[fi];
+            var idx = typeof f.globalIndex === "number" ? f.globalIndex : fi;
+            if (applied.indexOf(idx) < 0) {
+              return false;
+            }
+          }
+        }
+        return true;
+      }
+      var flatFindings = Array.isArray(view.findings) ? view.findings : [];
+      for (var i = 0; i < flatFindings.length; i++) {
+        if (applied.indexOf(i) < 0) {
+          return false;
+        }
+      }
+      return true;
+    }
     function renderCodeReview(root, view, fallbackText, session) {
       if (!view || typeof view !== "object") {
         return;
@@ -677,6 +846,48 @@ function panelHtml(webview: vscode.Webview, nonce: string): string {
       var applyingIndex = session && session.fixApplyingIndex != null ? session.fixApplyingIndex : null;
       var applyingAll = !!(session && session.fixApplyingAll);
       var fixRunInProgress = applyingAll || applyingIndex !== null;
+      if (isReviewCaughtUpOnly(view)) {
+        clearEl(root);
+        var appliedOnly = Array.isArray(applied) ? applied.length : 0;
+        var rejectedOnly = Array.isArray(rejected) ? rejected.length : 0;
+        var totalOnly = Array.isArray(view.findings) ? view.findings.length : appliedOnly + rejectedOnly;
+        var pendingOnly = Math.max(0, totalOnly - appliedOnly - rejectedOnly);
+
+        var onlyWrap = document.createElement("div");
+        onlyWrap.className = "review-complete-only-wrap";
+
+        var doneCard = document.createElement("div");
+        doneCard.className = "review-complete-card";
+
+        var doneTitle = document.createElement("p");
+        doneTitle.className = "review-complete-title";
+        doneTitle.textContent = "All fixes are caught up for this file.";
+        doneCard.appendChild(doneTitle);
+
+        var doneSub = document.createElement("p");
+        doneSub.className = "review-complete-sub";
+        doneSub.textContent = "Accepted fixes are hidden to keep this view focused and fast.";
+        doneCard.appendChild(doneSub);
+
+        var chips = document.createElement("div");
+        chips.className = "review-complete-metrics";
+        [
+          "Total: " + totalOnly,
+          "Applied: " + appliedOnly,
+          "Rejected: " + rejectedOnly,
+          "Pending: " + pendingOnly
+        ].forEach(function (label) {
+          var chip = document.createElement("span");
+          chip.className = "review-complete-chip";
+          chip.textContent = label;
+          chips.appendChild(chip);
+        });
+        doneCard.appendChild(chips);
+
+        onlyWrap.appendChild(doneCard);
+        root.appendChild(onlyWrap);
+        return;
+      }
 
       var toolbar = document.createElement("div");
       toolbar.className = "review-fix-toolbar";
@@ -792,7 +1003,7 @@ function panelHtml(webview: vscode.Webview, nonce: string): string {
           if (isApplied) {
             var spA = document.createElement("span");
             spA.className = "review-status-accepted";
-            spA.textContent = "Accepted";
+            spA.textContent = "Applied";
             tdFix.appendChild(spA);
           } else if (isRejected) {
             var spR = document.createElement("span");
@@ -803,10 +1014,8 @@ function panelHtml(webview: vscode.Webview, nonce: string): string {
             var fixBtn = document.createElement("button");
             fixBtn.type = "button";
             fixBtn.className = "primary review-fix-btn";
-            var showApplying = applyingIndex === globalIndex;
-            var fixRowLocked =
-              (applyingIndex !== null && applyingIndex !== globalIndex) ||
-              (applyingAll && applyingIndex === null);
+            var showApplying = applyingAll || applyingIndex === globalIndex;
+            var fixRowLocked = applyingAll || (applyingIndex !== null && applyingIndex !== globalIndex);
             if (showApplying) {
               fixBtn.className = "primary review-fix-btn is-applying";
               fixBtn.disabled = true;
@@ -869,10 +1078,43 @@ function panelHtml(webview: vscode.Webview, nonce: string): string {
       }
 
       if (!root.querySelector(".review-findings-table")) {
-        var empty = document.createElement("p");
-        empty.className = "hint muted";
-        empty.textContent = "No open issues — everything is addressed or the review was empty.";
-        root.appendChild(empty);
+        var totalFindings = Array.isArray(view.findings) ? view.findings.length : 0;
+        var appliedCount = Array.isArray(applied) ? applied.length : 0;
+        var rejectedCount = Array.isArray(rejected) ? rejected.length : 0;
+        var pendingCount = Math.max(0, totalFindings - appliedCount - rejectedCount);
+
+        var doneCard = document.createElement("div");
+        doneCard.className = "review-complete-card";
+
+        var doneTitle = document.createElement("p");
+        doneTitle.className = "review-complete-title";
+        doneTitle.textContent = totalFindings > 0
+          ? "All fixes are caught up for this file."
+          : "No findings detected in this review.";
+        doneCard.appendChild(doneTitle);
+
+        var doneSub = document.createElement("p");
+        doneSub.className = "review-complete-sub";
+        doneSub.textContent = totalFindings > 0
+          ? "Accepted fixes are hidden to keep this view focused and fast."
+          : "Nothing to apply right now.";
+        doneCard.appendChild(doneSub);
+
+        var chips = document.createElement("div");
+        chips.className = "review-complete-metrics";
+        [
+          "Total: " + totalFindings,
+          "Applied: " + appliedCount,
+          "Rejected: " + rejectedCount,
+          "Pending: " + pendingCount
+        ].forEach(function (label) {
+          var chip = document.createElement("span");
+          chip.className = "review-complete-chip";
+          chip.textContent = label;
+          chips.appendChild(chip);
+        });
+        doneCard.appendChild(chips);
+        root.appendChild(doneCard);
       }
     }
     function renderDiff(parts) {
@@ -942,6 +1184,7 @@ function panelHtml(webview: vscode.Webview, nonce: string): string {
       document.getElementById("status").textContent = "";
       document.getElementById("root").classList.remove("busy");
       document.getElementById("step").classList.add("hidden");
+      document.getElementById("actions-shell").classList.add("hidden");
       document.getElementById("actions").classList.add("hidden");
       document.getElementById("stream-wrap").classList.add("hidden");
       document.getElementById("diff-panel").classList.add("hidden");
@@ -966,6 +1209,7 @@ function panelHtml(webview: vscode.Webview, nonce: string): string {
     function renderSession() {
       var s = sessions[activeSessionId];
       if (!s) return;
+      var reviewCaughtUpOnly = s.endpoint === "codeReview" && isReviewCaughtUpOnly(s.structuredData);
       document.getElementById("title").textContent = s.title || "Genie";
       var promptBox = document.getElementById("prompt-box");
       var promptInput = document.getElementById("prompt-input");
@@ -999,12 +1243,17 @@ function panelHtml(webview: vscode.Webview, nonce: string): string {
       }
       var hasAuthData = s.endpoint === "authenticate" && (s.authUrl || s.authCode);
       var statusEl = document.getElementById("status");
-      statusEl.textContent = hasAuthData ? "" : (s.status || "");
+      var statusRow = statusEl ? statusEl.parentElement : null;
+      statusEl.textContent = reviewCaughtUpOnly || hasAuthData ? "" : (s.status || "");
+      if (statusRow) {
+        if (reviewCaughtUpOnly) statusRow.classList.add("hidden");
+        else statusRow.classList.remove("hidden");
+      }
       var root = document.getElementById("root");
       if (s.busy) root.classList.add("busy"); else root.classList.remove("busy");
       var step = document.getElementById("step");
       var authWaitEl = document.getElementById("auth-wait");
-      if (s.step) {
+      if (!reviewCaughtUpOnly && s.step) {
         step.textContent = "Step: " + s.step;
         if (!hasAuthData) {
           step.classList.remove("hidden");
@@ -1016,7 +1265,7 @@ function panelHtml(webview: vscode.Webview, nonce: string): string {
       }
       var sw = document.getElementById("stream-wrap");
       var st = document.getElementById("stream");
-      if (s.streamText) {
+      if (!reviewCaughtUpOnly && s.streamText) {
         sw.classList.remove("hidden");
         st.textContent = s.streamText;
         if (s.busy) sw.classList.add("streaming"); else sw.classList.remove("streaming");
@@ -1027,20 +1276,37 @@ function panelHtml(webview: vscode.Webview, nonce: string): string {
         sw.classList.remove("streaming");
       }
       var actions = document.getElementById("actions");
-      var actionsTopAnchor = document.getElementById("actions-top-anchor");
-      var actionsBottomAnchor = document.getElementById("actions-bottom-anchor");
-      if (s.endpoint === "codeRefactor" && actionsBottomAnchor && actions && actions.parentNode !== actionsBottomAnchor) {
-        actionsBottomAnchor.appendChild(actions);
-      } else if (s.endpoint !== "codeRefactor" && actionsTopAnchor && actions && actions.parentNode !== actionsTopAnchor) {
-        actionsTopAnchor.appendChild(actions);
+      var actionsShell = document.getElementById("actions-shell");
+      var refactorActionsAnchor = document.getElementById("refactor-actions-anchor");
+      if (s.endpoint === "codeRefactor") {
+        actionsShell.classList.add("hidden");
+        actions.classList.remove("in-shell");
+        actions.classList.add("align-right");
+        if (refactorActionsAnchor && actions.parentNode !== refactorActionsAnchor) {
+          refactorActionsAnchor.appendChild(actions);
+        }
+      } else {
+        actions.classList.remove("align-right");
+        actions.classList.add("in-shell");
+        if (actions.parentNode !== actionsShell) {
+          actionsShell.appendChild(actions);
+        }
+        actionsShell.classList.remove("hidden");
       }
       actions.classList.remove("hidden");
-      actions.classList.remove("align-right");
       var btnApply = document.getElementById("btn-apply");
       var btnRefine = document.getElementById("btn-refine");
       var btnAccept = document.getElementById("btn-accept");
       var btnReject = document.getElementById("btn-reject");
-      if (s.reviewMode) {
+      if (reviewCaughtUpOnly) {
+        actionsShell.classList.add("hidden");
+        actions.classList.add("hidden");
+        btnApply.classList.add("hidden");
+        btnRefine.classList.add("hidden");
+        btnAccept.classList.add("hidden");
+        btnReject.classList.add("hidden");
+        setDecisionButtons(false);
+      } else if (s.reviewMode) {
         btnApply.classList.add("hidden");
         if (s.endpoint === "codeGeneration" || s.endpoint === "codeRefactor") {
           btnRefine.classList.remove("hidden");
@@ -1056,19 +1322,27 @@ function panelHtml(webview: vscode.Webview, nonce: string): string {
       } else {
         var showApply = !!s.hasCode && !(s.endpoint === "codeRefactor" && (s.step || "").toLowerCase().indexOf("waiting for your prompt") >= 0);
         if (showApply) btnApply.classList.remove("hidden"); else btnApply.classList.add("hidden");
-        if (s.endpoint === "codeRefactor" && showApply) {
-          actions.classList.add("align-right");
-        }
         if (s.endpoint === "codeGeneration" || s.endpoint === "codeRefactor") btnRefine.classList.remove("hidden");
         else btnRefine.classList.add("hidden");
         btnAccept.textContent = "✓ Accept";
         btnAccept.classList.add("hidden");
         btnReject.classList.add("hidden");
-        btnApply.disabled = !s.hasCode;
+        btnApply.disabled = !s.hasCode || !!s.applyingCurrent || !!s.busy;
+        if (s.applyingCurrent) {
+          btnApply.classList.add("is-applying");
+          btnApply.innerHTML = "";
+          var applySpinner = document.createElement("span");
+          applySpinner.className = "spinner";
+          btnApply.appendChild(applySpinner);
+          btnApply.appendChild(document.createTextNode(" Applying..."));
+        } else {
+          btnApply.classList.remove("is-applying");
+          btnApply.textContent = "Apply";
+        }
         setDecisionButtons(false);
       }
       var diffPanel = document.getElementById("diff-panel");
-      if (s.reviewMode && renderDiff(s.diffParts)) {
+      if (!reviewCaughtUpOnly && s.reviewMode && renderDiff(s.diffParts)) {
         diffPanel.classList.remove("hidden");
         diffPanel.open = true;
       } else {
@@ -1077,7 +1351,7 @@ function panelHtml(webview: vscode.Webview, nonce: string): string {
       }
       var meta = document.getElementById("meta");
       meta.innerHTML = "";
-      if (s.remarks && s.endpoint !== "codeGeneration") {
+      if (!reviewCaughtUpOnly && s.remarks && s.endpoint !== "codeGeneration") {
         var r = document.createElement("div");
         r.className = "remarks";
         r.textContent = s.remarks;
@@ -1094,11 +1368,17 @@ function panelHtml(webview: vscode.Webview, nonce: string): string {
           (s.structuredData && typeof s.structuredData === "object" && Object.keys(s.structuredData).length));
       if (hasExplanationContent) {
         renderedPanel.classList.remove("hidden");
+        if (reviewCaughtUpOnly) {
+          renderedPanel.classList.add("complete-only");
+        } else {
+          renderedPanel.classList.remove("complete-only");
+        }
         renderedPanel.open = s.explainOpen !== false;
         syncExplanationToggleIcon();
         renderStructured(out, s.structuredData, s.displayText || "", s.endpoint || "", s);
       } else {
         renderedPanel.classList.add("hidden");
+        renderedPanel.classList.remove("complete-only");
         clearEl(out);
       }
       var gcp = document.getElementById("generated-code-panel");
@@ -1149,6 +1429,27 @@ function panelHtml(webview: vscode.Webview, nonce: string): string {
       document.getElementById("err").textContent = s.err || "";
     }
 
+    function focusPromptComposerAndScrollTop() {
+      setTimeout(function () {
+        var docEl = document.scrollingElement || document.documentElement || document.body;
+        var promptBox = document.getElementById("prompt-box");
+        var promptInput = document.getElementById("prompt-input");
+        if (docEl) {
+          docEl.scrollTop = 0;
+        }
+        if (promptBox) {
+          promptBox.classList.remove("hidden");
+          promptBox.scrollIntoView({ behavior: "smooth", block: "start" });
+        }
+        window.scrollTo({ top: 0, behavior: "smooth" });
+        if (promptInput && !promptInput.disabled) {
+          promptInput.value = "";
+          promptInput.disabled = false;
+          promptInput.focus();
+          promptInput.setSelectionRange(0, 0);
+        }
+      }, 10);
+    }
     document.getElementById("btn-refine").addEventListener("click", function () {
       if (!activeSessionId) return;
       var s = sessions[activeSessionId];
@@ -1157,13 +1458,17 @@ function panelHtml(webview: vscode.Webview, nonce: string): string {
         // Reuse the in-panel prompt box for refinement instead of popup input.
         s.refinePromptMode = true;
         s.userQuestion = "";
+        s.err = "";
         renderSession();
+        focusPromptComposerAndScrollTop();
       }
       vscode.postMessage({ command: "refineRequest", sessionId: activeSessionId });
     });
     document.getElementById("btn-apply").addEventListener("click", function () {
       var s = sessions[activeSessionId];
       if (!s || !s.hasCode) return;
+      s.applyingCurrent = true;
+      renderSession();
       vscode.postMessage({ command: "applyCurrent", sessionId: activeSessionId });
     });
     document.getElementById("btn-accept").addEventListener("click", function () {
@@ -1248,6 +1553,7 @@ function panelHtml(webview: vscode.Webview, nonce: string): string {
       if (m.type === "mode") s.endpoint = m.endpoint || s.endpoint;
       if (m.type === "status") s.status = m.text || "";
       if (m.type === "busy") s.busy = !!m.value;
+      if (m.type === "busy" && !m.value) s.applyingCurrent = false;
       if (m.type === "step") s.step = m.text || "";
       if (m.type === "stream") s.streamText = m.text || "";
       if (m.type === "userQuestion") s.userQuestion = m.text != null ? String(m.text) : "";
@@ -1263,13 +1569,17 @@ function panelHtml(webview: vscode.Webview, nonce: string): string {
         s.diffParts = Array.isArray(m.diffParts) ? m.diffParts : [];
         s.refinePromptMode = false;
         s.streamOpen = false;
+        s.applyingCurrent = false;
       }
       if (m.type === "authData") {
         s.endpoint = "authenticate";
         s.authUrl = m.url != null ? String(m.url) : "";
         s.authCode = m.code != null ? String(m.code) : "";
       }
-      if (m.type === "error") s.err = m.text || "";
+      if (m.type === "error") {
+        s.err = m.text || "";
+        s.applyingCurrent = false;
+      }
       if (m.type === "fixApplying") {
         s.fixApplyingIndex = m.index === null || m.index === undefined ? null : m.index;
       }
@@ -1416,10 +1726,13 @@ class GeniePanelHost {
   }
 
   createSession(sessionId: string, title: string): void {
-    if (!this.listeners.has(sessionId)) {
-      this.listeners.set(sessionId, { apply: new Set(), refine: new Set(), fixDecision: new Set(), messages: new Set() });
-    }
+    // Reset handlers for idempotent session reuse by action key.
+    this.listeners.set(sessionId, { apply: new Set(), refine: new Set(), fixDecision: new Set(), messages: new Set() });
     void this.postMessage({ type: "createSession", sessionId, title });
+  }
+
+  hasSession(sessionId: string): boolean {
+    return this.listeners.has(sessionId);
   }
 
   onApplyRequested(sessionId: string, handler: () => void): vscode.Disposable {
@@ -1503,9 +1816,12 @@ class GeniePanelHost {
 export class AssistantResultPanel {
   private readonly host: GeniePanelHost;
   private readonly sessionId: string;
-  constructor(context: vscode.ExtensionContext, title: string) {
+  constructor(context: vscode.ExtensionContext, title: string, stableSessionKey?: string) {
     this.host = GeniePanelHost.getOrCreate(context);
-    this.sessionId = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    const normalizedKey = stableSessionKey?.trim();
+    this.sessionId = normalizedKey
+      ? `stable:${normalizedKey.replace(/[^a-zA-Z0-9:_-]/g, "_")}`
+      : `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
     this.host.createSession(this.sessionId, title);
   }
 

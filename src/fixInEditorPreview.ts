@@ -343,7 +343,6 @@ export async function previewFixInEditorAndWait(
   }
 
   const decisions = chunks.map(() => true); // default: accept all chunks
-  const chunkLensDismissed = chunks.map(() => false);
 
   const mergeParts = diffLines(baseText, afterText) as unknown as DiffPart[];
 
@@ -409,18 +408,6 @@ export async function previewFixInEditorAndWait(
     cleanup();
   };
 
-  const tryFinalizeAfterChunkAction = (): void => {
-    if (chunks.length === 1) {
-      finalizePreviewChoice(decisions[0] ? "accept" : "reject");
-      return;
-    }
-    if (!chunkLensDismissed.every(Boolean)) {
-      return;
-    }
-    const merged = normalizeReviewText(buildCurrentMergedText());
-    finalizePreviewChoice(merged === baseNorm ? "reject" : "accept");
-  };
-
   const codeLensChangeEmitter = new vscode.EventEmitter<void>();
 
   const refreshLenses = (): void => {
@@ -444,11 +431,9 @@ export async function previewFixInEditorAndWait(
         );
         return;
       }
-      chunkLensDismissed[chunkId] = true;
       updateDecorations();
       codeLensChangeEmitter.fire();
       refreshLenses();
-      tryFinalizeAfterChunkAction();
     },
     rejectChunk: async (chunkId: number) => {
       if (resolved) return;
@@ -461,11 +446,9 @@ export async function previewFixInEditorAndWait(
         );
         return;
       }
-      chunkLensDismissed[chunkId] = true;
       updateDecorations();
       codeLensChangeEmitter.fire();
       refreshLenses();
-      tryFinalizeAfterChunkAction();
     },
     acceptAll: async () => {
       if (resolved) return;
@@ -512,9 +495,6 @@ export async function previewFixInEditorAndWait(
       const rangeMap = getChunkMergedLineRanges(mergeParts, chunks, decisions);
       const lenses: vscode.CodeLens[] = [];
       for (const c of chunks) {
-        if (chunkLensDismissed[c.id]) {
-          continue;
-        }
         const r = rangeMap.get(c.id);
         const lensLine =
           r && r.endLineExclusive > r.startLine
@@ -540,24 +520,22 @@ export async function previewFixInEditorAndWait(
         );
       }
 
-      if (chunks.length > 1) {
-        const bottomLine = Math.max(0, document.lineCount - 1);
-        const bottomRange = new vscode.Range(new vscode.Position(bottomLine, 0), new vscode.Position(bottomLine, 0));
-        lenses.push(
-          new vscode.CodeLens(bottomRange, {
-            title: "✅ Accept All Changes",
-            command: CMD_ACCEPT_ALL,
-            arguments: [],
-          })
-        );
-        lenses.push(
-          new vscode.CodeLens(bottomRange, {
-            title: "❌ Reject All Changes",
-            command: CMD_REJECT_ALL,
-            arguments: [],
-          })
-        );
-      }
+      const bottomLine = Math.max(0, document.lineCount - 1);
+      const bottomRange = new vscode.Range(new vscode.Position(bottomLine, 0), new vscode.Position(bottomLine, 0));
+      lenses.push(
+        new vscode.CodeLens(bottomRange, {
+          title: "✅ Accept All Changes",
+          command: CMD_ACCEPT_ALL,
+          arguments: [],
+        })
+      );
+      lenses.push(
+        new vscode.CodeLens(bottomRange, {
+          title: "❌ Reject All Changes",
+          command: CMD_REJECT_ALL,
+          arguments: [],
+        })
+      );
       return lenses;
     }
   }
@@ -580,10 +558,14 @@ export async function previewFixInEditorAndWait(
   cleanupCallbacks.push(() => docChangeSub.dispose());
 
   // Reveal the target file so the lenses are visible.
-  const activeViewColumn = vscode.window.activeTextEditor?.viewColumn ?? vscode.ViewColumn.Active;
   const existingEditor = vscode.window.visibleTextEditors.find((e) => e.document.uri.toString() === baseDoc.uri.toString());
+  const preferredColumn =
+    existingEditor?.viewColumn ??
+    vscode.window.visibleTextEditors[0]?.viewColumn ??
+    vscode.window.activeTextEditor?.viewColumn ??
+    vscode.ViewColumn.One;
   await vscode.window.showTextDocument(baseDoc.uri, {
-    viewColumn: existingEditor ? existingEditor.viewColumn : activeViewColumn,
+    viewColumn: preferredColumn,
     preview: false,
     preserveFocus: false,
   });

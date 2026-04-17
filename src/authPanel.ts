@@ -143,7 +143,7 @@ export function openAuthWebviewAndAuthenticate(context: vscode.ExtensionContext)
   log.info("auth", "Opening Copilot sign-in webview");
   return new Promise((resolve) => {
     let finished = false;
-    const panel = new AssistantResultPanel(context, "Authenticate");
+    const panel = new AssistantResultPanel(context, "Authenticate", "authenticate");
     panel.setMode("authenticate");
     panel.setBusy(true);
     panel.setStatus("Starting sign-in...");
