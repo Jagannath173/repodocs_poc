@@ -592,6 +592,8 @@ export class ReviewWebviewSession {
   private disposed = false;
   private choiceResolver?: (v: "accept" | "reject") => void;
   private latestSections: ReviewSectionPayload[] = [];
+  /** Preserved so showFixDiff does not wipe applied/rejected indices in the Genie UI. */
+  private lastReviewStructuredData: Record<string, unknown> | undefined;
   private readonly subscriptions: vscode.Disposable[] = [];
 
   constructor(
@@ -618,18 +620,10 @@ export class ReviewWebviewSession {
 
   setLoading(message?: string): void {
     if (this.disposed) return;
-    this.panel.setResult({
-      remarks: "",
-      displayText: "",
-      endpoint: "codeReview",
-      reviewMode: false,
-      diffParts: [],
-      applyCode: "",
-      structuredData: {},
-    });
-    this.panel.setStreamText("");
-    this.panel.setStatus(message ?? "Generating structured review…");
     this.panel.setBusy(true);
+    this.panel.setStreamText("");
+    this.panel.setStreamLive(true);
+    this.panel.setStatus(message ?? "Generating structured review…");
     this.panel.setProgressStep("Review started");
   }
 
@@ -641,6 +635,16 @@ export class ReviewWebviewSession {
   setReviewStream(text: string): void {
     if (this.disposed) return;
     this.panel.setStreamText(text);
+    if (text.trim().length > 0) {
+      this.panel.setStreamLive(true);
+    }
+  }
+
+  /** Clear buffer and show “waiting for tokens” before each review stage streams. */
+  beginReviewStreamStage(): void {
+    if (this.disposed) return;
+    this.panel.setStreamText("");
+    this.panel.setStreamLive(true);
   }
 
   setReview(payload: ReviewPayload): void {
@@ -651,6 +655,17 @@ export class ReviewWebviewSession {
         return `${i + 1}. [${f.severity || "info"}] ${f.title || "Issue"}\nCategory: ${f.category || "-"}\nDetail: ${f.detail || "-"}\nSuggestion: ${f.suggestion || "-"}`;
       })
       .join("\n\n");
+    const structuredData = {
+      summary: payload.summary,
+      findings: payload.findings,
+      sections: payload.sections ?? [],
+      appliedIndices: payload.appliedIndices ?? [],
+      appliedFindingKeys: payload.appliedFindingKeys ?? [],
+      rejectedIndices: payload.rejectedIndices ?? [],
+    } as unknown as Record<string, unknown>;
+    this.lastReviewStructuredData = structuredData;
+    this.panel.setStreamText("");
+    this.panel.setStreamLive(false);
     this.panel.setResult({
       remarks: payload.summary || "Review completed.",
       displayText: formattedFindings || "No findings.",
@@ -658,14 +673,7 @@ export class ReviewWebviewSession {
       reviewMode: false,
       diffParts: [],
       applyCode: "",
-      structuredData: {
-        summary: payload.summary,
-        findings: payload.findings,
-        sections: payload.sections ?? [],
-        appliedIndices: payload.appliedIndices ?? [],
-        appliedFindingKeys: payload.appliedFindingKeys ?? [],
-        rejectedIndices: payload.rejectedIndices ?? [],
-      } as unknown as Record<string, unknown>,
+      structuredData,
     });
     this.panel.setStatus("Review completed.");
     this.panel.setBusy(false);
@@ -702,6 +710,8 @@ export class ReviewWebviewSession {
   setError(message: string, raw?: string, streamedText?: string): void {
     if (this.disposed) return;
     const text = [message, raw, streamedText].filter(Boolean).join("\n\n");
+    this.panel.setStreamText("");
+    this.panel.setStreamLive(false);
     this.panel.setError(text);
     this.panel.setBusy(false);
   }
@@ -727,7 +737,7 @@ export class ReviewWebviewSession {
       reviewMode: true,
       diffParts: parts,
       applyCode: "pending",
-      structuredData: {},
+      structuredData: this.lastReviewStructuredData ?? {},
     });
     this.panel.setBusy(false);
   }

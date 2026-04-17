@@ -3,7 +3,17 @@ import { diffLines } from "diff";
 
 export type FixInEditorChoice = "accept" | "reject";
 
-/** CodeLens invokes these command ids (declared in package.json) so chunk actions work in all hosts. */
+/** Always append exactly two newlines during preview so the last buffer line is reserved for whole-file CodeLens (strip this suffix for diff highlighting). */
+function appendFixPreviewPad(merged: string): string {
+  return merged.replace(/\r\n/g, "\n") + "\n\n";
+}
+
+function stripFixPreviewPad(docText: string): string {
+  const t = docText.replace(/\r\n/g, "\n");
+  return t.endsWith("\n\n") ? t.slice(0, -2) : t;
+}
+
+/** CodeLens uses these ids (declared in package.json) with `arguments: [chunkIndex]`. */
 const CMD_ACCEPT_CHUNK = "codeReview.fixPreview.acceptChunk";
 const CMD_REJECT_CHUNK = "codeReview.fixPreview.rejectChunk";
 const CMD_ACCEPT_ALL = "codeReview.fixPreview.acceptAllChanges";
@@ -15,6 +25,8 @@ type FixPreviewSessionHandlers = {
   acceptAll: () => Promise<void>;
   rejectAll: () => Promise<void>;
   getChunkCount: () => number;
+  /** Populated on each CodeLens refresh: map editor line → chunk id when args are missing. */
+  getChunkIdForLine: (line: number) => number | undefined;
 };
 
 let activeFixPreviewSession: FixPreviewSessionHandlers | undefined;
@@ -37,6 +49,22 @@ function coerceChunkId(raw: unknown): number | undefined {
   return undefined;
 }
 
+/** Some hosts omit or nest CodeLens `arguments`; pull the first chunk id from any depth. */
+function extractChunkIdFromArgs(args: unknown[]): number | undefined {
+  const scan: unknown[] = [...args];
+  while (scan.length) {
+    const v = scan.shift();
+    const id = coerceChunkId(v);
+    if (id !== undefined) {
+      return id;
+    }
+    if (Array.isArray(v)) {
+      scan.push(...v);
+    }
+  }
+  return undefined;
+}
+
 /**
  * Register once from extension activate. Preview sessions assign `activeFixPreviewSession` while open.
  */
@@ -52,7 +80,11 @@ export function registerFixPreviewCommands(context: vscode.ExtensionContext): vo
         return;
       }
       const flat = flattenArgs(args);
-      let id = coerceChunkId(flat[0]);
+      let id = extractChunkIdFromArgs(flat) ?? extractChunkIdFromArgs(args);
+      const editor = vscode.window.activeTextEditor;
+      if (id === undefined && editor) {
+        id = s.getChunkIdForLine(editor.selection.active.line);
+      }
       if (id === undefined && n === 1) {
         id = 0;
       }
@@ -74,7 +106,11 @@ export function registerFixPreviewCommands(context: vscode.ExtensionContext): vo
         return;
       }
       const flat = flattenArgs(args);
-      let id = coerceChunkId(flat[0]);
+      let id = extractChunkIdFromArgs(flat) ?? extractChunkIdFromArgs(args);
+      const editor = vscode.window.activeTextEditor;
+      if (id === undefined && editor) {
+        id = s.getChunkIdForLine(editor.selection.active.line);
+      }
       if (id === undefined && n === 1) {
         id = 0;
       }
@@ -93,6 +129,15 @@ export function registerFixPreviewCommands(context: vscode.ExtensionContext): vo
       await activeFixPreviewSession?.rejectAll();
     })
   );
+
+  /** Single provider for all sessions — avoids stacked duplicate CodeLens when preview runs again. */
+  context.subscriptions.push(
+    vscode.languages.registerCodeLensProvider([{ scheme: "file" }, { scheme: "untitled" }], {
+      onDidChangeCodeLenses: fixPreviewCodeLensChangeEmitter.event,
+      provideCodeLenses: (document) => provideFixPreviewCodeLenses(document),
+    })
+  );
+  context.subscriptions.push(fixPreviewCodeLensChangeEmitter);
 }
 
 type DiffPart = { value: string; added?: boolean; removed?: boolean };
@@ -108,6 +153,23 @@ type FixChunk = {
   addedPreview: string;
   removedPreview: string;
 };
+
+/**
+ * Exactly one CodeLens provider is registered (see registerFixPreviewCommands).
+ * Lens content comes from here so we never stack duplicate providers per preview session.
+ */
+type FixPreviewLensState = {
+  docUri: string;
+  mergeParts: DiffPart[];
+  chunks: FixChunk[];
+  decisions: boolean[];
+  chunkDiffDismissed: boolean[];
+  chunkLineIndex: Map<number, number>;
+};
+
+let fixPreviewLensState: FixPreviewLensState | undefined;
+
+const fixPreviewCodeLensChangeEmitter = new vscode.EventEmitter<void>();
 
 function kindOf(p: DiffPart): "add" | "remove" | "same" {
   if (p.added) return "add";
@@ -325,9 +387,147 @@ async function applyWholeDocumentReplace(docUri: vscode.Uri, newText: string): P
   return vscode.workspace.applyEdit(edit);
 }
 
+/** After an edit, show the updated buffer so CodeLens and decorations use the latest document. */
+async function revealEditorForUri(docUri: vscode.Uri): Promise<void> {
+  const doc = await vscode.workspace.openTextDocument(docUri);
+  await vscode.window.showTextDocument(doc, { preview: false, preserveFocus: false });
+}
+
 /**
- * Shows per-chunk Accept/Reject using CodeLens + highlights directly in the editor,
- * then waits for the bottom Accept/Reject to resolve.
+ * Preferred line for a chunk's Accept/Reject: last line of the chunk in the merged document
+ * (avoids stacking multiple chunks on the same start line).
+ */
+function preferredChunkLensLine(
+  r: { startLine: number; endLineExclusive: number } | undefined,
+  anchorLine: number,
+  lineCount: number
+): number {
+  if (r && r.endLineExclusive > r.startLine) {
+    return Math.max(r.startLine, Math.min(r.endLineExclusive - 1, lineCount - 1));
+  }
+  return Math.min(Math.max(0, anchorLine), Math.max(0, lineCount - 1));
+}
+
+/** Ensures each chunk's CodeLens sits on its own line when possible (no duplicate rows). */
+function allocateUniqueLensLine(
+  preferred: number,
+  used: Set<number>,
+  lineCount: number,
+  maxLineInclusive: number
+): number {
+  const cap = Math.max(0, Math.min(maxLineInclusive, lineCount - 1));
+  let L = Math.max(0, Math.min(preferred, cap));
+  let guard = 0;
+  while (used.has(L) && guard < lineCount + 8) {
+    L = Math.min(L + 1, cap);
+    guard++;
+  }
+  used.add(L);
+  return L;
+}
+
+type FixPreviewLensLayout = {
+  chunkLineIndex: Map<number, number>;
+  chunkLensLines: Array<{ chunkId: number; lensLine: number }>;
+  globalLine: number | undefined;
+};
+
+function computeFixPreviewLensLayout(st: FixPreviewLensState, document: vscode.TextDocument): FixPreviewLensLayout {
+  const { mergeParts, chunks, decisions, chunkDiffDismissed } = st;
+  const rangeMap = getChunkMergedLineRanges(mergeParts, chunks, decisions);
+  const lineCount = document.lineCount;
+  const pendingGlobal = chunks.some((_, i) => !chunkDiffDismissed[i]);
+  const maxChunkLineInclusive = pendingGlobal ? Math.max(0, lineCount - 2) : Math.max(0, lineCount - 1);
+  const usedLines = new Set<number>();
+  const chunkLineIndex = new Map<number, number>();
+  const chunkLensLines: Array<{ chunkId: number; lensLine: number }> = [];
+
+  for (const c of chunks) {
+    if (chunkDiffDismissed[c.id]) {
+      continue;
+    }
+    const r = rangeMap.get(c.id);
+    const preferred = preferredChunkLensLine(r, c.anchorLine, lineCount);
+    const clampedPreferred = Math.min(preferred, maxChunkLineInclusive);
+    const lensLine = allocateUniqueLensLine(clampedPreferred, usedLines, lineCount, maxChunkLineInclusive);
+    chunkLensLines.push({ chunkId: c.id, lensLine });
+    chunkLineIndex.set(lensLine, c.id);
+    if (r && r.endLineExclusive > r.startLine) {
+      for (let li = r.startLine; li < r.endLineExclusive; li++) {
+        chunkLineIndex.set(li, c.id);
+      }
+    }
+  }
+
+  const globalLine = pendingGlobal && lineCount >= 1 ? lineCount - 1 : undefined;
+  return { chunkLineIndex, chunkLensLines, globalLine };
+}
+
+function provideFixPreviewCodeLenses(document: vscode.TextDocument): vscode.CodeLens[] {
+  const st = fixPreviewLensState;
+  if (!st || document.uri.toString() !== st.docUri) {
+    return [];
+  }
+  const { chunks } = st;
+  if (!chunks.length) {
+    return [];
+  }
+
+  st.chunkLineIndex.clear();
+  const layout = computeFixPreviewLensLayout(st, document);
+  layout.chunkLineIndex.forEach((v, k) => st.chunkLineIndex.set(k, v));
+
+  const lenses: vscode.CodeLens[] = [];
+
+  for (const { chunkId, lensLine } of layout.chunkLensLines) {
+    const c = chunks[chunkId];
+    if (!c) {
+      continue;
+    }
+    const range = new vscode.Range(new vscode.Position(lensLine, 0), new vscode.Position(lensLine, 0));
+    lenses.push(
+      new vscode.CodeLens(range, {
+        title: "✅ Accept",
+        command: CMD_ACCEPT_CHUNK,
+        arguments: [c.id],
+        tooltip: `Accept this change for this block.\nAdded: ${c.addedPreview}\nRemoved: ${c.removedPreview}`,
+      })
+    );
+    lenses.push(
+      new vscode.CodeLens(range, {
+        title: "❌ Reject",
+        command: CMD_REJECT_CHUNK,
+        arguments: [c.id],
+        tooltip: `Reject this block (keep original).\nKeep: ${c.removedPreview}\nDiscard: ${c.addedPreview}`,
+      })
+    );
+  }
+
+  if (layout.globalLine !== undefined) {
+    const globalLine = layout.globalLine;
+    const bottomRange = new vscode.Range(new vscode.Position(globalLine, 0), new vscode.Position(globalLine, 0));
+    lenses.push(
+      new vscode.CodeLens(bottomRange, {
+        title: "✅ Accept All Changes",
+        command: CMD_ACCEPT_ALL,
+        arguments: [],
+      })
+    );
+    lenses.push(
+      new vscode.CodeLens(bottomRange, {
+        title: "❌ Reject All Changes",
+        command: CMD_REJECT_ALL,
+        arguments: [],
+      })
+    );
+  }
+
+  return lenses;
+}
+
+/**
+ * Per-chunk ✓ Accept / ✕ Reject on each block’s line (typically last line of the block),
+ * whole-file actions on the last line of the buffer (padding lines keep that row separate).
  */
 export async function previewFixInEditorAndWait(
   baseDoc: vscode.TextDocument,
@@ -343,13 +543,15 @@ export async function previewFixInEditorAndWait(
   }
 
   const decisions = chunks.map(() => true); // default: accept all chunks
+  /** After Accept/Reject on a block, stop highlighting that block (user confirmed). */
+  const chunkDiffDismissed = chunks.map(() => false);
 
   const mergeParts = diffLines(baseText, afterText) as unknown as DiffPart[];
 
   const docUri = baseDoc.uri;
   const baseNorm = normalizeReviewText(baseText);
 
-  // Green = lines added vs the original snapshot (follows the live buffer so undo updates highlights).
+  // Green = pending diff vs original snapshot (dismissed per chunk after that block is accepted/rejected).
   const decorationDiffAdded = vscode.window.createTextEditorDecorationType({
     isWholeLine: true,
     backgroundColor: "rgba(63, 185, 80, 0.2)",
@@ -369,14 +571,37 @@ export async function previewFixInEditorAndWait(
       return;
     }
 
-    const current = normalizeReviewText(currentEditor.document.getText());
+    const current = normalizeReviewText(stripFixPreviewPad(currentEditor.document.getText()));
+    const rangeMap = getChunkMergedLineRanges(mergeParts, chunks, decisions);
+    const lineToChunk = new Map<number, number>();
+    for (const c of chunks) {
+      const r = rangeMap.get(c.id);
+      if (!r) {
+        continue;
+      }
+      for (let li = r.startLine; li < r.endLineExclusive; li++) {
+        lineToChunk.set(li, c.id);
+      }
+    }
+
     const addedLines = lineNumbersForAddedInMerged(baseNorm, current);
-    currentEditor.setDecorations(decorationDiffAdded, buildRangesForLines(addedLines));
+    const toHighlight = addedLines.filter((line) => {
+      const cid = lineToChunk.get(line);
+      if (cid === undefined) {
+        return false;
+      }
+      return !chunkDiffDismissed[cid];
+    });
+    currentEditor.setDecorations(decorationDiffAdded, buildRangesForLines(toHighlight));
   };
 
   const applyCurrentPreviewToEditor = async (): Promise<boolean> => {
-    const mergedText = buildCurrentMergedText();
-    return applyWholeDocumentReplace(docUri, mergedText);
+    const mergedText = appendFixPreviewPad(buildCurrentMergedText());
+    const ok = await applyWholeDocumentReplace(docUri, mergedText);
+    if (ok) {
+      await revealEditorForUri(docUri);
+    }
+    return ok;
   };
 
   let finalChoiceResolver: (c: FixInEditorChoice) => void;
@@ -390,6 +615,8 @@ export async function previewFixInEditorAndWait(
     if (resolved) return;
     resolved = true;
     activeFixPreviewSession = undefined;
+    fixPreviewLensState = undefined;
+    fixPreviewCodeLensChangeEmitter.fire();
     for (const fn of cleanupCallbacks) {
       try {
         fn();
@@ -400,6 +627,28 @@ export async function previewFixInEditorAndWait(
     decorationDiffAdded.dispose();
   };
 
+  const finishWhenAllChunksDismissed = async (): Promise<void> => {
+    if (!chunks.every((_, i) => chunkDiffDismissed[i])) {
+      return;
+    }
+    if (resolved) {
+      return;
+    }
+    const mergedText = buildCurrentMergedText();
+    const ok = await applyWholeDocumentReplace(docUri, mergedText);
+    if (ok) {
+      await revealEditorForUri(docUri);
+    } else {
+      void vscode.window.showWarningMessage(
+        "Could not write the file after reviewing all blocks. Check if the document is read-only or locked."
+      );
+      return;
+    }
+    const allRejected = decisions.every((d) => !d);
+    finalChoiceResolver(allRejected ? "reject" : "accept");
+    cleanup();
+  };
+
   const finalizePreviewChoice = (choice: FixInEditorChoice): void => {
     if (resolved) {
       return;
@@ -407,8 +656,6 @@ export async function previewFixInEditorAndWait(
     finalChoiceResolver(choice);
     cleanup();
   };
-
-  const codeLensChangeEmitter = new vscode.EventEmitter<void>();
 
   const refreshLenses = (): void => {
     try {
@@ -418,46 +665,67 @@ export async function previewFixInEditorAndWait(
     }
   };
 
+  const chunkLineIndex = new Map<number, number>();
+  fixPreviewLensState = {
+    docUri: baseDoc.uri.toString(),
+    mergeParts,
+    chunks,
+    decisions,
+    chunkDiffDismissed,
+    chunkLineIndex,
+  };
+
   activeFixPreviewSession = {
     getChunkCount: () => chunks.length,
+    getChunkIdForLine: (line: number) => fixPreviewLensState?.chunkLineIndex.get(line),
     acceptChunk: async (chunkId: number) => {
       if (resolved) return;
       if (chunkId < 0 || chunkId >= decisions.length) return;
       decisions[chunkId] = true;
+      chunkDiffDismissed[chunkId] = true;
       const ok = await applyCurrentPreviewToEditor();
       if (!ok) {
+        chunkDiffDismissed[chunkId] = false;
         void vscode.window.showWarningMessage(
           "Could not write the file for this preview. Check if the document is read-only or locked."
         );
         return;
       }
       updateDecorations();
-      codeLensChangeEmitter.fire();
+      fixPreviewCodeLensChangeEmitter.fire();
       refreshLenses();
+      await finishWhenAllChunksDismissed();
     },
     rejectChunk: async (chunkId: number) => {
       if (resolved) return;
       if (chunkId < 0 || chunkId >= decisions.length) return;
       decisions[chunkId] = false;
+      chunkDiffDismissed[chunkId] = true;
       const ok = await applyCurrentPreviewToEditor();
       if (!ok) {
+        chunkDiffDismissed[chunkId] = false;
         void vscode.window.showWarningMessage(
           "Could not write the file for this preview. Check if the document is read-only or locked."
         );
         return;
       }
       updateDecorations();
-      codeLensChangeEmitter.fire();
+      fixPreviewCodeLensChangeEmitter.fire();
       refreshLenses();
+      await finishWhenAllChunksDismissed();
     },
     acceptAll: async () => {
       if (resolved) return;
       try {
         for (let i = 0; i < decisions.length; i++) {
           decisions[i] = true;
+          chunkDiffDismissed[i] = true;
         }
         const mergedText = buildCurrentMergedText();
         const ok = await applyWholeDocumentReplace(docUri, mergedText);
+        if (ok) {
+          await revealEditorForUri(docUri);
+        }
         if (!ok) {
           finalChoiceResolver("reject");
         } else {
@@ -471,6 +739,9 @@ export async function previewFixInEditorAndWait(
       if (resolved) return;
       try {
         const ok = await applyWholeDocumentReplace(docUri, baseText);
+        if (ok) {
+          await revealEditorForUri(docUri);
+        }
         if (!ok) {
           finalChoiceResolver("reject");
         } else {
@@ -481,70 +752,6 @@ export async function previewFixInEditorAndWait(
       }
     },
   };
-
-  cleanupCallbacks.push(() => codeLensChangeEmitter.dispose());
-
-  // CodeLens provider (only for this document)
-  class FixCodeLensProvider implements vscode.CodeLensProvider {
-    readonly onDidChangeCodeLenses = codeLensChangeEmitter.event;
-
-    provideCodeLenses(document: vscode.TextDocument): vscode.CodeLens[] {
-      if (document.uri.toString() !== baseDoc.uri.toString()) return [];
-      if (!chunks.length) return [];
-
-      const rangeMap = getChunkMergedLineRanges(mergeParts, chunks, decisions);
-      const lenses: vscode.CodeLens[] = [];
-      for (const c of chunks) {
-        const r = rangeMap.get(c.id);
-        const lensLine =
-          r && r.endLineExclusive > r.startLine
-            ? r.startLine
-            : Math.min(Math.max(0, c.anchorLine), Math.max(0, document.lineCount - 1));
-        const range = new vscode.Range(new vscode.Position(lensLine, 0), new vscode.Position(lensLine, 0));
-        const isAccepted = decisions[c.id];
-        lenses.push(
-          new vscode.CodeLens(range, {
-            title: isAccepted ? "✅ Accept (selected)" : "✅ Accept",
-            command: CMD_ACCEPT_CHUNK,
-            arguments: [c.id],
-            tooltip: `Accept this change for this block.\nAdded: ${c.addedPreview}\nRemoved: ${c.removedPreview}`,
-          })
-        );
-        lenses.push(
-          new vscode.CodeLens(range, {
-            title: !isAccepted ? "❌ Reject (selected)" : "❌ Reject",
-            command: CMD_REJECT_CHUNK,
-            arguments: [c.id],
-            tooltip: `Reject this block (keep original).\nKeep: ${c.removedPreview}\nDiscard: ${c.addedPreview}`,
-          })
-        );
-      }
-
-      const bottomLine = Math.max(0, document.lineCount - 1);
-      const bottomRange = new vscode.Range(new vscode.Position(bottomLine, 0), new vscode.Position(bottomLine, 0));
-      lenses.push(
-        new vscode.CodeLens(bottomRange, {
-          title: "✅ Accept All Changes",
-          command: CMD_ACCEPT_ALL,
-          arguments: [],
-        })
-      );
-      lenses.push(
-        new vscode.CodeLens(bottomRange, {
-          title: "❌ Reject All Changes",
-          command: CMD_REJECT_ALL,
-          arguments: [],
-        })
-      );
-      return lenses;
-    }
-  }
-
-  const codeLensProvider = vscode.languages.registerCodeLensProvider(
-    { scheme: baseDoc.uri.scheme, language: baseDoc.languageId, pattern: "**/*" },
-    new FixCodeLensProvider()
-  );
-  cleanupCallbacks.push(() => codeLensProvider.dispose());
 
   const docChangeSub = vscode.workspace.onDidChangeTextDocument((e) => {
     if (resolved) {
@@ -570,7 +777,10 @@ export async function previewFixInEditorAndWait(
     preserveFocus: false,
   });
 
-  await applyWholeDocumentReplace(docUri, buildCurrentMergedText());
+  const initialOk = await applyWholeDocumentReplace(docUri, appendFixPreviewPad(buildCurrentMergedText()));
+  if (initialOk) {
+    await revealEditorForUri(docUri);
+  }
   updateDecorations();
 
   // Ensure lenses are refreshed immediately (important when code lenses are registered dynamically).

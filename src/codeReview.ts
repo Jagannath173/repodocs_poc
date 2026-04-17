@@ -129,7 +129,7 @@ export async function runCodeReview(): Promise<void> {
       panel.addReviewLog(`[${label}] Started`, "info");
       let assistantText = "";
       let authError = false;
-      panel.setReviewStream("");
+      panel.beginReviewStreamStage();
 
       await runCopilotInference(
         extensionContext,

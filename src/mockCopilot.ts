@@ -30,6 +30,19 @@ function emitSseCompletion(content: string, onLog: (data: string) => void): void
   onLog(`data: ${line}`);
 }
 
+/** Simulates SSE token streaming (`delta.content`) so the Genie webview updates incrementally. */
+async function emitSseDeltaStream(content: string, onLog: (data: string) => void): Promise<void> {
+  const step = 12;
+  for (let i = 0; i < content.length; i += step) {
+    const piece = content.slice(i, i + step);
+    const line = JSON.stringify({
+      choices: [{ delta: { content: piece } }],
+    });
+    onLog(`data: ${line}`);
+    await new Promise((r) => setTimeout(r, 6));
+  }
+}
+
 /** Matches `REVIEW_SEQUENCE` / labels in `codeReview.ts` — one distinct mock finding per stage. */
 const MOCK_REVIEW_STAGE_LABELS = [
   "Quality",
@@ -83,6 +96,10 @@ function mockAssistantBody(prompt: string): string {
     if (m?.[1]?.trim()) {
       code = m[1].trim();
     }
+    // Two edit regions so editor preview shows multiple Accept/Reject blocks (diff hunks).
+    const refactoredCode =
+      code +
+      "\n\n// [mock] extracted helper — block 2\nfunction __mockRefactorChunk2() {\n  return 42;\n}\n";
     return JSON.stringify({
       quality: "good",
       remarks: "Mock refactor (codeReview.useMockCopilot is enabled).",
@@ -98,7 +115,7 @@ function mockAssistantBody(prompt: string): string {
       ],
       risks: [],
       validationChecklist: ["Run your test suite after applying"],
-      refactoredCode: code,
+      refactoredCode,
     });
   }
   return JSON.stringify({
@@ -134,5 +151,9 @@ export async function runMockCopilotInference(
       break;
   }
 
-  emitSseCompletion(content, onLog);
+  if (kind === "assistant") {
+    await emitSseDeltaStream(content, onLog);
+  } else {
+    emitSseCompletion(content, onLog);
+  }
 }

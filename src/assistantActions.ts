@@ -149,6 +149,7 @@ export async function runAssistantEndpoint(endpoint: AssistantEndpoint): Promise
         lastGeneratedFiles = [];
         panel.setBusy(true);
         panel.setStreamText("");
+        panel.setStreamLive(true);
         panel.setProgressStep("Preparing prompt template...");
         const vars: Record<string, string> = { ...baseVars };
         if (refinementNote?.trim()) {
@@ -192,6 +193,7 @@ export async function runAssistantEndpoint(endpoint: AssistantEndpoint): Promise
         panel.setProgressStep("Done.");
       } finally {
         running = false;
+        panel.setStreamLive(false);
         panel.setBusy(false);
       }
     };

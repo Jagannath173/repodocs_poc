@@ -28,12 +28,15 @@ function panelHtml(webview: vscode.Webview, nonce: string): string {
       background-color: var(--vscode-editor-background, #1e1e1e);
       color: var(--vscode-editor-foreground, #cccccc);
     }
+    html { max-width: 100%; }
     body {
       padding: 16px 20px 28px;
       font-family: var(--vscode-font-family);
-      overflow-x: auto;
+      overflow-x: hidden;
       overflow-y: auto;
-      min-width: max-content;
+      min-width: 0;
+      width: 100%;
+      max-width: 100%;
       box-sizing: border-box;
     }
     h1 { margin: 0 0 10px; font-size: 1.15em; }
@@ -230,12 +233,71 @@ function panelHtml(webview: vscode.Webview, nonce: string): string {
     .stream-wrap.streaming:not([open]) .stream-status::after { content: " (streaming…)"; font-weight: 400; color: var(--vscode-descriptionForeground); }
     .stream-wrap.streaming[open] #stream::after { content: "▋"; opacity: 0.85; margin-left: 2px; animation: streamCaret 1s steps(1, end) infinite; }
     @keyframes streamCaret { 0%, 49% { opacity: 0; } 50%, 100% { opacity: 1; } }
-    #stream { margin: 0; padding: 10px 12px; max-height: 28vh; overflow: auto; overflow-x: auto; overflow-y: auto; white-space: pre; word-break: normal; font-family: var(--vscode-editor-font-family, monospace); font-size: 0.82em; line-height: 1.45; }
-    .diff-wrap { max-height: 44vh; overflow: auto; overflow-x: auto; overflow-y: auto; border: 1px solid var(--vscode-editorWidget-border); border-radius: 6px; font-family: var(--vscode-editor-font-family, monospace); font-size: 0.84em; line-height: 1.35; background: var(--vscode-editor-background); }
-    .diff-line { white-space: pre; word-break: normal; padding: 1px 8px; border-left: 3px solid transparent; min-width: max-content; }
+    #stream {
+      margin: 0;
+      padding: 10px 12px;
+      max-height: 32vh;
+      overflow: auto;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+      font-family: var(--vscode-editor-font-family, monospace);
+      font-size: 0.82em;
+      line-height: 1.5;
+    }
+    .diff-wrap { max-height: 44vh; overflow: auto; border: 1px solid var(--vscode-editorWidget-border); border-radius: 8px; font-family: var(--vscode-editor-font-family, monospace); font-size: 0.84em; line-height: 1.45; background: var(--vscode-editor-background); }
+    .diff-line { white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; padding: 4px 10px; border-left: 3px solid transparent; }
     .diff-line.del { background: rgba(255, 80, 80, 0.12); border-left-color: var(--vscode-charts-red, #f14c4c); }
     .diff-line.add { background: rgba(80, 200, 120, 0.12); border-left-color: var(--vscode-charts-green, #3fb950); }
     .diff-line.same { background: var(--vscode-editor-background); }
+    [data-endpoint="codeRefactor"] .content-wrap { gap: 12px; }
+    .refactor-hero {
+      border-radius: 10px;
+      padding: 14px 16px;
+      margin-bottom: 4px;
+      border: 1px solid var(--vscode-editorWidget-border);
+      background: linear-gradient(135deg, rgba(14, 112, 192, 0.1) 0%, var(--vscode-editor-inactiveSelectionBackground) 48%, var(--vscode-editor-background) 100%);
+      box-shadow: 0 4px 18px rgba(0, 0, 0, 0.14);
+    }
+    .refactor-hero-title { font-size: 0.72em; text-transform: uppercase; letter-spacing: 0.07em; color: var(--vscode-descriptionForeground); margin-bottom: 8px; font-weight: 600; }
+    .refactor-quality { font-size: 0.82em; color: var(--vscode-textLink-foreground); margin-bottom: 8px; }
+    .refactor-hero-summary { font-size: 0.95em; line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
+    .refactor-body { font-size: 0.88em; line-height: 1.45; color: var(--vscode-descriptionForeground); white-space: pre-wrap; margin-top: 8px; padding-top: 10px; border-top: 1px solid rgba(128, 128, 128, 0.25); }
+    .refactor-suggestions { margin: 10px 0 0; padding-left: 18px; font-size: 0.88em; line-height: 1.45; }
+    .refactor-suggestions li { margin-bottom: 6px; }
+    .refactor-remarks { margin-top: 12px; padding: 10px 12px; font-size: 0.86em; border-radius: 6px; background: var(--vscode-textCodeBlock-background); border: 1px solid var(--vscode-editorWidget-border); white-space: pre-wrap; word-break: break-word; }
+    .refactor-checklist { margin: 8px 0 0; padding-left: 18px; font-size: 0.85em; color: var(--vscode-descriptionForeground); }
+    .refactor-code-wrap { margin: 14px 0 18px; }
+    .refactor-code-heading {
+      font-size: 0.72em;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--vscode-descriptionForeground);
+      margin: 0 0 8px;
+      font-weight: 600;
+    }
+    .refactor-code-pre {
+      margin: 0;
+      padding: 12px 14px;
+      border-radius: 8px;
+      border: 1px solid var(--vscode-editorWidget-border);
+      background: var(--vscode-textCodeBlock-background);
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+      font-family: var(--vscode-editor-font-family, monospace);
+      font-size: 0.84em;
+      line-height: 1.45;
+      max-height: 52vh;
+      overflow: auto;
+    }
+    #refactor-actions-anchor .actions {
+      margin: 0 0 12px;
+      padding: 0;
+      border: none;
+      background: transparent;
+      box-shadow: none;
+    }
     .generated-picker { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--vscode-editorWidget-border); background: var(--vscode-editor-inactiveSelectionBackground); }
     .generated-picker label { font-size: 0.8em; color: var(--vscode-descriptionForeground); text-transform: uppercase; }
     .generated-picker select { flex: 1; min-width: 160px; }
@@ -400,6 +462,16 @@ function panelHtml(webview: vscode.Webview, nonce: string): string {
     .session-tab.active .session-tab-close { color: var(--vscode-button-foreground); }
     .session-tab-close:hover { background: var(--vscode-toolbar-hoverBackground, var(--vscode-list-hoverBackground)); }
     .review-fix-toolbar { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; align-items: center; }
+    .review-metrics-bar {
+      font-size: 0.88em;
+      color: var(--vscode-descriptionForeground);
+      margin: -6px 0 14px;
+      padding: 8px 10px;
+      border-radius: 6px;
+      background: var(--vscode-editor-inactiveSelectionBackground);
+      border: 1px solid var(--vscode-editorWidget-border);
+      line-height: 1.45;
+    }
     .review-table-wrap {
       overflow-x: auto;
       margin-bottom: 16px;
@@ -601,6 +673,10 @@ function panelHtml(webview: vscode.Webview, nonce: string): string {
     </summary>
     <div id="out" class="content-wrap"></div>
   </details>
+  <div id="refactor-code-wrap" class="refactor-code-wrap hidden">
+    <div class="refactor-code-heading" id="refactor-code-heading">Refactored code</div>
+    <pre id="refactor-code-out" class="refactor-code-pre"></pre>
+  </div>
   <div id="refactor-actions-anchor"></div>
   <div id="generated-code-panel" class="panel hidden">
     <div class="head">Generated code</div>
@@ -652,6 +728,7 @@ function panelHtml(webview: vscode.Webview, nonce: string): string {
         diffParts: [],
         explainOpen: true,
         streamOpen: false,
+        streamLive: false,
         streamText: "",
         refinePromptMode: false,
         authUrl: "",
@@ -659,6 +736,7 @@ function panelHtml(webview: vscode.Webview, nonce: string): string {
         fixApplyingIndex: null,
         fixApplyingAll: false,
         applyingCurrent: false,
+        refactorCode: "",
       };
     }
 
@@ -744,11 +822,81 @@ function panelHtml(webview: vscode.Webview, nonce: string): string {
       });
       return o;
     }
+    function omitRefactorApplyCode(data, endpoint) {
+      if (endpoint !== "codeRefactor" || !data || typeof data !== "object") return data;
+      var o = {};
+      Object.keys(data).forEach(function (k) {
+        if (k === "refactoredCode") return;
+        o[k] = data[k];
+      });
+      return o;
+    }
+    function renderCodeRefactorExplanation(root, view, fallbackText) {
+      var hero = document.createElement("div");
+      hero.className = "refactor-hero";
+      var ht = document.createElement("div");
+      ht.className = "refactor-hero-title";
+      ht.textContent = "Refactor overview";
+      hero.appendChild(ht);
+      if (view.quality) {
+        var q = document.createElement("div");
+        q.className = "refactor-quality";
+        q.textContent = "Quality: " + view.quality;
+        hero.appendChild(q);
+      }
+      var sum = document.createElement("div");
+      sum.className = "refactor-hero-summary";
+      sum.textContent = view.summary || fallbackText || "";
+      hero.appendChild(sum);
+      root.appendChild(hero);
+      if (view.details && String(view.details).trim()) {
+        var det = document.createElement("div");
+        det.className = "refactor-body";
+        det.textContent = String(view.details);
+        root.appendChild(det);
+      }
+      if (Array.isArray(view.suggestedChanges) && view.suggestedChanges.length) {
+        var ul = document.createElement("ul");
+        ul.className = "refactor-suggestions";
+        view.suggestedChanges.forEach(function (sc) {
+          if (!sc || typeof sc !== "object") return;
+          var li = document.createElement("li");
+          var bits = [];
+          if (sc.area) bits.push(String(sc.area));
+          if (sc.issue) bits.push(String(sc.issue));
+          if (sc.suggestion) bits.push(String(sc.suggestion));
+          li.textContent = bits.filter(Boolean).join(" — ");
+          ul.appendChild(li);
+        });
+        root.appendChild(ul);
+      }
+      var remarks = view.remarks || "";
+      if (String(remarks).trim()) {
+        var rm = document.createElement("div");
+        rm.className = "refactor-remarks";
+        rm.textContent = remarks;
+        root.appendChild(rm);
+      }
+      if (Array.isArray(view.validationChecklist) && view.validationChecklist.length) {
+        var vc = document.createElement("ul");
+        vc.className = "refactor-checklist";
+        view.validationChecklist.forEach(function (x) {
+          var li = document.createElement("li");
+          li.textContent = String(x);
+          vc.appendChild(li);
+        });
+        root.appendChild(vc);
+      }
+    }
     function renderStructured(root, data, fallbackText, endpoint, session) {
       clearEl(root);
-      var view = omitGeneratedCodeForExplanation(data, endpoint);
+      var view = omitRefactorApplyCode(omitGeneratedCodeForExplanation(data, endpoint), endpoint);
       if (endpoint === "codeReview") {
         renderCodeReview(root, view, fallbackText, session);
+        return;
+      }
+      if (endpoint === "codeRefactor" && view && typeof view === "object") {
+        renderCodeRefactorExplanation(root, view, fallbackText);
         return;
       }
       if (!view || typeof view !== "object") {
@@ -805,6 +953,30 @@ function panelHtml(webview: vscode.Webview, nonce: string): string {
       if (x === "low") return "sev-low";
       return "sev-info";
     }
+    /** Count findings from flat list or sections (whichever reflects the review). */
+    function countFindingsInView(view) {
+      if (!view || typeof view !== "object") return 0;
+      var flat = Array.isArray(view.findings) ? view.findings.length : 0;
+      var sections = Array.isArray(view.sections) ? view.sections : [];
+      var fromSections = 0;
+      for (var si = 0; si < sections.length; si++) {
+        var sec = sections[si];
+        var findings = sec && Array.isArray(sec.findings) ? sec.findings : [];
+        fromSections += findings.length;
+      }
+      return Math.max(flat, fromSections);
+    }
+    /** Total / applied / rejected / pending — total is inferred when findings[] was cleared but indices remain. */
+    function computeReviewMetrics(view) {
+      var applied = Array.isArray(view.appliedIndices) ? view.appliedIndices : [];
+      var rejected = Array.isArray(view.rejectedIndices) ? view.rejectedIndices : [];
+      var appliedOnly = applied.length;
+      var rejectedOnly = rejected.length;
+      var nFromView = countFindingsInView(view);
+      var totalOnly = Math.max(nFromView, appliedOnly + rejectedOnly);
+      var pendingOnly = Math.max(0, totalOnly - appliedOnly - rejectedOnly);
+      return { total: totalOnly, applied: appliedOnly, rejected: rejectedOnly, pending: pendingOnly };
+    }
     function isReviewCaughtUpOnly(view) {
       if (!view || typeof view !== "object") {
         return false;
@@ -848,10 +1020,7 @@ function panelHtml(webview: vscode.Webview, nonce: string): string {
       var fixRunInProgress = applyingAll || applyingIndex !== null;
       if (isReviewCaughtUpOnly(view)) {
         clearEl(root);
-        var appliedOnly = Array.isArray(applied) ? applied.length : 0;
-        var rejectedOnly = Array.isArray(rejected) ? rejected.length : 0;
-        var totalOnly = Array.isArray(view.findings) ? view.findings.length : appliedOnly + rejectedOnly;
-        var pendingOnly = Math.max(0, totalOnly - appliedOnly - rejectedOnly);
+        var m = computeReviewMetrics(view);
 
         var onlyWrap = document.createElement("div");
         onlyWrap.className = "review-complete-only-wrap";
@@ -872,10 +1041,10 @@ function panelHtml(webview: vscode.Webview, nonce: string): string {
         var chips = document.createElement("div");
         chips.className = "review-complete-metrics";
         [
-          "Total: " + totalOnly,
-          "Applied: " + appliedOnly,
-          "Rejected: " + rejectedOnly,
-          "Pending: " + pendingOnly
+          "Issues raised: " + m.total,
+          "Applied: " + m.applied,
+          "Rejected: " + m.rejected,
+          "Pending: " + m.pending
         ].forEach(function (label) {
           var chip = document.createElement("span");
           chip.className = "review-complete-chip";
@@ -919,6 +1088,21 @@ function panelHtml(webview: vscode.Webview, nonce: string): string {
       toolbar.appendChild(btnAll);
       toolbar.appendChild(btnExtra);
       root.appendChild(toolbar);
+
+      var rm = computeReviewMetrics(view);
+      var metricsBar = document.createElement("div");
+      metricsBar.className = "review-metrics-bar";
+      metricsBar.setAttribute("role", "status");
+      metricsBar.textContent =
+        rm.total +
+        " issue(s) in this review · " +
+        rm.applied +
+        " applied · " +
+        rm.rejected +
+        " rejected · " +
+        rm.pending +
+        " pending";
+      root.appendChild(metricsBar);
 
       var overallSummary = "";
       if (typeof view.summary === "string" && view.summary.trim()) {
@@ -1003,7 +1187,7 @@ function panelHtml(webview: vscode.Webview, nonce: string): string {
           if (isApplied) {
             var spA = document.createElement("span");
             spA.className = "review-status-accepted";
-            spA.textContent = "Applied";
+            spA.textContent = "Accepted";
             tdFix.appendChild(spA);
           } else if (isRejected) {
             var spR = document.createElement("span");
@@ -1014,8 +1198,18 @@ function panelHtml(webview: vscode.Webview, nonce: string): string {
             var fixBtn = document.createElement("button");
             fixBtn.type = "button";
             fixBtn.className = "primary review-fix-btn";
-            var showApplying = applyingAll || applyingIndex === globalIndex;
-            var fixRowLocked = applyingAll || (applyingIndex !== null && applyingIndex !== globalIndex);
+            // Single fix: only that row shows Applying… (including editor preview). Bulk: every pending row shows Applying… while the run is active.
+            var showApplying =
+              !isApplied &&
+              !isRejected &&
+              (applyingAll ||
+                (applyingIndex !== null && applyingIndex === globalIndex));
+            var fixRowLocked =
+              !isApplied &&
+              !isRejected &&
+              !applyingAll &&
+              applyingIndex !== null &&
+              applyingIndex !== globalIndex;
             if (showApplying) {
               fixBtn.className = "primary review-fix-btn is-applying";
               fixBtn.disabled = true;
@@ -1078,10 +1272,8 @@ function panelHtml(webview: vscode.Webview, nonce: string): string {
       }
 
       if (!root.querySelector(".review-findings-table")) {
-        var totalFindings = Array.isArray(view.findings) ? view.findings.length : 0;
-        var appliedCount = Array.isArray(applied) ? applied.length : 0;
-        var rejectedCount = Array.isArray(rejected) ? rejected.length : 0;
-        var pendingCount = Math.max(0, totalFindings - appliedCount - rejectedCount);
+        var mm = computeReviewMetrics(view);
+        var totalFindings = mm.total;
 
         var doneCard = document.createElement("div");
         doneCard.className = "review-complete-card";
@@ -1099,21 +1291,6 @@ function panelHtml(webview: vscode.Webview, nonce: string): string {
           ? "Accepted fixes are hidden to keep this view focused and fast."
           : "Nothing to apply right now.";
         doneCard.appendChild(doneSub);
-
-        var chips = document.createElement("div");
-        chips.className = "review-complete-metrics";
-        [
-          "Total: " + totalFindings,
-          "Applied: " + appliedCount,
-          "Rejected: " + rejectedCount,
-          "Pending: " + pendingCount
-        ].forEach(function (label) {
-          var chip = document.createElement("span");
-          chip.className = "review-complete-chip";
-          chip.textContent = label;
-          chips.appendChild(chip);
-        });
-        doneCard.appendChild(chips);
         root.appendChild(doneCard);
       }
     }
@@ -1176,6 +1353,7 @@ function panelHtml(webview: vscode.Webview, nonce: string): string {
       });
     }
     function renderEmptyState() {
+      document.documentElement.setAttribute("data-endpoint", "");
       document.getElementById("title").textContent = "Genie";
       document.getElementById("user-question").classList.add("hidden");
       document.getElementById("prompt-box").classList.add("hidden");
@@ -1209,7 +1387,12 @@ function panelHtml(webview: vscode.Webview, nonce: string): string {
     function renderSession() {
       var s = sessions[activeSessionId];
       if (!s) return;
-      var reviewCaughtUpOnly = s.endpoint === "codeReview" && isReviewCaughtUpOnly(s.structuredData);
+      var reviewCaughtUpOnly =
+        s.endpoint === "codeReview" &&
+        !s.busy &&
+        !s.streamLive &&
+        isReviewCaughtUpOnly(s.structuredData);
+      document.documentElement.setAttribute("data-endpoint", s.endpoint || "");
       document.getElementById("title").textContent = s.title || "Genie";
       var promptBox = document.getElementById("prompt-box");
       var promptInput = document.getElementById("prompt-input");
@@ -1265,11 +1448,18 @@ function panelHtml(webview: vscode.Webview, nonce: string): string {
       }
       var sw = document.getElementById("stream-wrap");
       var st = document.getElementById("stream");
-      if (!reviewCaughtUpOnly && s.streamText) {
+      var streamStatusEl = sw ? sw.querySelector(".stream-status") : null;
+      if (streamStatusEl) {
+        streamStatusEl.textContent =
+          s.endpoint === "codeReview" ? "Live review response" : "Live response stream";
+      }
+      var streamHasText = s.streamText != null && String(s.streamText).length > 0;
+      var showStream = !reviewCaughtUpOnly && (streamHasText || !!s.streamLive);
+      if (showStream) {
         sw.classList.remove("hidden");
-        st.textContent = s.streamText;
-        if (s.busy) sw.classList.add("streaming"); else sw.classList.remove("streaming");
-        sw.open = !!s.streamOpen;
+        st.textContent = streamHasText ? String(s.streamText) : (s.streamLive ? "Waiting for first tokens…" : "");
+        if (s.busy || s.streamLive) sw.classList.add("streaming"); else sw.classList.remove("streaming");
+        sw.open = !!s.streamLive || !!s.streamOpen;
       } else {
         st.textContent = "";
         sw.classList.add("hidden");
@@ -1342,7 +1532,9 @@ function panelHtml(webview: vscode.Webview, nonce: string): string {
         setDecisionButtons(false);
       }
       var diffPanel = document.getElementById("diff-panel");
-      if (!reviewCaughtUpOnly && s.reviewMode && renderDiff(s.diffParts)) {
+      var diffRendered = !reviewCaughtUpOnly && renderDiff(s.diffParts);
+      var showDiffPanel = diffRendered && s.reviewMode;
+      if (showDiffPanel) {
         diffPanel.classList.remove("hidden");
         diffPanel.open = true;
       } else {
@@ -1380,6 +1572,17 @@ function panelHtml(webview: vscode.Webview, nonce: string): string {
         renderedPanel.classList.add("hidden");
         renderedPanel.classList.remove("complete-only");
         clearEl(out);
+      }
+      var rcw = document.getElementById("refactor-code-wrap");
+      var rco = document.getElementById("refactor-code-out");
+      var regenStreaming = !!(s.busy && s.streamLive);
+      var rcText = s.refactorCode != null ? String(s.refactorCode) : "";
+      if (rcw && rco && s.endpoint === "codeRefactor" && rcText.trim() && !regenStreaming) {
+        rcw.classList.remove("hidden");
+        rco.textContent = rcText;
+      } else if (rcw && rco) {
+        rcw.classList.add("hidden");
+        rco.textContent = "";
       }
       var gcp = document.getElementById("generated-code-panel");
       var gpp = document.getElementById("generated-picker");
@@ -1556,6 +1759,7 @@ function panelHtml(webview: vscode.Webview, nonce: string): string {
       if (m.type === "busy" && !m.value) s.applyingCurrent = false;
       if (m.type === "step") s.step = m.text || "";
       if (m.type === "stream") s.streamText = m.text || "";
+      if (m.type === "streamLive") s.streamLive = !!m.value;
       if (m.type === "userQuestion") s.userQuestion = m.text != null ? String(m.text) : "";
       if (m.type === "result") {
         s.remarks = m.remarks || "";
@@ -1567,8 +1771,11 @@ function panelHtml(webview: vscode.Webview, nonce: string): string {
         s.generatedCode = m.generatedCode || "";
         s.generatedFiles = Array.isArray(m.generatedFiles) ? m.generatedFiles : [];
         s.diffParts = Array.isArray(m.diffParts) ? m.diffParts : [];
+        s.refactorCode = m.refactorCode != null ? String(m.refactorCode) : "";
         s.refinePromptMode = false;
         s.streamOpen = false;
+        s.streamLive = false;
+        s.streamText = "";
         s.applyingCurrent = false;
       }
       if (m.type === "authData") {
@@ -1579,6 +1786,8 @@ function panelHtml(webview: vscode.Webview, nonce: string): string {
       if (m.type === "error") {
         s.err = m.text || "";
         s.applyingCurrent = false;
+        s.streamLive = false;
+        s.streamText = "";
       }
       if (m.type === "fixApplying") {
         s.fixApplyingIndex = m.index === null || m.index === undefined ? null : m.index;
@@ -1623,8 +1832,8 @@ type GenieCommand =
   | "closeSession"
   | "copyText"
   | "applyFixes"
-  | "authenticate"
-  | "submitPrompt";
+    | "authenticate"
+    | "submitPrompt";
 
 class GeniePanelHost {
   private static instance: GeniePanelHost | undefined;
@@ -1841,6 +2050,11 @@ export class AssistantResultPanel {
     void this.host.postMessage({ type: "stream", sessionId: this.sessionId, text });
   }
 
+  /** Shows the live stream panel while tokens arrive (before the first chunk). */
+  setStreamLive(value: boolean): void {
+    void this.host.postMessage({ type: "streamLive", sessionId: this.sessionId, value });
+  }
+
   setMode(endpoint: string): void {
     void this.host.postMessage({ type: "mode", sessionId: this.sessionId, endpoint });
   }
@@ -1868,6 +2082,7 @@ export class AssistantResultPanel {
       endpoint: payload.endpoint,
       hasCode: Boolean(apply),
       generatedCode: payload.endpoint === "codeGeneration" ? apply : "",
+      refactorCode: payload.endpoint === "codeRefactor" ? apply : "",
       codeGenDelivery: payload.codeGenDelivery ?? "",
       newFileRelativePath: payload.newFileRelativePath ?? "",
       generatedFiles: payload.generatedFiles ?? [],

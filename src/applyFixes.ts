@@ -388,10 +388,10 @@ export async function applyFixesFromReview(
         const previewTitle = finding.title || `Fix (${step + 1}/${total})`;
         const choice = await previewFixInEditorAndWait(doc, baseText, afterText, previewTitle);
         if (choice === "reject") {
+          panel.setApplyingFixIndex(null);
           await markFindingRejected(originalIndex);
           rejectedCount += 1;
           panel.addFixLog(`Step ${step + 1}/${total} rejected. Continuing with next finding.`, "warn");
-          panel.setApplyingFixIndex(null);
           if (!isBulkRun) {
             void vscode.window.showInformationMessage("Fix preview rejected. This finding is marked Rejected in Genie.");
             return;
@@ -399,8 +399,8 @@ export async function applyFixesFromReview(
           continue;
         }
 
-        await markFindingApplied(originalIndex);
         panel.setApplyingFixIndex(null);
+        await markFindingApplied(originalIndex);
         appliedCount += 1;
         doc = await vscode.workspace.openTextDocument(uri);
       }
