@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import { registerReviewPanel, unregisterReviewPanel } from "./reviewBridge";
 import { AssistantResultPanel } from "./assistantPanel";
+import { buildWebviewCsp } from "./webviewCsp";
 
 function getNonce(): string {
   let text = "";
@@ -12,16 +13,13 @@ function getNonce(): string {
 }
 
 function reviewTableHtml(webview: vscode.Webview, nonce: string): string {
-  const csp = [
-    "default-src 'none'",
-    `style-src ${webview.cspSource} 'unsafe-inline'`,
-    `script-src 'nonce-${nonce}'`,
-  ].join("; ");
+  const csp = buildWebviewCsp(webview, nonce);
 
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta http-equiv="Content-Security-Policy" content="${csp}" />
   <style>
     :root {
@@ -32,12 +30,16 @@ function reviewTableHtml(webview: vscode.Webview, nonce: string): string {
       --spacing-md: 14px;
       --spacing-lg: 18px;
     }
+    html, body {
+      min-height: 100%;
+      background-color: var(--vscode-editor-background, #1e1e1e);
+      color: var(--vscode-editor-foreground, #cccccc);
+    }
     body {
       margin: 0;
       padding: 18px 22px 42px;
       font-family: var(--vscode-font-family);
       font-size: var(--vscode-font-size);
-      color: var(--vscode-editor-foreground);
       line-height: 1.45;
     }
     .wrap { width: 100%; max-width: 100%; margin: 0 auto; box-sizing: border-box; }
@@ -558,6 +560,8 @@ export interface ReviewPayload {
   sections?: ReviewSectionPayload[];
   /** Row indices (0-based) whose fixes were accepted and applied. */
   appliedIndices?: number[];
+  /** Row indices (0-based) where the user rejected the fix preview (can Retry). */
+  rejectedIndices?: number[];
 }
 
 export interface ReviewSectionFinding extends ReviewFinding {
@@ -577,6 +581,7 @@ export interface ReviewTableState {
   summary: string;
   findings: ReviewFinding[];
   appliedIndices?: number[];
+  rejectedIndices?: number[];
 }
 
 export class ReviewWebviewSession {
@@ -645,6 +650,7 @@ export class ReviewWebviewSession {
         findings: payload.findings,
         sections: payload.sections ?? [],
         appliedIndices: payload.appliedIndices ?? [],
+        rejectedIndices: payload.rejectedIndices ?? [],
       } as unknown as Record<string, unknown>,
     });
     this.panel.setStatus("Review completed.");
@@ -670,6 +676,7 @@ export class ReviewWebviewSession {
       findings: stored.findings,
       sections: mappedSections,
       appliedIndices: stored.appliedIndices ?? [],
+      rejectedIndices: stored.rejectedIndices ?? [],
     });
   }
 
@@ -720,6 +727,16 @@ export class ReviewWebviewSession {
     return new Promise((resolve) => {
       this.choiceResolver = resolve;
     });
+  }
+
+  setApplyingFixIndex(index: number | null): void {
+    if (this.disposed) return;
+    this.panel.setApplyingFixIndex(index);
+  }
+
+  setApplyingFixAll(value: boolean): void {
+    if (this.disposed) return;
+    this.panel.setApplyingFixAll(value);
   }
 
   registerOnMessage(handler: (msg: unknown) => void): vscode.Disposable {

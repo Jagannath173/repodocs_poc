@@ -2,6 +2,7 @@ import { ensurePythonEnvironment } from "./pythonRunner";
 import { CodeReviewViewProvider } from "./codeReviewView";
 import { runCodeReview } from "./codeReview";
 import { applyFixesFromReview } from "./applyFixes";
+import { registerFixPreviewCommands } from "./fixInEditorPreview";
 import { openAuthWebviewAndAuthenticate } from "./authPanel";
 import { runAssistantEndpoint, type AssistantEndpoint } from "./assistantActions";
 import { initExtensionLogger, log, showExtensionLogs } from "./logger";
@@ -29,6 +30,8 @@ export function activate(context: vscode.ExtensionContext): void {
       log.info("command", "Command invoked", { commandId: command, endpoint });
       void runAssistantEndpoint(endpoint);
     });
+
+  registerFixPreviewCommands(context);
 
   context.subscriptions.push(
     vscode.window.registerTreeDataProvider("code-review-main", sidebarProvider),

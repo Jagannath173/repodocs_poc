@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
 import { getOrCreateGeniePanel } from "./genieHost";
+import { buildWebviewCsp } from "./webviewCsp";
 
 function getNonce(): string {
   let text = "";
@@ -11,24 +12,25 @@ function getNonce(): string {
 }
 
 function panelHtml(webview: vscode.Webview, nonce: string): string {
-  const csp = [
-    "default-src 'none'",
-    `style-src ${webview.cspSource} 'unsafe-inline'`,
-    `script-src 'nonce-${nonce}'`,
-  ].join("; ");
+  const csp = buildWebviewCsp(webview, nonce);
 
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta http-equiv="Content-Security-Policy" content="${csp}" />
   <style>
     :root { color-scheme: light dark; }
-    body {
+    html, body {
+      min-height: 100%;
       margin: 0;
+      background-color: var(--vscode-editor-background, #1e1e1e);
+      color: var(--vscode-editor-foreground, #cccccc);
+    }
+    body {
       padding: 16px 20px 28px;
       font-family: var(--vscode-font-family);
-      color: var(--vscode-editor-foreground);
       overflow-x: auto;
       overflow-y: auto;
       min-width: max-content;
@@ -63,6 +65,7 @@ function panelHtml(webview: vscode.Webview, nonce: string): string {
       word-break: break-word;
     }
     .actions { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+    .actions.align-right { justify-content: flex-end; }
     .prompt-box {
       margin-bottom: 12px;
       padding: 12px 14px;
@@ -279,6 +282,142 @@ function panelHtml(webview: vscode.Webview, nonce: string): string {
     }
     .session-tab.active .session-tab-close { color: var(--vscode-button-foreground); }
     .session-tab-close:hover { background: var(--vscode-toolbar-hoverBackground, var(--vscode-list-hoverBackground)); }
+    .review-fix-toolbar { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; align-items: center; }
+    .review-table-wrap {
+      overflow-x: auto;
+      margin-bottom: 16px;
+      border: 1px solid var(--vscode-editorWidget-border);
+      border-radius: 8px;
+      background: var(--vscode-editor-background);
+    }
+    .review-findings-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.86em;
+      min-width: 640px;
+      table-layout: auto;
+    }
+    .review-findings-table th {
+      background: var(--vscode-editor-inactiveSelectionBackground);
+      font-weight: 600;
+      padding: 8px 10px;
+      border-bottom: 1px solid var(--vscode-editorWidget-border);
+      white-space: nowrap;
+      text-align: left;
+      vertical-align: bottom;
+    }
+    .review-findings-table td {
+      padding: 8px 10px;
+      border: 1px solid var(--vscode-editorWidget-border);
+      vertical-align: top;
+      word-break: break-word;
+      overflow-wrap: anywhere;
+    }
+    .review-findings-table tbody tr:nth-child(even) td { background: var(--vscode-editor-inactiveSelectionBackground); }
+    .review-status-rejected {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-weight: 600;
+      color: rgba(248, 113, 113, 0.95);
+      background: rgba(220, 53, 69, 0.18);
+    }
+    .review-status-accepted {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-weight: 600;
+      color: rgba(63, 185, 80, 0.95);
+      background: rgba(63, 185, 80, 0.18);
+    }
+    .review-findings-table tr.row-applied td { background: rgba(63, 185, 80, 0.05) !important; }
+    .review-findings-table .col-applied-muted {
+      color: var(--vscode-descriptionForeground);
+    }
+    .review-findings-table .col-suggestion-applied-done {
+      border-left: 3px solid rgba(63, 185, 80, 0.3) !important;
+      background: rgba(63, 185, 80, 0.04) !important;
+      color: var(--vscode-descriptionForeground);
+    }
+    .review-findings-table tr.row-rejected td { background: rgba(220, 53, 69, 0.05) !important; }
+    .review-fix-cell-stack {
+      display: flex;
+      flex-direction: column;
+      align-items: stretch;
+      gap: 8px;
+    }
+    .review-findings-table .col-suggestion-rejected {
+      font-style: normal;
+      color: var(--vscode-foreground);
+      border-left: 3px solid rgba(220, 53, 69, 0.45) !important;
+      background: rgba(220, 53, 69, 0.06) !important;
+    }
+    .review-findings-table .col-num {
+      width: 44px;
+      text-align: right;
+      color: var(--vscode-descriptionForeground);
+      font-variant-numeric: tabular-nums;
+      position: sticky;
+      left: 0;
+      z-index: 2;
+      background: var(--vscode-editor-background);
+      box-shadow: 2px 0 6px rgba(0, 0, 0, 0.08);
+    }
+    .review-findings-table thead th.col-num-h {
+      position: sticky;
+      left: 0;
+      z-index: 4;
+      background: var(--vscode-editor-inactiveSelectionBackground);
+    }
+    .review-findings-table .col-suggestion {
+      font-size: 0.88em;
+      line-height: 1.4;
+      white-space: pre-wrap;
+      max-width: 380px;
+      border-left: 3px solid rgba(80, 200, 120, 0.45);
+      background: rgba(80, 200, 120, 0.08);
+    }
+    .review-findings-table .col-fix {
+      width: 120px;
+      min-width: 120px;
+      white-space: nowrap;
+      text-align: center;
+    }
+    .review-findings-table tbody tr:nth-child(even) td.col-num,
+    .review-findings-table tbody tr:nth-child(even) td.col-fix {
+      background: var(--vscode-editor-inactiveSelectionBackground);
+    }
+    .review-fix-toolbar button.primary.is-applying {
+      cursor: wait;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .sev-critical { color: var(--vscode-errorForeground); font-weight: 600; }
+    .sev-high { color: var(--vscode-charts-red); font-weight: 600; }
+    .sev-medium { color: var(--vscode-charts-orange); }
+    .sev-low, .sev-info { color: var(--vscode-descriptionForeground); }
+    button.review-fix-btn { min-width: 88px; display: inline-flex; align-items: center; justify-content: center; gap: 8px; }
+    button.review-fix-btn.is-applying { opacity: 0.95; cursor: wait; }
+    .spinner {
+      width: 14px;
+      height: 14px;
+      border: 2px solid var(--vscode-button-border, var(--vscode-editorWidget-border));
+      border-top-color: var(--vscode-button-foreground);
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+      flex-shrink: 0;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .review-section-heading {
+      margin: 12px 0 8px;
+      font-size: 0.95em;
+      font-weight: 600;
+      color: var(--vscode-editor-foreground);
+      padding-bottom: 6px;
+      border-bottom: 1px solid var(--vscode-editorWidget-border);
+    }
+    .review-section-heading:first-child { margin-top: 0; }
   </style>
 </head>
 <body>
@@ -302,6 +441,7 @@ function panelHtml(webview: vscode.Webview, nonce: string): string {
   </div>
   <div id="step" class="step-line hidden"></div>
   <div id="meta" class="meta hidden"></div>
+  <div id="actions-top-anchor"></div>
   <div id="actions" class="actions hidden">
     <button id="btn-apply" class="primary" type="button" disabled>Apply to current file</button>
     <button id="btn-refine" class="secondary hidden" type="button">Refine output...</button>
@@ -350,16 +490,29 @@ function panelHtml(webview: vscode.Webview, nonce: string): string {
     </div>
     <pre id="generated-code" class="generated-code-pre"></pre>
   </div>
+  <div id="actions-bottom-anchor"></div>
   <div id="err" class="err"></div>
   <script nonce="${nonce}">
-    var vscode = acquireVsCodeApi();
-    var sessions = {};
-    var sessionOrder = [];
-    var activeSessionId = "";
-    var generatedFiles = [];
-    var renderedPanelEl = document.getElementById("rendered-panel");
-    var explainToggleBtn = document.getElementById("explain-toggle");
-    var tabsEl = document.getElementById("session-tabs");
+(function () {
+  'use strict';
+  var vscode;
+  try {
+    vscode = acquireVsCodeApi();
+  } catch (e) {
+    document.body.innerHTML = '<p style="padding:16px;font-family:system-ui;color:#f14c4c;">Genie could not start (webview API). Run <b>Developer: Reload Window</b>.</p>';
+    return;
+  }
+  var sessions = {};
+  var sessionOrder = [];
+  var activeSessionId = "";
+  var generatedFiles = [];
+  var renderedPanelEl = document.getElementById("rendered-panel");
+  var explainToggleBtn = document.getElementById("explain-toggle");
+  var tabsEl = document.getElementById("session-tabs");
+  if (!renderedPanelEl || !explainToggleBtn || !tabsEl) {
+    document.body.innerHTML = '<p style="padding:16px;font-family:system-ui;color:#f14c4c;">Genie UI failed to load (missing DOM). Reload the window.</p>';
+    return;
+  }
 
     function newSession(title) {
       return {
@@ -381,8 +534,11 @@ function panelHtml(webview: vscode.Webview, nonce: string): string {
         explainOpen: true,
         streamOpen: false,
         streamText: "",
+        refinePromptMode: false,
         authUrl: "",
         authCode: "",
+        fixApplyingIndex: null,
+        fixApplyingAll: false,
       };
     }
 
@@ -451,11 +607,11 @@ function panelHtml(webview: vscode.Webview, nonce: string): string {
       });
       return o;
     }
-    function renderStructured(root, data, fallbackText, endpoint) {
+    function renderStructured(root, data, fallbackText, endpoint, session) {
       clearEl(root);
       var view = omitGeneratedCodeForExplanation(data, endpoint);
       if (endpoint === "codeReview") {
-        renderCodeReview(root, view, fallbackText);
+        renderCodeReview(root, view, fallbackText, session);
         return;
       }
       if (!view || typeof view !== "object") {
@@ -499,24 +655,56 @@ function panelHtml(webview: vscode.Webview, nonce: string): string {
         if (typeof value === "string" && value.trim()) addParagraph(root, key, value);
       });
     }
-    function renderCodeReview(root, view, fallbackText) {
+    function issueDescriptionOnly(f) {
+      var detail = String(f.detail || "");
+      var head = detail.split(/\\n\\nCode:/i)[0].trim();
+      return head || "—";
+    }
+    function sevClass(sev) {
+      var x = String(sev || "").toLowerCase();
+      if (x === "critical") return "sev-critical";
+      if (x === "high") return "sev-high";
+      if (x === "medium") return "sev-medium";
+      if (x === "low") return "sev-low";
+      return "sev-info";
+    }
+    function renderCodeReview(root, view, fallbackText, session) {
       if (!view || typeof view !== "object") {
-        // Do not render placeholders while review is still warming up.
         return;
       }
       var applied = Array.isArray(view.appliedIndices) ? view.appliedIndices : [];
+      var rejected = Array.isArray(view.rejectedIndices) ? view.rejectedIndices : [];
+      var applyingIndex = session && session.fixApplyingIndex != null ? session.fixApplyingIndex : null;
+      var applyingAll = !!(session && session.fixApplyingAll);
+      var fixRunInProgress = applyingAll || applyingIndex !== null;
+
       var toolbar = document.createElement("div");
-      toolbar.className = "actions";
+      toolbar.className = "review-fix-toolbar";
       var btnAll = document.createElement("button");
       btnAll.type = "button";
-      btnAll.className = "primary";
-      btnAll.textContent = "Apply all fixes (sequential)";
-      btnAll.onclick = function () { vscode.postMessage({ command: "applyFixes", mode: "all", sessionId: activeSessionId }); };
+      btnAll.className = "primary" + (applyingAll ? " is-applying" : "");
+      if (applyingAll) {
+        btnAll.disabled = true;
+        btnAll.innerHTML = "";
+        var spAll = document.createElement("span");
+        spAll.className = "spinner";
+        btnAll.appendChild(spAll);
+        btnAll.appendChild(document.createTextNode(" Applying..."));
+      } else if (applyingIndex !== null) {
+        btnAll.disabled = true;
+        btnAll.textContent = "Fix All One by One";
+      } else {
+        btnAll.textContent = "Fix All One by One";
+        btnAll.onclick = function () { vscode.postMessage({ command: "applyFixes", mode: "all", sessionId: activeSessionId }); };
+      }
       var btnExtra = document.createElement("button");
       btnExtra.type = "button";
       btnExtra.className = "secondary";
       btnExtra.textContent = "Apply with extra instructions...";
-      btnExtra.onclick = function () { vscode.postMessage({ command: "applyFixes", mode: "all", promptExtra: true, sessionId: activeSessionId }); };
+      btnExtra.disabled = fixRunInProgress;
+      if (!fixRunInProgress) {
+        btnExtra.onclick = function () { vscode.postMessage({ command: "applyFixes", mode: "all", promptExtra: true, sessionId: activeSessionId }); };
+      }
       toolbar.appendChild(btnAll);
       toolbar.appendChild(btnExtra);
       root.appendChild(toolbar);
@@ -532,64 +720,125 @@ function panelHtml(webview: vscode.Webview, nonce: string): string {
       }
 
       var fallbackGlobalIndex = 0;
-      function renderFindingsTable(sectionTitle, findings) {
+      function renderFindingTable(sectionLabel, findings) {
         if (!Array.isArray(findings) || !findings.length) return;
-        var title = document.createElement("h3");
-        title.textContent = sectionTitle;
-        title.style.margin = "8px 0";
-        root.appendChild(title);
-
-        var tableWrap = document.createElement("div");
-        tableWrap.className = "section";
-        tableWrap.style.overflowX = "auto";
+        var wrap = document.createElement("div");
+        wrap.className = "review-table-wrap";
         var table = document.createElement("table");
+        table.className = "review-findings-table";
         var thead = document.createElement("thead");
-        var trh = document.createElement("tr");
-        ["Index", "Severity", "Category", "Title", "Detail", "Suggestion", "Fix"].forEach(function (h) {
+        var hr = document.createElement("tr");
+        [["#", "col-num-h"], ["Severity", ""], ["Category", ""], ["Title", ""], ["Description", ""], ["Suggested fix", ""], ["Fix", ""]].forEach(function (pair) {
           var th = document.createElement("th");
-          th.textContent = h;
-          trh.appendChild(th);
+          th.textContent = pair[0];
+          if (pair[1]) th.className = pair[1];
+          hr.appendChild(th);
         });
-        thead.appendChild(trh);
+        thead.appendChild(hr);
         table.appendChild(thead);
         var tbody = document.createElement("tbody");
-        findings.forEach(function (f, idx) {
+        var rowNum = 0;
+        findings.forEach(function (f) {
           var item = f && typeof f === "object" ? f : {};
           var globalIndex = typeof item.globalIndex === "number" ? item.globalIndex : fallbackGlobalIndex;
           fallbackGlobalIndex += 1;
           var isApplied = applied.indexOf(globalIndex) >= 0;
+          var isRejected = !isApplied && rejected.indexOf(globalIndex) >= 0;
+          rowNum += 1;
           var tr = document.createElement("tr");
-          var cells = [
-            String(idx + 1),
-            String(item.severity || ""),
-            String(item.category || ""),
-            String(item.title || ""),
-            String(item.detail || ""),
-            String(item.suggestion || ""),
-          ];
-          cells.forEach(function (c) {
-            var td = document.createElement("td");
-            td.textContent = c;
-            tr.appendChild(td);
-          });
-          var fixTd = document.createElement("td");
-          var fixBtn = document.createElement("button");
-          fixBtn.type = "button";
-          fixBtn.className = isApplied ? "secondary" : "primary";
-          fixBtn.disabled = isApplied;
-          fixBtn.textContent = isApplied ? "Applied" : "Fix";
-          if (!isApplied) {
-            fixBtn.onclick = function () {
-              vscode.postMessage({ command: "applyFixes", mode: "one", index: globalIndex, sessionId: activeSessionId });
-            };
+          if (isApplied) {
+            tr.className = "row-applied";
+          } else if (isRejected) {
+            tr.className = "row-rejected";
           }
-          fixTd.appendChild(fixBtn);
-          tr.appendChild(fixTd);
+          var tdNum = document.createElement("td");
+          tdNum.className = "col-num";
+          tdNum.textContent = String(rowNum);
+          tr.appendChild(tdNum);
+          var tdSev = document.createElement("td");
+          var sevText = String(item.severity || "");
+          tdSev.className = sevClass(sevText);
+          tdSev.textContent = sevText || "—";
+          tr.appendChild(tdSev);
+          var tdCat = document.createElement("td");
+          tdCat.textContent = String(item.category || "—");
+          tr.appendChild(tdCat);
+          var tdTitle = document.createElement("td");
+          tdTitle.textContent = String(item.title || "Issue");
+          tr.appendChild(tdTitle);
+          var tdDesc = document.createElement("td");
+          if (isApplied) {
+            tdDesc.className = "col-applied-muted";
+            tdDesc.textContent = "—";
+          } else {
+            tdDesc.textContent = issueDescriptionOnly(item);
+          }
+          tr.appendChild(tdDesc);
+          var tdSug = document.createElement("td");
+          var sugText = String(item.suggestion || "").trim();
+          if (isApplied) {
+            tdSug.className = "col-suggestion col-suggestion-applied-done";
+            tdSug.textContent = "—";
+          } else if (isRejected) {
+            tdSug.className = "col-suggestion col-suggestion-rejected";
+            tdSug.textContent = sugText || "—";
+          } else {
+            tdSug.className = "col-suggestion";
+            tdSug.textContent = sugText || "—";
+          }
+          tr.appendChild(tdSug);
+          var tdFix = document.createElement("td");
+          tdFix.className = "col-fix";
+          if (isApplied) {
+            var spA = document.createElement("span");
+            spA.className = "review-status-accepted";
+            spA.textContent = "Accepted";
+            tdFix.appendChild(spA);
+          } else if (isRejected) {
+            var spR = document.createElement("span");
+            spR.className = "review-status-rejected";
+            spR.textContent = "Rejected";
+            tdFix.appendChild(spR);
+          } else {
+            var fixBtn = document.createElement("button");
+            fixBtn.type = "button";
+            fixBtn.className = "primary review-fix-btn";
+            var showApplying = applyingIndex === globalIndex;
+            var fixRowLocked =
+              (applyingIndex !== null && applyingIndex !== globalIndex) ||
+              (applyingAll && applyingIndex === null);
+            if (showApplying) {
+              fixBtn.className = "primary review-fix-btn is-applying";
+              fixBtn.disabled = true;
+              fixBtn.innerHTML = "";
+              var sp = document.createElement("span");
+              sp.className = "spinner";
+              fixBtn.appendChild(sp);
+              fixBtn.appendChild(document.createTextNode(" Applying..."));
+            } else {
+              fixBtn.textContent = "Fix";
+              fixBtn.disabled = !!fixRowLocked;
+              if (!fixRowLocked) {
+                fixBtn.onclick = function () {
+                  vscode.postMessage({ command: "applyFixes", mode: "one", index: globalIndex, sessionId: activeSessionId });
+                };
+              }
+            }
+            tdFix.appendChild(fixBtn);
+          }
+          tr.appendChild(tdFix);
           tbody.appendChild(tr);
         });
+        if (!tbody.children.length) return;
         table.appendChild(tbody);
-        tableWrap.appendChild(table);
-        root.appendChild(tableWrap);
+        wrap.appendChild(table);
+        if (sectionLabel) {
+          var sn = document.createElement("h3");
+          sn.className = "review-section-heading";
+          sn.textContent = sectionLabel;
+          root.appendChild(sn);
+        }
+        root.appendChild(wrap);
       }
 
       var sections = Array.isArray(view.sections) ? view.sections : [];
@@ -603,14 +852,27 @@ function panelHtml(webview: vscode.Webview, nonce: string): string {
         if (typeof sec.summary === "string" && sec.summary.trim()) {
           addParagraph(root, sectionName + " Summary", sec.summary.trim());
         }
-        renderFindingsTable(sectionName + " Issues", findings);
+        renderFindingTable(sectionName, findings);
       });
 
       if (!renderedAnySection) {
-        var findings = Array.isArray(view.findings) ? view.findings : [];
-        if (findings.length) {
-          renderFindingsTable("Issues", findings);
+        var flatFindings = Array.isArray(view.findings) ? view.findings : [];
+        var pendingFlat = [];
+        for (var fi = 0; fi < flatFindings.length; fi++) {
+          var raw = flatFindings[fi];
+          var merged = Object.assign({ globalIndex: fi }, raw && typeof raw === "object" ? raw : {});
+          pendingFlat.push(merged);
         }
+        if (pendingFlat.length) {
+          renderFindingTable("Open issues", pendingFlat);
+        }
+      }
+
+      if (!root.querySelector(".review-findings-table")) {
+        var empty = document.createElement("p");
+        empty.className = "hint muted";
+        empty.textContent = "No open issues — everything is addressed or the review was empty.";
+        root.appendChild(empty);
       }
     }
     function renderDiff(parts) {
@@ -717,11 +979,19 @@ function panelHtml(webview: vscode.Webview, nonce: string): string {
         uqb.textContent = "";
         uq.classList.add("hidden");
       }
-      var needsPrompt = s.endpoint === "codeGeneration" && !(s.userQuestion || "").trim() && !s.busy;
+      var needsPrompt =
+        (s.endpoint === "codeGeneration" && !(s.userQuestion || "").trim() && !s.busy) ||
+        (s.endpoint === "codeRefactor" && !!s.refinePromptMode && !(s.userQuestion || "").trim() && !s.busy);
       if (needsPrompt) {
         promptBox.classList.remove("hidden");
         sendPromptBtn.disabled = false;
         promptInput.disabled = false;
+        if (promptInput) {
+          promptInput.placeholder =
+            s.endpoint === "codeRefactor"
+              ? "How should the code be refactored? (e.g. extract functions, rename, add types, simplify…) — Enter to send, Shift+Enter for newline"
+              : "Describe what should be generated… (Enter to send, Shift+Enter for newline)";
+        }
       } else {
         promptBox.classList.add("hidden");
         sendPromptBtn.disabled = true;
@@ -757,14 +1027,22 @@ function panelHtml(webview: vscode.Webview, nonce: string): string {
         sw.classList.remove("streaming");
       }
       var actions = document.getElementById("actions");
+      var actionsTopAnchor = document.getElementById("actions-top-anchor");
+      var actionsBottomAnchor = document.getElementById("actions-bottom-anchor");
+      if (s.endpoint === "codeRefactor" && actionsBottomAnchor && actions && actions.parentNode !== actionsBottomAnchor) {
+        actionsBottomAnchor.appendChild(actions);
+      } else if (s.endpoint !== "codeRefactor" && actionsTopAnchor && actions && actions.parentNode !== actionsTopAnchor) {
+        actionsTopAnchor.appendChild(actions);
+      }
       actions.classList.remove("hidden");
+      actions.classList.remove("align-right");
       var btnApply = document.getElementById("btn-apply");
       var btnRefine = document.getElementById("btn-refine");
       var btnAccept = document.getElementById("btn-accept");
       var btnReject = document.getElementById("btn-reject");
       if (s.reviewMode) {
         btnApply.classList.add("hidden");
-        if (s.endpoint === "codeGeneration") {
+        if (s.endpoint === "codeGeneration" || s.endpoint === "codeRefactor") {
           btnRefine.classList.remove("hidden");
           btnAccept.textContent = "✓ Accept";
         } else {
@@ -776,8 +1054,13 @@ function panelHtml(webview: vscode.Webview, nonce: string): string {
         btnReject.textContent = "✕ Reject";
         setDecisionButtons(!!s.hasCode);
       } else {
-        if (s.hasCode) btnApply.classList.remove("hidden"); else btnApply.classList.add("hidden");
-        if (s.endpoint === "codeGeneration") btnRefine.classList.remove("hidden"); else btnRefine.classList.add("hidden");
+        var showApply = !!s.hasCode && !(s.endpoint === "codeRefactor" && (s.step || "").toLowerCase().indexOf("waiting for your prompt") >= 0);
+        if (showApply) btnApply.classList.remove("hidden"); else btnApply.classList.add("hidden");
+        if (s.endpoint === "codeRefactor" && showApply) {
+          actions.classList.add("align-right");
+        }
+        if (s.endpoint === "codeGeneration" || s.endpoint === "codeRefactor") btnRefine.classList.remove("hidden");
+        else btnRefine.classList.add("hidden");
         btnAccept.textContent = "✓ Accept";
         btnAccept.classList.add("hidden");
         btnReject.classList.add("hidden");
@@ -813,7 +1096,7 @@ function panelHtml(webview: vscode.Webview, nonce: string): string {
         renderedPanel.classList.remove("hidden");
         renderedPanel.open = s.explainOpen !== false;
         syncExplanationToggleIcon();
-        renderStructured(out, s.structuredData, s.displayText || "", s.endpoint || "");
+        renderStructured(out, s.structuredData, s.displayText || "", s.endpoint || "", s);
       } else {
         renderedPanel.classList.add("hidden");
         clearEl(out);
@@ -868,6 +1151,14 @@ function panelHtml(webview: vscode.Webview, nonce: string): string {
 
     document.getElementById("btn-refine").addEventListener("click", function () {
       if (!activeSessionId) return;
+      var s = sessions[activeSessionId];
+      if (!s) return;
+      if (s.endpoint === "codeGeneration" || s.endpoint === "codeRefactor") {
+        // Reuse the in-panel prompt box for refinement instead of popup input.
+        s.refinePromptMode = true;
+        s.userQuestion = "";
+        renderSession();
+      }
       vscode.postMessage({ command: "refineRequest", sessionId: activeSessionId });
     });
     document.getElementById("btn-apply").addEventListener("click", function () {
@@ -900,12 +1191,13 @@ function panelHtml(webview: vscode.Webview, nonce: string): string {
     function trySendPrompt() {
       if (!activeSessionId) return;
       var s = sessions[activeSessionId];
-      if (!s || s.endpoint !== "codeGeneration") return;
+      if (!s || (s.endpoint !== "codeGeneration" && s.endpoint !== "codeRefactor")) return;
       var input = document.getElementById("prompt-input");
       var text = (input && input.value != null) ? String(input.value) : "";
       var q = text.trim();
       if (!q) return;
       s.userQuestion = q;
+      s.refinePromptMode = false;
       renderSession();
       vscode.postMessage({ command: "submitPrompt", sessionId: activeSessionId, value: q });
     }
@@ -969,6 +1261,7 @@ function panelHtml(webview: vscode.Webview, nonce: string): string {
         s.generatedCode = m.generatedCode || "";
         s.generatedFiles = Array.isArray(m.generatedFiles) ? m.generatedFiles : [];
         s.diffParts = Array.isArray(m.diffParts) ? m.diffParts : [];
+        s.refinePromptMode = false;
         s.streamOpen = false;
       }
       if (m.type === "authData") {
@@ -977,6 +1270,12 @@ function panelHtml(webview: vscode.Webview, nonce: string): string {
         s.authCode = m.code != null ? String(m.code) : "";
       }
       if (m.type === "error") s.err = m.text || "";
+      if (m.type === "fixApplying") {
+        s.fixApplyingIndex = m.index === null || m.index === undefined ? null : m.index;
+      }
+      if (m.type === "fixApplyingAll") {
+        s.fixApplyingAll = !!m.value;
+      }
       if (sid === activeSessionId) {
         renderTabs();
         renderSession();
@@ -984,6 +1283,7 @@ function panelHtml(webview: vscode.Webview, nonce: string): string {
         renderTabs();
       }
     });
+})();
   </script>
 </body>
 </html>`;
@@ -1030,16 +1330,38 @@ class GeniePanelHost {
     }
   >();
 
-  private constructor() {
+  private constructor(context: vscode.ExtensionContext) {
     this.panel = getOrCreateGeniePanel("genie", "genieHost", vscode.ViewColumn.Beside, {
       enableScripts: true,
       retainContextWhenHidden: true,
-      localResourceRoots: [],
+      localResourceRoots: [context.extensionUri],
     });
     const nonce = getNonce();
     this.panel.webview.html = panelHtml(this.panel.webview, nonce);
     this.messageDisposables.push(
       this.panel.webview.onDidReceiveMessage((msg: { command?: GenieCommand; sessionId?: string; value?: string | "accept" | "reject" }) => {
+        // Run without requiring a registered session (fixes silent drops when target is missing).
+        if (msg?.command === "applyFixes") {
+          const m = msg as {
+            mode?: string;
+            index?: number;
+            indices?: number[];
+            promptExtra?: boolean;
+          };
+          const mode = m.mode === "one" || m.mode === "selected" ? m.mode : "all";
+          const idx = typeof m.index === "number" ? m.index : undefined;
+          const selectedIndices = Array.isArray(m.indices) ? m.indices.filter((n) => typeof n === "number") : undefined;
+          if (m.promptExtra) {
+            void vscode.commands.executeCommand("codeReview.applyFixes", mode, idx, undefined, selectedIndices);
+          } else {
+            void vscode.commands.executeCommand("codeReview.applyFixes", mode, idx, "", selectedIndices);
+          }
+          return;
+        }
+        if (msg?.command === "authenticate") {
+          void vscode.commands.executeCommand("codeReview.authenticate");
+          return;
+        }
         const sessionId = msg?.sessionId;
         if (!sessionId) {
           return;
@@ -1084,9 +1406,9 @@ class GeniePanelHost {
     });
   }
 
-  static getOrCreate(): GeniePanelHost {
+  static getOrCreate(context: vscode.ExtensionContext): GeniePanelHost {
     if (!GeniePanelHost.instance) {
-      GeniePanelHost.instance = new GeniePanelHost();
+      GeniePanelHost.instance = new GeniePanelHost(context);
     } else {
       GeniePanelHost.instance.panel.reveal(vscode.ViewColumn.Beside, false);
     }
@@ -1182,8 +1504,7 @@ export class AssistantResultPanel {
   private readonly host: GeniePanelHost;
   private readonly sessionId: string;
   constructor(context: vscode.ExtensionContext, title: string) {
-    void context;
-    this.host = GeniePanelHost.getOrCreate();
+    this.host = GeniePanelHost.getOrCreate(context);
     this.sessionId = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
     this.host.createSession(this.sessionId, title);
   }
@@ -1259,6 +1580,14 @@ export class AssistantResultPanel {
 
   close(): void {
     this.host.closeSession(this.sessionId);
+  }
+
+  setApplyingFixIndex(index: number | null): void {
+    void this.host.postMessage({ type: "fixApplying", sessionId: this.sessionId, index });
+  }
+
+  setApplyingFixAll(value: boolean): void {
+    void this.host.postMessage({ type: "fixApplyingAll", sessionId: this.sessionId, value });
   }
 
 }

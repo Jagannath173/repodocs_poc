@@ -10,6 +10,7 @@ import { AssistantRenderPayload, AssistantResultPanel } from "./assistantPanel";
 import { extractFirstJsonObject } from "./reviewPanel";
 import { renderPromptTemplate } from "./promptRenderer";
 import { log, sanitizeForLog } from "./logger";
+import { previewFixInEditorAndWait } from "./fixInEditorPreview";
 
 const ASSISTANT_PROMPT_FILES = {
   codeExplanation: "assistant/code_explanation.jinja",
@@ -70,7 +71,9 @@ export async function runAssistantEndpoint(endpoint: AssistantEndpoint): Promise
   panel.setMode(endpoint);
   if (endpoint === "codeGeneration") {
     panel.setBusy(false);
-    panel.setStatus("Type your question below, then click Send (Ctrl+Enter).");
+    panel.setStatus(
+      "Type your question below, then click Send (Ctrl+Enter)."
+    );
     panel.setProgressStep("Waiting for your prompt...");
   } else {
     panel.setBusy(true);
@@ -110,8 +113,12 @@ export async function runAssistantEndpoint(endpoint: AssistantEndpoint): Promise
   });
 
   panel.onApplyRequested(() => {
-    if (endpoint === "codeRefactor" || (endpoint === "codeGeneration" && waitingForDecision)) {
+    if (endpoint === "codeGeneration" && waitingForDecision) {
       panel.setStatus("Use Accept or Reject in the assistant panel after reviewing the editor diff.");
+      return;
+    }
+    if (endpoint === "codeRefactor") {
+      void applyRefactorWithEditorPreview(panel, applyCode, sourceUri, targetRange);
       return;
     }
     void applyAssistantOutput(applyCode, sourceUri, targetRange);
@@ -142,6 +149,10 @@ export async function runAssistantEndpoint(endpoint: AssistantEndpoint): Promise
         const vars: Record<string, string> = { ...baseVars };
         if (refinementNote?.trim()) {
           vars.refinement = refinementNote.trim();
+          if (endpoint === "codeRefactor") {
+            // For refactor, feed refinement directly into the main prompt field used by the template.
+            vars.prompt = `${baseVars.prompt}\n\nAdditional refinement request:\n${refinementNote.trim()}`;
+          }
         }
 
         panel.setUserQuestion(describeUserIntent(endpoint, vars));
@@ -162,14 +173,17 @@ export async function runAssistantEndpoint(endpoint: AssistantEndpoint): Promise
         lastNewFileRelativePath = rendered.newFileRelativePath?.trim() ?? "";
         lastGeneratedFiles = rendered.generatedFiles ?? [];
         panel.setResult(rendered);
-        const needsDiffDecision =
-          (endpoint === "codeRefactor" && applyCode.trim()) || (endpoint === "codeGeneration" && applyCode.trim() && rendered.reviewMode);
+        const needsDiffDecision = endpoint === "codeGeneration" && applyCode.trim() && rendered.reviewMode;
         if (needsDiffDecision) {
           waitingForDecision = true;
           panel.setStatus("Review the diff below, then use Accept or Reject here.");
         } else {
           waitingForDecision = false;
-          panel.setStatus("");
+          if (endpoint === "codeRefactor" && applyCode.trim()) {
+            panel.setStatus("Click Apply to preview changes in the editor, then accept/reject there.");
+          } else {
+            panel.setStatus("");
+          }
         }
         panel.setProgressStep("Done.");
       } finally {
@@ -179,14 +193,16 @@ export async function runAssistantEndpoint(endpoint: AssistantEndpoint): Promise
     };
 
     requestRefinementAndRegenerate = async () => {
-      if (endpoint !== "codeGeneration") {
+      if (endpoint !== "codeGeneration" && endpoint !== "codeRefactor") {
         return;
       }
-      const refinement = await vscode.window.showInputBox({
-        title: "Refine code generation",
-        prompt: "What should be improved? (security, compliance, architecture, edge cases, etc.)",
-        ignoreFocusOut: true,
-      });
+      panel.setStatus(
+        endpoint === "codeRefactor"
+          ? "Enter refinement instructions in the prompt box, then click Send."
+          : "Enter refinement instructions in the prompt box, then click Send."
+      );
+      panel.setProgressStep("Waiting for refinement prompt...");
+      const refinement = await askGenerationQuestion(panel);
       if (!refinement?.trim()) {
         return;
       }
@@ -259,6 +275,12 @@ function describeUserIntent(endpoint: AssistantEndpoint, vars: Record<string, st
     }
     return main || "(empty prompt)";
   }
+  if (endpoint === "codeRefactor") {
+    const ref = vars.refinement?.trim();
+    if (ref) {
+      return ref;
+    }
+  }
   const label = ASSISTANT_LABELS[endpoint];
   const lang = vars.language || "unknown";
   const code = vars.code ?? "";
@@ -287,6 +309,13 @@ async function collectAssistantVars(
     vars.prompt = generationPrompt.trim();
     vars.code = code.trim() ? code : "";
     vars.repo_context = await collectRepositoryContext();
+  }
+
+  if (endpoint === "codeRefactor") {
+    vars.prompt =
+      generationPrompt?.trim() ||
+      "Refactor the code for readability and maintainability while preserving behavior.";
+    vars.code = code.trim() ? code : "";
   }
 
   if (!vars.code) {
@@ -383,8 +412,7 @@ function buildAssistantRenderPayload(
 
     const isCodegen = endpoint === "codeGeneration" && Boolean(primaryCode.trim()) && codeGenDelivery;
 
-    let reviewMode =
-      endpoint === "codeRefactor" ? Boolean(applyCode?.trim()) : Boolean(isCodegen);
+    let reviewMode = Boolean(isCodegen);
 
     let diffParts: Array<{ kind: "add" | "remove" | "same"; text: string }> | undefined;
     if (endpoint === "codeRefactor" && applyCode?.trim()) {
@@ -414,7 +442,7 @@ function buildAssistantRenderPayload(
       displayText: raw.trim(),
       jsonText: raw.trim(),
       structuredData: undefined,
-      reviewMode: endpoint === "codeRefactor",
+      reviewMode: false,
       diffParts: undefined,
       endpoint,
       applyCode: undefined,
@@ -697,6 +725,43 @@ function buildDisplayText(obj: Record<string, unknown>): string {
       return blocks.join("\n\n---\n\n");
     }
   }
+  const summary = typeof obj.summary === "string" ? obj.summary.trim() : "";
+  const details = typeof obj.details === "string" ? obj.details.trim() : "";
+  const quality = typeof obj.quality === "string" ? obj.quality.trim() : "";
+  if (summary || details || quality || Array.isArray(obj.suggestedChanges)) {
+    const lines: string[] = [];
+    if (quality) lines.push(`Quality: ${quality}`);
+    if (summary) lines.push(summary);
+    if (details) lines.push(details);
+    const sc = obj.suggestedChanges;
+    if (Array.isArray(sc) && sc.length) {
+      lines.push("Suggested changes:");
+      for (let i = 0; i < sc.length; i++) {
+        const row = sc[i];
+        if (!row || typeof row !== "object") continue;
+        const r = row as Record<string, unknown>;
+        const area = typeof r.area === "string" ? r.area : "";
+        const issue = typeof r.issue === "string" ? r.issue : "";
+        const suggestion = typeof r.suggestion === "string" ? r.suggestion : "";
+        const benefit = typeof r.benefit === "string" ? r.benefit : "";
+        const bits = [area && `Area: ${area}`, issue && `Issue: ${issue}`, suggestion && `Change: ${suggestion}`, benefit && `Benefit: ${benefit}`]
+          .filter(Boolean)
+          .join("\n");
+        if (bits) lines.push(`${i + 1}. ${bits}`);
+      }
+    }
+    const risks = obj.risks;
+    if (Array.isArray(risks) && risks.length) {
+      lines.push("Risks:\n- " + risks.map((x) => String(x)).join("\n- "));
+    }
+    const vc = obj.validationChecklist;
+    if (Array.isArray(vc) && vc.length) {
+      lines.push("Validation:\n- " + vc.map((x) => String(x)).join("\n- "));
+    }
+    if (lines.length) {
+      return lines.join("\n\n");
+    }
+  }
   return JSON.stringify(obj, null, 2);
 }
 
@@ -725,5 +790,44 @@ async function applyAssistantOutput(
     void vscode.window.showInformationMessage("Code applied in the editor.");
   } else {
     void vscode.window.showErrorMessage("Could not apply assistant output to current file.");
+  }
+}
+
+async function applyRefactorWithEditorPreview(
+  panel: AssistantResultPanel,
+  applyCode: string,
+  sourceUri: vscode.Uri | undefined,
+  targetRange?: vscode.Range
+): Promise<void> {
+  if (!applyCode.trim()) {
+    void vscode.window.showWarningMessage("No refactored code available to apply.");
+    return;
+  }
+  const editor = vscode.window.activeTextEditor;
+  const targetUri = sourceUri ?? editor?.document.uri;
+  if (!targetUri) {
+    void vscode.window.showWarningMessage("Open a file to apply refactored output.");
+    return;
+  }
+  const doc = await vscode.workspace.openTextDocument(targetUri);
+  const baseText = doc.getText();
+  const range = targetRange ?? new vscode.Range(doc.positionAt(0), doc.positionAt(baseText.length));
+  const start = doc.offsetAt(range.start);
+  const end = doc.offsetAt(range.end);
+  const afterText = baseText.slice(0, start) + applyCode + baseText.slice(end);
+
+  panel.setBusy(true);
+  panel.setStatus("Applying...");
+  panel.setProgressStep("Opening in-editor preview...");
+  try {
+    const choice = await previewFixInEditorAndWait(doc, baseText, afterText, "Refactor preview");
+    if (choice === "accept") {
+      panel.setStatus("Accepted and applied.");
+    } else {
+      panel.setStatus("Rejected — no changes applied.");
+    }
+  } finally {
+    panel.setBusy(false);
+    panel.setProgressStep("Done.");
   }
 }

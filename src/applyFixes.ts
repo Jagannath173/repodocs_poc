@@ -134,9 +134,49 @@ async function markFindingApplied(originalIndex: number): Promise<void> {
   }
   const applied = new Set(s.appliedIndices ?? []);
   applied.add(originalIndex);
+  const rejected = new Set(s.rejectedIndices ?? []);
+  rejected.delete(originalIndex);
   const next: StoredReview = {
     ...s,
     appliedIndices: Array.from(applied).sort((a, b) => a - b),
+    rejectedIndices: Array.from(rejected).sort((a, b) => a - b),
+  };
+  await saveLastReview(next);
+  notifyReviewUpdated(next);
+}
+
+async function markFindingRejected(originalIndex: number): Promise<void> {
+  const s = getStoredReview();
+  if (!s) {
+    return;
+  }
+  const rejected = new Set(s.rejectedIndices ?? []);
+  rejected.add(originalIndex);
+  const applied = new Set(s.appliedIndices ?? []);
+  applied.delete(originalIndex);
+  const next: StoredReview = {
+    ...s,
+    rejectedIndices: Array.from(rejected).sort((a, b) => a - b),
+    appliedIndices: Array.from(applied).sort((a, b) => a - b),
+  };
+  await saveLastReview(next);
+  notifyReviewUpdated(next);
+}
+
+/** Clears rejected status when the user starts a new fix attempt for that finding. */
+async function clearFindingRejectedForIndex(originalIndex: number): Promise<void> {
+  const s = getStoredReview();
+  if (!s?.rejectedIndices?.length) {
+    return;
+  }
+  if (!s.rejectedIndices.includes(originalIndex)) {
+    return;
+  }
+  const rejected = new Set(s.rejectedIndices);
+  rejected.delete(originalIndex);
+  const next: StoredReview = {
+    ...s,
+    rejectedIndices: Array.from(rejected).sort((a, b) => a - b),
   };
   await saveLastReview(next);
   notifyReviewUpdated(next);
@@ -174,6 +214,10 @@ export async function applyFixesFromReview(
       void vscode.window.showWarningMessage("Invalid finding index for Apply fix.");
       return;
     }
+    if (stored.appliedIndices?.includes(index)) {
+      void vscode.window.showWarningMessage("This finding was already applied.");
+      return;
+    }
     targetIndices = [index];
   } else if (mode === "selected") {
     const normalized = Array.from(new Set((selectedIndices ?? []).filter((n) => Number.isInteger(n) && n >= 0 && n < stored.findings.length)));
@@ -183,7 +227,18 @@ export async function applyFixesFromReview(
     }
     targetIndices = normalized.sort((a, b) => a - b);
   } else {
-    targetIndices = stored.findings.map((_, i) => i);
+    const appliedSet = new Set(stored.appliedIndices ?? []);
+    const rejectedSet = new Set(stored.rejectedIndices ?? []);
+    targetIndices = stored.findings
+      .map((_, i) => i)
+      .filter((i) => !appliedSet.has(i) && !rejectedSet.has(i));
+  }
+
+  if (mode === "all" && targetIndices.length === 0) {
+    void vscode.window.showInformationMessage(
+      "No fixes to run — all findings are already applied or marked rejected. Use Retry on a rejected row to try again."
+    );
+    return;
   }
 
   let extra: string | undefined;
@@ -213,19 +268,26 @@ export async function applyFixesFromReview(
     panel.addFixLog("Another fix run is in progress for this file. Your request is queued.", "warn");
   }
 
+  const isBulkAllMode = mode === "all";
+
   await runWithDocumentFixQueue(stored.documentUri, async () => {
     try {
-      let currentText = doc.getText();
-      const initialText = currentText;
-
+      if (isBulkAllMode) {
+        panel.setApplyingFixAll(true);
+      }
       for (let step = 0; step < targetIndices.length; step++) {
         const originalIndex = targetIndices[step];
+        await clearFindingRejectedForIndex(originalIndex);
         const finding = stored.findings[originalIndex];
         panel.startFixStep(step + 1, total, finding.title);
         panel.addFixLog("Sending fix request to model.", "info");
 
-        const prompt = buildFixPrompt(stored.fileName, currentText, stored.summary, finding, extra);
+        doc = await vscode.workspace.openTextDocument(uri);
+        const baseText = doc.getText();
+        const prompt = buildFixPrompt(stored.fileName, baseText, stored.summary, finding, extra);
         const state = { text: "" };
+
+        panel.setApplyingFixIndex(originalIndex);
         try {
           log.debug("applyFixes", "Sending fix prompt", { step: step + 1, total, promptChars: prompt.length });
           await runCopilotInference(
@@ -244,44 +306,52 @@ export async function applyFixesFromReview(
           log.error("applyFixes", "Copilot request failed for fix step", { step: step + 1, error: sanitizeForLog(msg) });
           panel.showFixError(`Copilot request failed: ${msg}`);
           void vscode.window.showInformationMessage("Apply fixes stopped.");
+          panel.setApplyingFixIndex(null);
           return;
         }
 
+        let afterText: string;
         try {
-          currentText = parseFixFileContent(state.text);
+          afterText = parseFixFileContent(state.text);
           panel.addFixLog("Parsed model JSON successfully.", "success");
         } catch (e: unknown) {
           const msg = e instanceof Error ? e.message : "Could not parse JSON.";
           log.error("applyFixes", "Could not parse fix JSON", { step: step + 1, error: sanitizeForLog(msg) });
           panel.showFixError(`Could not parse AI response as fix JSON: ${msg}`);
           void vscode.window.showInformationMessage("Apply fixes stopped.");
+          panel.setApplyingFixIndex(null);
           return;
         }
-      }
 
-      const previewTitle =
-        mode === "one"
-          ? stored.findings[targetIndices[0]]?.title || "Fix"
-          : `Combined fixes (${targetIndices.length})`;
-      const choice = await previewFixInEditorAndWait(doc, initialText, currentText, previewTitle);
-      if (choice === "reject") {
-        void vscode.window.showInformationMessage("Fix preview rejected. No changes were finalized.");
-        return;
-      }
+        const previewTitle = finding.title || `Fix (${step + 1}/${total})`;
+        const choice = await previewFixInEditorAndWait(doc, baseText, afterText, previewTitle);
+        if (choice === "reject") {
+          await markFindingRejected(originalIndex);
+          void vscode.window.showInformationMessage("Fix preview rejected. This finding is marked Rejected in Genie.");
+          panel.setApplyingFixIndex(null);
+          return;
+        }
 
-      for (const originalIndex of targetIndices) {
         await markFindingApplied(originalIndex);
+        panel.setApplyingFixIndex(null);
         appliedCount += 1;
+        doc = await vscode.workspace.openTextDocument(uri);
       }
-      doc = await vscode.workspace.openTextDocument(uri);
 
       log.info("applyFixes", "Apply fixes completed", { appliedCount, total });
-      void vscode.window.showInformationMessage(`Accepted and applied ${appliedCount} fix step(s). Save the file if needed (${stored.fileName}).`);
+      void vscode.window.showInformationMessage(
+        `Accepted and applied ${appliedCount} fix step(s). Save the file if needed (${stored.fileName}).`
+      );
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       log.error("applyFixes", "applyFixesFromReview failed", { error: sanitizeForLog(msg) });
       panel.showFixError(`Apply fixes failed: ${msg}`);
       void vscode.window.showErrorMessage(`Apply fixes: ${msg}`);
+    } finally {
+      panel.setApplyingFixIndex(null);
+      if (isBulkAllMode) {
+        panel.setApplyingFixAll(false);
+      }
     }
   });
 }
@@ -294,5 +364,6 @@ export function toStoredReview(uri: vscode.Uri, fileName: string, payload: Revie
     summary: payload.summary,
     findings: payload.findings,
     appliedIndices: payload.appliedIndices ?? [],
+    rejectedIndices: payload.rejectedIndices ?? [],
   };
 }

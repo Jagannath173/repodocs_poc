@@ -11,6 +11,10 @@ export interface ReviewPanelLike {
   showFixDiff(parts: Array<{ kind: "add" | "remove" | "same"; text: string }>): void;
   showFixError(message: string): void;
   waitForFixChoice(): Promise<"accept" | "reject">;
+  /** Highlights which finding row is currently running a fix (spinner in UI). */
+  setApplyingFixIndex(index: number | null): void;
+  /** "Fix All One by One" is running — toolbar button shows Applying… and row Fixes are gated. */
+  setApplyingFixAll(value: boolean): void;
 }
 
 const registered = new Set<ReviewPanelLike>();

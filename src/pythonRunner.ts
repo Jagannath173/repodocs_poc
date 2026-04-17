@@ -2,6 +2,7 @@ import * as vscode from "vscode";
 import { spawn } from "child_process";
 import * as path from "path";
 import * as fs from "fs";
+import { runMockCopilotInference, useMockCopilotEnabled } from "./mockCopilot";
 
 const pythonRelDir = "python";
 const venvBin = (root: string, isWin: boolean) =>
@@ -75,6 +76,11 @@ export async function runCopilotInference(
   onLog: (data: string) => void,
   options?: CopilotInferenceOptions
 ): Promise<void> {
+  if (useMockCopilotEnabled()) {
+    await runMockCopilotInference(prompt, onLog, options);
+    return;
+  }
+
   await ensurePythonEnvironment(context).catch((e: Error) => {
     throw new Error(`Python environment setup failed: ${e.message}`);
   });

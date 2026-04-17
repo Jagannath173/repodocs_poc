@@ -11,11 +11,18 @@ import {
 } from "./reviewPanel";
 import { ensureCopilotSession } from "./session";
 import { getStoredReview, saveLastReview, toStoredReview } from "./applyFixes";
+import { notifyReviewUpdated } from "./reviewBridge";
+import { isFindingAlreadySatisfiedByFile } from "./reviewFilter";
 import { openAuthWebviewAndAuthenticate } from "./authPanel";
 import { renderPromptTemplate } from "./promptRenderer";
 import { log, sanitizeForLog } from "./logger";
+import { resetMockReviewStage } from "./mockCopilot";
 
-const REVIEW_SYSTEM_ROLE = "Respond with only a valid JSON object and no extra text.";
+const REVIEW_SYSTEM_ROLE =
+  "Respond with only a valid JSON object and no extra text. " +
+  "Include only findings that still need a real code change in the submitted source: " +
+  "omit issues that are already resolved by the current code, and do not suggest fixes that merely restate code already present. " +
+  "Each suggestion must be concrete, minimal, and directly change the codebase to address the issue.";
 
 const REVIEW_PROMPT_FILES = {
   quality: "review/quality_review.jinja",
@@ -86,6 +93,20 @@ export async function runCodeReview(): Promise<void> {
 
   const documentUri = editor ? editor.document.uri.toString() : undefined;
   const panel = new ReviewWebviewSession(extensionContext, `Review: ${fileName}`, documentUri);
+
+  if (documentUri) {
+    const stored = getStoredReview();
+    if (stored?.documentUri === documentUri) {
+      const next = {
+        ...stored,
+        rejectedIndices: [] as number[],
+        appliedIndices: [] as number[],
+      };
+      await saveLastReview(next);
+      notifyReviewUpdated(next);
+    }
+  }
+
   panel.setLoading("Running review suite…");
   panel.registerOnMessage((msg: unknown) => {
     const m = msg as { command?: string; mode?: string; index?: number; indices?: number[]; promptExtra?: boolean };
@@ -105,18 +126,9 @@ export async function runCodeReview(): Promise<void> {
 
   const sections: ReviewSectionPayload[] = [];
   const combinedFindings: ReviewPayload["findings"] = [];
-  const getAppliedIndicesForCurrentDoc = (): number[] => {
-    if (!documentUri) {
-      return [];
-    }
-    const stored = getStoredReview();
-    if (!stored || stored.documentUri !== documentUri) {
-      return [];
-    }
-    return stored.appliedIndices ?? [];
-  };
 
   try {
+    resetMockReviewStage();
     for (let i = 0; i < REVIEW_SEQUENCE.length; i++) {
       const endpoint = REVIEW_SEQUENCE[i];
       const label = REVIEW_ENDPOINT_LABELS[endpoint];
@@ -185,7 +197,18 @@ export async function runCodeReview(): Promise<void> {
 
       log.debug("codeReview", "Inference complete for stage", { endpoint, assistantTextChars: assistantText.length });
       const review = parseEndpointReviewJson(assistantText, endpoint);
-      const sectionFindings = review.findings.map((f) => {
+      const filtered = review.findings.filter((f) => !isFindingAlreadySatisfiedByFile(content, f));
+      const skipped = review.findings.length - filtered.length;
+      if (skipped > 0) {
+        panel.addReviewLog(`[${label}] Skipped ${skipped} finding(s) whose suggestions already match the file.`, "info");
+      }
+      if (filtered.length === 0) {
+        if (review.findings.length > 0) {
+          panel.addReviewLog(`[${label}] No new rows — all suggestions for this stage already appear in the file.`, "info");
+        }
+        continue;
+      }
+      const sectionFindings = filtered.map((f) => {
         const globalIndex = combinedFindings.length;
         combinedFindings.push(f);
         return { ...f, globalIndex };
@@ -202,7 +225,8 @@ export async function runCodeReview(): Promise<void> {
         summary: `Completed ${i + 1}/${REVIEW_SEQUENCE.length} review stages.`,
         findings: combinedFindings,
         sections,
-        appliedIndices: getAppliedIndicesForCurrentDoc(),
+        appliedIndices: [],
+        rejectedIndices: [],
       };
       panel.setReview(stagePayload);
       if (editor) {
@@ -214,7 +238,8 @@ export async function runCodeReview(): Promise<void> {
       summary: "Combined review completed across all review endpoints.",
       findings: combinedFindings,
       sections,
-      appliedIndices: getAppliedIndicesForCurrentDoc(),
+      appliedIndices: [],
+      rejectedIndices: [],
     };
     log.info("codeReview", "All review stages completed", { findings: combinedFindings.length });
     panel.addReviewLog("All review stages completed.", "success");

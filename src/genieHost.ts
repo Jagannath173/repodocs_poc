@@ -16,6 +16,14 @@ export function getOrCreateGeniePanel(
     localResourceRoots: [],
   }
 ): vscode.WebviewPanel {
+  const merged: vscode.WebviewPanelOptions & vscode.WebviewOptions = {
+    enableScripts: options.enableScripts ?? true,
+    retainContextWhenHidden: options.retainContextWhenHidden ?? true,
+    localResourceRoots:
+      options.localResourceRoots && options.localResourceRoots.length > 0
+        ? options.localResourceRoots
+        : [],
+  };
   const existing = sharedPanels.get(key);
   if (existing) {
     existing.title = "Genie";
@@ -23,7 +31,7 @@ export function getOrCreateGeniePanel(
     return existing;
   }
 
-  const panel = vscode.window.createWebviewPanel(viewType, "Genie", column, options);
+  const panel = vscode.window.createWebviewPanel(viewType, "Genie", column, merged);
   sharedPanels.set(key, panel);
   panel.onDidDispose(() => {
     const current = sharedPanels.get(key);

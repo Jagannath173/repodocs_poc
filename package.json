@@ -31,6 +31,22 @@
         "icon": "$(wand)"
       },
       {
+        "command": "codeReview.fixPreview.acceptChunk",
+        "title": "Code Review: Fix preview — Accept block"
+      },
+      {
+        "command": "codeReview.fixPreview.rejectChunk",
+        "title": "Code Review: Fix preview — Reject block"
+      },
+      {
+        "command": "codeReview.fixPreview.acceptAllChanges",
+        "title": "Code Review: Fix preview — Accept all"
+      },
+      {
+        "command": "codeReview.fixPreview.rejectAllChanges",
+        "title": "Code Review: Fix preview — Reject all"
+      },
+      {
         "command": "codeReview.authenticate",
         "title": "Code Review: Authenticate Copilot",
         "icon": "$(account)"
@@ -127,7 +143,17 @@
         "view": "code-review-main",
         "contents": "Select an action to get started."
       }
-    ]
+    ],
+    "configuration": {
+      "title": "Code Review",
+      "properties": {
+        "codeReview.useMockCopilot": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "When **enabled**, the extension uses built-in mock responses (no Python proxy, no Copilot API). When **disabled** or removed, requests go to the real Copilot client. For HSBC/production, leave this **off**."
+        }
+      }
+    }
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",

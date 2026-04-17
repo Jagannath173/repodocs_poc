@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
 import { diffLines } from "diff";
+import { buildWebviewCsp } from "./webviewCsp";
 
 function getNonce(): string {
   let text = "";
@@ -11,25 +12,26 @@ function getNonce(): string {
 }
 
 function buildHtml(webview: vscode.Webview, nonce: string): string {
-  const csp = [
-    "default-src 'none'",
-    `style-src ${webview.cspSource} 'unsafe-inline'`,
-    `script-src 'nonce-${nonce}'`,
-  ].join("; ");
+  const csp = buildWebviewCsp(webview, nonce);
 
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta http-equiv="Content-Security-Policy" content="${csp}" />
   <style>
     :root { color-scheme: light dark; }
+    html, body {
+      min-height: 100%;
+      background-color: var(--vscode-editor-background, #1e1e1e);
+      color: var(--vscode-editor-foreground, #cccccc);
+    }
     body {
       margin: 0;
       padding: 16px 20px 32px;
       font-family: var(--vscode-font-family);
       font-size: var(--vscode-font-size);
-      color: var(--vscode-editor-foreground);
       max-width: 920px;
       margin-left: auto;
       margin-right: auto;
@@ -291,7 +293,11 @@ export class FixPreviewPanel {
       "codeReviewFixPreview",
       "Apply fix — preview",
       vscode.ViewColumn.Beside,
-      { enableScripts: true, retainContextWhenHidden: true }
+      {
+        enableScripts: true,
+        retainContextWhenHidden: true,
+        localResourceRoots: [context.extensionUri],
+      }
     );
     const nonce = getNonce();
     this.panel.webview.html = buildHtml(this.panel.webview, nonce);

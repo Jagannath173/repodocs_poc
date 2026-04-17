@@ -2,6 +2,7 @@ import * as vscode from "vscode";
 import { authenticateCopilot } from "./pythonRunner";
 import { log, sanitizeForLog } from "./logger";
 import { AssistantResultPanel } from "./assistantPanel";
+import { buildWebviewCsp } from "./webviewCsp";
 
 function getNonce(): string {
   let text = "";
@@ -13,23 +14,24 @@ function getNonce(): string {
 }
 
 function authWebviewHtml(webview: vscode.Webview, nonce: string): string {
-  const csp = [
-    "default-src 'none'",
-    `style-src ${webview.cspSource} 'unsafe-inline'`,
-    `script-src 'nonce-${nonce}'`,
-  ].join("; ");
+  const csp = buildWebviewCsp(webview, nonce);
 
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta http-equiv="Content-Security-Policy" content="${csp}" />
   <style>
     :root { color-scheme: light dark; }
+    html, body {
+      min-height: 100%;
+      background-color: var(--vscode-editor-background, #1e1e1e);
+      color: var(--vscode-editor-foreground, #cccccc);
+    }
     body {
       font-family: var(--vscode-font-family);
       font-size: var(--vscode-font-size);
-      color: var(--vscode-editor-foreground);
       padding: 20px 24px 32px;
       max-width: 520px;
       margin: 0 auto;
