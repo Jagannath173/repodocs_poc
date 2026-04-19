@@ -1,6 +1,6 @@
-import type { ReviewTableState } from "./reviewPanel";
+import type { ReviewTableState } from "../commands/webview/review_Webview/reviewPanel";
 
-export type { ReviewTableState } from "./reviewPanel";
+export type { ReviewTableState } from "../commands/webview/review_Webview/reviewPanel";
 
 /** Panels that can refresh when workspace-stored review state changes (e.g. after a fix). */
 export interface ReviewPanelLike {
@@ -15,6 +15,10 @@ export interface ReviewPanelLike {
   setApplyingFixIndex(index: number | null): void;
   /** "Fix All One by One" is running — toolbar button shows Applying… and row Fixes are gated. */
   setApplyingFixAll(value: boolean): void;
+  /** Stream model output in Genie when running apply-with-extra with no pending findings (holistic pass). */
+  beginGuidedApplyStream(): void;
+  setGuidedApplyStream(text: string): void;
+  endGuidedApplyStream(): void;
 }
 
 const registered = new Set<ReviewPanelLike>();

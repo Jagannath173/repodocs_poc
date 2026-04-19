@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta http-equiv="Content-Security-Policy" content="__CSP__" />
+  <link rel="stylesheet" href="__CSS_URI__" />
+</head>
+<body>
+<div id="session-tabs" class="session-tabs"></div>
+<h1 id="title">Genie</h1>
+<div id="user-question" class="user-question hidden" aria-label="Prompt">
+  <div id="user-question-body" class="user-question-body"></div>
+</div>
+<div id="prompt-box" class="prompt-box hidden" aria-label="Ask a question">
+  <div class="prompt-label">Ask Genie</div>
+  <div class="prompt-input-row">
+    <textarea id="prompt-input" class="prompt-input" placeholder="Describe what should be generated... (Enter to send, Shift+Enter for new line)"></textarea>
+    <button id="btn-send-prompt" class="prompt-send-icon" type="button" title="Send" aria-label="Send">➤</button>
+  </div>
+</div>
+<div id="root">
+  <div class="status-row">
+    <div class="wave" id="wave" aria-hidden="true"><span></span><span></span><span></span><span></span></div>
+    <div id="status" class="status"></div>
+  </div>
+</div>
+<details id="stream-wrap" class="stream-wrap collapse-panel hidden">
+  <summary><span class="stream-status">Live response stream</span></summary>
+  <pre id="stream" role="log" aria-live="polite"></pre>
+</details>
+<div id="step" class="step-line hidden"></div>
+<div id="meta" class="meta hidden"></div>
+<div id="actions-shell" class="actions-shell hidden">
+  <div class="actions-shell-head">Actions</div>
+</div>
+<div id="actions" class="actions in-shell hidden">
+  <button id="btn-apply" class="primary" type="button" disabled>Apply</button>
+  <button id="btn-refine" class="secondary hidden" type="button">Refine output...</button>
+  <button id="btn-accept" class="primary hidden" type="button" disabled>✓ Accept</button>
+  <button id="btn-reject" class="secondary hidden" type="button" disabled>✕ Reject</button>
+</div>
+<div id="panel-actions-anchor" class="panel-actions-anchor hidden"></div>
+<div id="auth-box" class="auth-box hidden">
+  <div class="auth-row">
+    <div class="auth-label">Authentication URL</div>
+    <div class="auth-value-row">
+      <div id="auth-url" class="auth-value"></div>
+      <button id="btn-copy-auth-url" class="auth-copy-icon" type="button" title="Copy URL" aria-label="Copy URL">⧉</button>
+    </div>
+  </div>
+  <div class="auth-row">
+    <div class="auth-label">Device code</div>
+    <div class="auth-value-row">
+      <div id="auth-code" class="auth-value"></div>
+      <button id="btn-copy-auth-code" class="auth-copy-icon" type="button" title="Copy code" aria-label="Copy code">⧉</button>
+    </div>
+  </div>
+  <div id="auth-wait" class="auth-wait"></div>
+</div>
+<details id="diff-panel" class="collapse-panel hidden">
+  <summary><span id="diff-panel-head">Diff preview</span></summary>
+  <div id="diff" class="diff-wrap"></div>
+</details>
+<details id="rendered-panel" class="collapse-panel hidden">
+  <summary>
+    <span id="rendered-panel-label">Explanation</span>
+    <span class="explanation-toggle" role="toolbar" aria-label="Toggle explanation">
+      <button type="button" id="explain-toggle" title="Hide explanation">▲</button>
+    </span>
+  </summary>
+  <div id="out" class="content-wrap"></div>
+</details>
+<div id="refactor-code-wrap" class="refactor-code-wrap hidden">
+  <div class="refactor-code-heading" id="refactor-code-heading">Refactored code</div>
+  <pre id="refactor-code-out" class="refactor-code-pre"></pre>
+</div>
+<div id="refactor-actions-anchor"></div>
+<div id="generated-code-panel" class="panel hidden">
+  <div class="head">Generated code</div>
+  <div id="generated-picker" class="generated-picker hidden">
+    <label for="generated-file-select">File</label>
+    <select id="generated-file-select"></select>
+  </div>
+  <pre id="generated-code" class="generated-code-pre"></pre>
+</div>
+<div id="err" class="err"></div>
+<script nonce="__NONCE__" src="__JS_URI__"></script>
+</body>
+</html>

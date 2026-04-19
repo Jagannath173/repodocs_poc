@@ -1,5 +1,5 @@
-import { extensionContext } from "./extension";
-import { openAuthWebviewAndAuthenticate } from "./authPanel";
+import { extensionContext } from "../extension";
+import { openAuthWebviewAndAuthenticate } from "../commands/webview/auth_webview/authPanel";
 import { log } from "./logger";
 import { useMockCopilotEnabled } from "./mockCopilot";
 

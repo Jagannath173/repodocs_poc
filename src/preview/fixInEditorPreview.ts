@@ -533,7 +533,7 @@ export async function previewFixInEditorAndWait(
   baseDoc: vscode.TextDocument,
   baseText: string,
   afterText: string,
-  title: string
+  _title: string
 ): Promise<FixInEditorChoice> {
   const chunks = computeFixChunks(baseText, afterText, baseDoc);
 
@@ -604,7 +604,7 @@ export async function previewFixInEditorAndWait(
     return ok;
   };
 
-  let finalChoiceResolver: (c: FixInEditorChoice) => void;
+  let finalChoiceResolver!: (c: FixInEditorChoice) => void;
   const finalChoicePromise = new Promise<FixInEditorChoice>((resolve) => {
     finalChoiceResolver = resolve;
   });
@@ -642,18 +642,12 @@ export async function previewFixInEditorAndWait(
       void vscode.window.showWarningMessage(
         "Could not write the file after reviewing all blocks. Check if the document is read-only or locked."
       );
+      finalChoiceResolver("reject");
+      cleanup();
       return;
     }
     const allRejected = decisions.every((d) => !d);
     finalChoiceResolver(allRejected ? "reject" : "accept");
-    cleanup();
-  };
-
-  const finalizePreviewChoice = (choice: FixInEditorChoice): void => {
-    if (resolved) {
-      return;
-    }
-    finalChoiceResolver(choice);
     cleanup();
   };
 
@@ -780,6 +774,13 @@ export async function previewFixInEditorAndWait(
   const initialOk = await applyWholeDocumentReplace(docUri, appendFixPreviewPad(buildCurrentMergedText()));
   if (initialOk) {
     await revealEditorForUri(docUri);
+  } else {
+    void vscode.window.showWarningMessage(
+      "Could not open fix preview in the editor. Check if the document is read-only or locked."
+    );
+    finalChoiceResolver("reject");
+    cleanup();
+    return finalChoicePromise;
   }
   updateDecorations();
 

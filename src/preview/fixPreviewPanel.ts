@@ -1,6 +1,6 @@
 import * as vscode from "vscode";
 import { diffLines } from "diff";
-import { buildWebviewCsp } from "./webviewCsp";
+import { buildWebviewCsp } from "../utils/webviewCsp";
 
 function getNonce(): string {
   let text = "";
@@ -202,9 +202,9 @@ function buildHtml(webview: vscode.Webview, nonce: string): string {
       if (!text) return "";
       var s = escapeHtml(text);
       s = s.replace(/"((?:[^"\\\\]|\\\\.)*)"\s*:/g, '<span class="jk">"$1"</span><span class="jp">:</span>');
-      s = s.replace(/:\s*"((?:[^"\\\\]|\\\\.)*)"/g, ': <span class="js">"$1"</span>');
-      s = s.replace(/:\s*(true|false|null)\b/g, ': <span class="jb">$1</span>');
-      s = s.replace(/:\s*(-?\\d+\\.?\\d*(?:[eE][+\\-]?\\d+)?)/g, ': <span class="jn">$1</span>');
+      s = s.replace(/:\\s*"((?:[^"\\\\]|\\\\.)*)"/g, ': <span class="js">"$1"</span>');
+      s = s.replace(/:\\s*(true|false|null)\b/g, ': <span class="jb">$1</span>');
+      s = s.replace(/:\\s*(-?\\d+\\.?\\d*(?:[eE][+\\-]?\\d+)?)/g, ': <span class="jn">$1</span>');
       return s;
     }
 

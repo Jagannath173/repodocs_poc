@@ -2,15 +2,17 @@ import * as vscode from "vscode";
 import * as path from "node:path";
 import * as os from "node:os";
 import * as fs from "node:fs/promises";
-import { diffLines } from "diff";
-import { extensionContext } from "./extension";
-import { ensureCopilotSession } from "./session";
-import { runCopilotInference } from "./pythonRunner";
-import { AssistantRenderPayload, AssistantResultPanel } from "./assistantPanel";
-import { extractFirstJsonObject } from "./reviewPanel";
-import { renderPromptTemplate } from "./promptRenderer";
-import { log, sanitizeForLog } from "./logger";
-import { previewFixInEditorAndWait } from "./fixInEditorPreview";
+import { extensionContext } from "../../extension";
+import { ensureCopilotSession } from "../../utils/session";
+import { runCopilotInference } from "../../utils/pythonRunner";
+import type { AssistantRenderPayload } from "./assistantTypes";
+import { AssistantResultPanel } from "../webview/assistant_webview/assistantResultPanel";
+import { extractFirstJsonObject } from "../webview/review_Webview/reviewPanel";
+import { renderPromptTemplate } from "../../utils/promptRenderer";
+import { log, sanitizeForLog } from "../../utils/logger";
+import { suppressReviewStaleFlushForUri } from "../../review/reviewStaleSuppress";
+import { buildDiffParts } from "../../utils/buildDiffParts";
+import { previewFixInEditorAndWait, type FixInEditorChoice } from "../../preview/fixInEditorPreview";
 
 const ASSISTANT_PROMPT_FILES = {
   codeExplanation: "assistant/code_explanation.jinja",
@@ -418,7 +420,7 @@ function buildAssistantRenderPayload(
 
     const isCodegen = endpoint === "codeGeneration" && Boolean(primaryCode.trim()) && codeGenDelivery;
 
-    let reviewMode = Boolean(isCodegen);
+    const reviewMode = Boolean(isCodegen);
 
     let diffParts: Array<{ kind: "add" | "remove" | "same"; text: string }> | undefined;
     if (endpoint === "codeRefactor" && applyCode?.trim()) {
@@ -670,22 +672,6 @@ function buildNewFileOnlyDiff(content: string): Array<{ kind: "add" | "remove" |
   }));
 }
 
-function buildDiffParts(before: string, after: string): Array<{ kind: "add" | "remove" | "same"; text: string }> {
-  const parts = diffLines(before, after);
-  const serialized: Array<{ kind: "add" | "remove" | "same"; text: string }> = [];
-  for (const p of parts) {
-    const kind: "add" | "remove" | "same" = p.added ? "add" : p.removed ? "remove" : "same";
-    const lines = p.value.split(/\r?\n/);
-    const last = lines.length - 1;
-    for (let i = 0; i <= last; i++) {
-      const segment = i < last ? `${lines[i]}\n` : lines[i];
-      const prefix = kind === "add" ? "+ " : kind === "remove" ? "- " : "  ";
-      serialized.push({ kind, text: prefix + segment });
-    }
-  }
-  return serialized;
-}
-
 function extractApplyCode(obj: Record<string, unknown>, endpoint: AssistantEndpoint): string | undefined {
   const applyEnabledEndpoints = new Set<AssistantEndpoint>([
     "codeRefactor",
@@ -839,7 +825,13 @@ async function applyRefactorWithEditorPreview(
     panel.setStatus("Review block-wise changes in editor and choose Accept/Reject at the bottom.");
     panel.setProgressStep("Waiting for in-editor Accept/Reject...");
     const latestDoc = await vscode.workspace.openTextDocument(targetUri);
-    const choice = await previewFixInEditorAndWait(latestDoc, baseText, afterText, "Refactor preview");
+    const staleSuppress = suppressReviewStaleFlushForUri(targetUri);
+    let choice: FixInEditorChoice;
+    try {
+      choice = await previewFixInEditorAndWait(latestDoc, baseText, afterText, "Refactor preview");
+    } finally {
+      staleSuppress.dispose();
+    }
     if (choice === "accept") {
       panel.setStatus("Accepted and applied.");
     } else {

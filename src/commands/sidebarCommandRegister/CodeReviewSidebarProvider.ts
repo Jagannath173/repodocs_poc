@@ -1,7 +1,11 @@
 import * as vscode from "vscode";
-import { log } from "./logger";
+import { log } from "../../utils/logger";
 
-export class CodeReviewViewProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
+/**
+ * Sidebar tree for Code Review (Authenticate / Review / Assistant command shortcuts).
+ * Mirrors the pattern used in Genie-vscode `sidebarCommandRegister` providers.
+ */
+export class CodeReviewSidebarProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
   private readonly onDidChangeTreeDataEmitter = new vscode.EventEmitter<vscode.TreeItem | undefined>();
   readonly onDidChangeTreeData = this.onDidChangeTreeDataEmitter.event;
 
@@ -80,7 +84,6 @@ export class CodeReviewViewProvider implements vscode.TreeDataProvider<vscode.Tr
     return item;
   }
 
-  /** Sidebar label only — no command until Login flow is implemented. */
   private staticSidebarItem(label: string, description: string, iconId: string): vscode.TreeItem {
     const item = new vscode.TreeItem(label, vscode.TreeItemCollapsibleState.None);
     item.description = description;

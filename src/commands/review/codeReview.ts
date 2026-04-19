@@ -1,21 +1,33 @@
 import * as vscode from "vscode";
 import * as path from "node:path";
-import { runCopilotInference } from "./pythonRunner";
-import { extensionContext } from "./extension";
+import { runCopilotInference } from "../../utils/pythonRunner";
+import { extensionContext } from "../../extension";
 import {
   extractFirstJsonObject,
   parseReviewJson,
+  ReviewFinding,
   ReviewPayload,
+  ReviewSectionFinding,
   ReviewSectionPayload,
   ReviewWebviewSession,
-} from "./reviewPanel";
-import { ensureCopilotSession } from "./session";
-import { findAppliedIndicesByKeys, getStoredReview, makeFindingKey, saveLastReview, toStoredReview } from "./applyFixes";
-import { isFindingAlreadySatisfiedByFile } from "./reviewFilter";
-import { openAuthWebviewAndAuthenticate } from "./authPanel";
-import { renderPromptTemplate } from "./promptRenderer";
-import { log, sanitizeForLog } from "./logger";
-import { resetMockReviewStage } from "./mockCopilot";
+} from "../webview/review_Webview/reviewPanel";
+import { ensureCopilotSession } from "../../utils/session";
+import type { StoredReview } from "../../review/applyFixes";
+import {
+  findAppliedIndicesByKeys,
+  getAppliedFindingKeysForDocumentUri,
+  getRejectedFindingKeysForDocumentUri,
+  getStoredReviewForDocumentUri,
+  makeFindingKey,
+  saveLastReview,
+  toStoredReview,
+} from "../../review/applyFixes";
+import { tryGetGitDiffVsHead } from "../../utils/gitDiff";
+import { isFindingAlreadySatisfiedByFile } from "../../utils/reviewFilter";
+import { openAuthWebviewAndAuthenticate } from "../webview/auth_webview/authPanel";
+import { renderPromptTemplate } from "../../utils/promptRenderer";
+import { log, sanitizeForLog } from "../../utils/logger";
+import { resetMockReviewStage } from "../../utils/mockCopilot";
 
 const REVIEW_SYSTEM_ROLE =
   "Respond with only a valid JSON object and no extra text. " +
@@ -69,46 +81,97 @@ export async function runCodeReview(): Promise<void> {
   }
 
   const editor = vscode.window.activeTextEditor;
-  let content = "";
-  if (editor) {
-    content = editor.selection.isEmpty ? editor.document.getText() : editor.document.getText(editor.selection);
-  }
-
-  if (!content.trim()) {
-    log.warn("codeReview", "Aborted: no content to review");
-    vscode.window.showWarningMessage("Open a file (or select code) to review.");
+  if (!editor) {
+    log.warn("codeReview", "Aborted: no active editor");
+    void vscode.window.showWarningMessage("Open a file (or select code) to review.");
     return;
   }
 
-  const fileName = editor ? path.basename(editor.document.fileName) : "snippet";
-  const language = editor?.document.languageId ?? "unknown";
-  const selectionMode = editor && !editor.selection.isEmpty ? "selection" : "fullDocument";
+  const fullText = editor.document.getText();
+  const selectionText = editor.selection.isEmpty ? "" : editor.document.getText(editor.selection);
+  const primarySlice = selectionText.trim() ? selectionText : fullText;
+
+  if (!primarySlice.trim()) {
+    log.warn("codeReview", "Aborted: no content to review");
+    void vscode.window.showWarningMessage("Open a file (or select code) to review.");
+    return;
+  }
+
+  const rawGitDiff = selectionText.trim() ? undefined : await tryGetGitDiffVsHead(editor.document.uri);
+
+  let reviewInputMode: "selection" | "incremental" | "full";
+  let promptCode: string;
+  let promptGitDiff: string;
+
+  if (selectionText.trim()) {
+    reviewInputMode = "selection";
+    promptCode = selectionText;
+    promptGitDiff = selectionText;
+  } else if (rawGitDiff !== undefined && rawGitDiff.trim().length > 0) {
+    reviewInputMode = "incremental";
+    promptCode = rawGitDiff;
+    promptGitDiff = rawGitDiff;
+  } else {
+    reviewInputMode = "full";
+    promptCode = fullText;
+    promptGitDiff =
+      rawGitDiff !== undefined && rawGitDiff.trim().length > 0 ? rawGitDiff : fullText;
+  }
+
+  const systemRoleForReview =
+    reviewInputMode === "incremental"
+      ? REVIEW_SYSTEM_ROLE +
+        " The primary input is a git diff versus HEAD: only report findings that relate to added or modified lines in that diff; do not require changes to unchanged parts of the file."
+      : reviewInputMode === "selection"
+        ? REVIEW_SYSTEM_ROLE +
+          " Only analyze the supplied editor selection; do not assume defects in parts of the file not shown."
+        : REVIEW_SYSTEM_ROLE;
+
+  const fileName = path.basename(editor.document.fileName);
+  const language = editor.document.languageId ?? "unknown";
   log.info("codeReview", "Review context", {
     fileName,
     language,
-    selectionMode,
-    charCount: content.length,
+    reviewInputMode,
+    promptChars: promptCode.length,
+    fullFileChars: fullText.length,
   });
 
-  const documentUri = editor ? editor.document.uri.toString() : undefined;
+  const documentUri = editor.document.uri.toString();
   const panel = new ReviewWebviewSession(extensionContext, `Review: ${fileName}`, documentUri);
-  const priorStored = documentUri ? getStoredReview() : undefined;
-  const priorAppliedKeys =
-    priorStored?.documentUri === documentUri ? (priorStored?.appliedFindingKeys ?? []) : [];
+  /** Snapshot before this run — used to re-inject dismissed rows when the model repeats the same finding keys. */
+  const priorStoredBeforeRun = getStoredReviewForDocumentUri(editor.document.uri);
+  /** Merge fix state by finding fingerprint — do not require `reviewedDocumentHash` match (fixes + reload change the buffer). */
+  const priorAppliedKeys = getAppliedFindingKeysForDocumentUri(editor.document.uri);
+  const priorRejectedKeys = getRejectedFindingKeysForDocumentUri(editor.document.uri);
   const priorAppliedKeySet = new Set(priorAppliedKeys);
+  const priorRejectedKeySet = new Set(priorRejectedKeys);
 
   panel.setLoading("Running review suite…");
+  if (reviewInputMode === "incremental") {
+    panel.addReviewLog("Scope: git diff vs HEAD — findings should target your local changes only.", "info");
+  } else if (reviewInputMode === "selection") {
+    panel.addReviewLog("Scope: editor selection only.", "info");
+  } else {
+    panel.addReviewLog(
+      "Scope: full file (no qualifying git diff vs HEAD — stage changes or edit to enable incremental diff review).",
+      "info"
+    );
+  }
   panel.registerOnMessage((msg: unknown) => {
-    const m = msg as { command?: string; mode?: string; index?: number; indices?: number[]; promptExtra?: boolean };
+    const m = msg as {
+      command?: string;
+      mode?: string;
+      index?: number;
+      indices?: number[];
+      extraInstructions?: string;
+    };
     if (m?.command === "applyFixes") {
       const mode = m.mode === "one" || m.mode === "selected" ? m.mode : "all";
       const idx = typeof m.index === "number" ? m.index : undefined;
       const selectedIndices = Array.isArray(m.indices) ? m.indices.filter((n) => typeof n === "number") : undefined;
-      if (m.promptExtra) {
-        void vscode.commands.executeCommand("codeReview.applyFixes", mode, idx, undefined, selectedIndices);
-      } else {
-        void vscode.commands.executeCommand("codeReview.applyFixes", mode, idx, "", selectedIndices);
-      }
+      const extraPassThrough = typeof m.extraInstructions === "string" ? m.extraInstructions : "";
+      void vscode.commands.executeCommand("codeReview.applyFixes", mode, idx, extraPassThrough, selectedIndices);
     } else if (m?.command === "authenticate") {
       void vscode.commands.executeCommand("codeReview.authenticate");
     }
@@ -123,7 +186,7 @@ export async function runCodeReview(): Promise<void> {
       const endpoint = REVIEW_SEQUENCE[i];
       const label = REVIEW_ENDPOINT_LABELS[endpoint];
       log.info("codeReview", "Review stage", { stage: `${i + 1}/${REVIEW_SEQUENCE.length}`, endpoint, label });
-      const prompt = await renderReviewPrompt(endpoint, content, language);
+      const prompt = await renderReviewPrompt(endpoint, promptCode, promptGitDiff, language);
       log.debug("codeReview", "Prompt template rendered", { endpoint, promptChars: prompt.length });
       panel.addReviewLog(`Running ${label} review (${i + 1}/${REVIEW_SEQUENCE.length})…`, "info");
       panel.addReviewLog(`[${label}] Started`, "info");
@@ -171,7 +234,7 @@ export async function runCodeReview(): Promise<void> {
             log.debug("codeReview", "Skipped non-JSON SSE payload", { endpoint, lineChars: trimmed.length });
           }
         },
-        { systemRole: REVIEW_SYSTEM_ROLE }
+        { systemRole: systemRoleForReview }
       );
 
       if (authError) {
@@ -187,35 +250,54 @@ export async function runCodeReview(): Promise<void> {
 
       log.debug("codeReview", "Inference complete for stage", { endpoint, assistantTextChars: assistantText.length });
       const review = parseEndpointReviewJson(assistantText, endpoint);
-      const filtered = review.findings.filter((f) => !isFindingAlreadySatisfiedByFile(content, f));
+      const filtered = review.findings.filter((f) => !isFindingAlreadySatisfiedByFile(fullText, f));
       const skippedSatisfied = review.findings.length - filtered.length;
       if (skippedSatisfied > 0) {
         panel.addReviewLog(`[${label}] Skipped ${skippedSatisfied} finding(s) whose suggestions already match the file.`, "info");
       }
-      const unseen = filtered.filter((f) => !priorAppliedKeySet.has(makeFindingKey(f)));
-      const skippedApplied = filtered.length - unseen.length;
+      let skippedApplied = 0;
+      let skippedRejectedOnly = 0;
+      for (const f of filtered) {
+        const k = makeFindingKey(f);
+        if (priorAppliedKeySet.has(k)) {
+          skippedApplied += 1;
+        } else if (priorRejectedKeySet.has(k)) {
+          skippedRejectedOnly += 1;
+        }
+      }
+      const unseen = filtered.filter((f) => {
+        const k = makeFindingKey(f);
+        return !priorAppliedKeySet.has(k) && !priorRejectedKeySet.has(k);
+      });
       if (skippedApplied > 0) {
         panel.addReviewLog(`[${label}] Skipped ${skippedApplied} previously applied finding(s).`, "info");
       }
+      if (skippedRejectedOnly > 0) {
+        panel.addReviewLog(`[${label}] Skipped ${skippedRejectedOnly} previously rejected finding(s).`, "info");
+      }
       if (unseen.length === 0) {
-        if (review.findings.length > 0 || skippedApplied > 0) {
+        if (review.findings.length > 0 || skippedApplied > 0 || skippedRejectedOnly > 0) {
           panel.addReviewLog(`[${label}] No new rows — all suggestions for this stage already appear in the file.`, "info");
         }
-        continue;
-      }
-      const sectionFindings = unseen.map((f) => {
-        const globalIndex = combinedFindings.length;
-        combinedFindings.push(f);
-        return { ...f, globalIndex };
-      });
-      sections.push({
-        name: label,
-        summary: review.summary || `${label} review complete.`,
-        findings: sectionFindings,
-      });
+      } else {
+        const sectionFindings = unseen.map((f) => {
+          const globalIndex = combinedFindings.length;
+          combinedFindings.push(f);
+          return { ...f, globalIndex };
+        });
+        sections.push({
+          name: label,
+          summary: review.summary || `${label} review complete.`,
+          findings: sectionFindings,
+        });
 
-      log.info("codeReview", "Stage findings parsed", { endpoint, count: sectionFindings.length });
-      panel.addReviewLog(`[${label}] Added ${sectionFindings.length} findings`, "success");
+        log.info("codeReview", "Stage findings parsed", { endpoint, count: sectionFindings.length });
+        panel.addReviewLog(`[${label}] Added ${sectionFindings.length} findings`, "success");
+      }
+
+      appendMissingRejectedFindings(combinedFindings, priorStoredBeforeRun, priorRejectedKeys);
+      updatePreviouslyRejectedSection(combinedFindings, sections, priorRejectedKeys);
+
       const stagePayload: ReviewPayload = {
         summary: `Completed ${i + 1}/${REVIEW_SEQUENCE.length} review stages.`,
         findings: combinedFindings,
@@ -223,11 +305,10 @@ export async function runCodeReview(): Promise<void> {
         appliedIndices: findAppliedIndicesByKeys(combinedFindings, priorAppliedKeys),
         appliedFindingKeys: priorAppliedKeys,
         rejectedIndices: [],
+        rejectedFindingKeys: priorRejectedKeys,
       };
       panel.setReview(stagePayload);
-      if (editor) {
-        await saveLastReview(toStoredReview(editor.document.uri, fileName, stagePayload));
-      }
+      await saveLastReview(toStoredReview(editor.document.uri, fileName, stagePayload, fullText));
     }
 
     const finalReview: ReviewPayload = {
@@ -237,13 +318,12 @@ export async function runCodeReview(): Promise<void> {
       appliedIndices: findAppliedIndicesByKeys(combinedFindings, priorAppliedKeys),
       appliedFindingKeys: priorAppliedKeys,
       rejectedIndices: [],
+      rejectedFindingKeys: priorRejectedKeys,
     };
     log.info("codeReview", "All review stages completed", { findings: combinedFindings.length });
     panel.addReviewLog("All review stages completed.", "success");
-    if (editor) {
-      await saveLastReview(toStoredReview(editor.document.uri, fileName, finalReview));
-      log.debug("codeReview", "Last review saved to workspace state", { fileName });
-    }
+    await saveLastReview(toStoredReview(editor.document.uri, fileName, finalReview, fullText));
+    log.debug("codeReview", "Last review saved to workspace state", { fileName });
     panel.setReview(finalReview);
   } catch (e: unknown) {
     const raw = e instanceof Error ? e.message : typeof e === "string" ? e : "Unknown error";
@@ -252,6 +332,50 @@ export async function runCodeReview(): Promise<void> {
     panel.setError(raw, undefined, "");
     vscode.window.showErrorMessage(`Code review failed: ${raw}`);
   }
+}
+
+/** Carry forward dismissed rows when the model would otherwise repeat the same fingerprint. */
+function appendMissingRejectedFindings(
+  combinedFindings: ReviewFinding[],
+  priorStored: StoredReview | undefined,
+  rejectedKeys: string[]
+): void {
+  const keysInCombined = new Set(combinedFindings.map((f) => makeFindingKey(f)));
+  for (const key of rejectedKeys) {
+    if (keysInCombined.has(key)) continue;
+    const oldF = priorStored?.findings?.find((f) => makeFindingKey(f) === key);
+    if (!oldF) continue;
+    combinedFindings.push(oldF);
+    keysInCombined.add(key);
+  }
+}
+
+/** Put all rows matching persisted rejected keys into a dedicated section at the bottom. */
+function updatePreviouslyRejectedSection(
+  combinedFindings: ReviewFinding[],
+  sections: ReviewSectionPayload[],
+  rejectedKeys: string[]
+): void {
+  const keySet = new Set(rejectedKeys);
+  const rejFindings: ReviewSectionFinding[] = [];
+  for (let i = 0; i < combinedFindings.length; i++) {
+    if (keySet.has(makeFindingKey(combinedFindings[i]))) {
+      rejFindings.push({ ...combinedFindings[i], globalIndex: i });
+    }
+  }
+  const idx = sections.findIndex((s) => s.name === "Previously rejected");
+  if (rejFindings.length === 0) {
+    if (idx >= 0) sections.splice(idx, 1);
+    return;
+  }
+  const block: ReviewSectionPayload = {
+    name: "Previously rejected",
+    summary:
+      "These suggestions were dismissed in Fix preview; they stay rejected until you retry Fix.",
+    findings: rejFindings,
+  };
+  if (idx >= 0) sections[idx] = block;
+  else sections.push(block);
 }
 
 function normalizeSeverity(raw: unknown): string {
@@ -326,10 +450,15 @@ function parseEndpointReviewJson(raw: string, endpoint: ReviewEndpoint): ReviewP
   }
 }
 
-async function renderReviewPrompt(endpoint: ReviewEndpoint, code: string, language: string): Promise<string> {
+async function renderReviewPrompt(
+  endpoint: ReviewEndpoint,
+  code: string,
+  gitDiff: string,
+  language: string
+): Promise<string> {
   return renderPromptTemplate(extensionContext.extensionPath, REVIEW_PROMPT_FILES[endpoint], {
     code,
-    git_diff: code,
+    git_diff: gitDiff,
     language,
   });
 }

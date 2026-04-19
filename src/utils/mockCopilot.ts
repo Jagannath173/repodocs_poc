@@ -5,10 +5,13 @@ export function useMockCopilotEnabled(): boolean {
   return vscode.workspace.getConfiguration("codeReview").get<boolean>("useMockCopilot") === true;
 }
 
-type MockKind = "review" | "fix" | "assistant";
+type MockKind = "review" | "fix" | "gate" | "assistant";
 
 function inferMockKind(systemRole?: string): MockKind {
   const s = systemRole ?? "";
+  if (s.includes("strict relevance gate")) {
+    return "gate";
+  }
   if (s.includes("You apply a single code-review suggestion")) {
     return "fix";
   }
@@ -85,6 +88,17 @@ function mockFixBody(prompt: string): string {
   return JSON.stringify({ fileContent: file });
 }
 
+/** Extra-instruction relevance gate (include `MOCK_GATE_IRRELEVANT` in the instruction to simulate off-topic). */
+function mockGateBody(prompt: string): string {
+  if (/MOCK_GATE_IRRELEVANT/i.test(prompt)) {
+    return JSON.stringify({
+      relevant: false,
+      briefReason: "Mock: instruction marked unrelated (MOCK_GATE_IRRELEVANT).",
+    });
+  }
+  return JSON.stringify({ relevant: true });
+}
+
 function mockAssistantBody(prompt: string): string {
   const looksLikeRefactorPrompt =
     /code refactoring assistant/i.test(prompt) ||
@@ -145,6 +159,9 @@ export async function runMockCopilotInference(
       break;
     case "fix":
       content = mockFixBody(prompt);
+      break;
+    case "gate":
+      content = mockGateBody(prompt);
       break;
     default:
       content = mockAssistantBody(prompt);
