@@ -1,9 +1,14 @@
 .vscode/**
 .git/**
 .gitignore
+
 src/**
 tsconfig.json
 eslint.config.js
 **/*.map
+
 node_modules/**
 !node_modules/diff/**
+
+python/venv/**
+!out/**

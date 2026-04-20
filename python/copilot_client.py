@@ -10,7 +10,7 @@ try:
     import pandas as pd
 except ImportError:
     pd = None
-from dotenv import load_dotenv
+from config_loader import config
 
 # Suppress messy SSL warnings across all levels
 try:
@@ -25,16 +25,12 @@ logging.getLogger("requests").setLevel(logging.ERROR)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-load_dotenv()
-
-TOKEN_CACHE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "copilot_token_cache.json")
-
 # Global variables
 cached_tokens = None
 proxies = None
 
 # SSL Verification
-ssl_cert_file = os.environ.get('SSL_CERT_FILE')
+ssl_cert_file = config.get('SSL_CERT_FILE')
 if ssl_cert_file and not os.path.exists(ssl_cert_file):
     ssl_cert_file = False
 elif not ssl_cert_file:
@@ -51,22 +47,32 @@ def load_config():
 config_items = load_config()
 
 def load_token_cache():
-    logger.info(f"Checking for token cache at: {TOKEN_CACHE_FILE}")
-    if os.path.exists(TOKEN_CACHE_FILE):
-        with open(TOKEN_CACHE_FILE, "r") as f:
-            try:
-                data = json.load(f)
-                logger.info(f"Loaded existing cache with keys: {list(data.keys())}")
-                return data
-            except Exception as e:
-                logger.error(f"Failed to parse cache file: {e}")
+    """Load tokens from session context (in-memory)."""
+    logger.info("Loading tokens from session context...")
+    cache = {}
+    
+    access_token = config.get_session_token('access_token')
+    session_token_b64 = config.get_session_token('session_token_b64')
+    
+    if access_token:
+        cache['access_token'] = access_token
+    if session_token_b64:
+        cache['session_token_b64'] = session_token_b64
+    
+    if cache:
+        logger.info(f"Loaded tokens from session: {list(cache.keys())}")
     else:
-        logger.info("No token cache file found.")
-    return {}
+        logger.info("No tokens found in session context.")
+    return cache
 
 def save_token_cache(cache):
-    with open(TOKEN_CACHE_FILE, "w") as f:
-        json.dump(cache, f)
+    """Save tokens to session context (in-memory)."""
+    if 'access_token' in cache:
+        config.set_session_token('access_token', cache['access_token'])
+        logger.info("Access token stored in session context")
+    if 'session_token_b64' in cache:
+        config.set_session_token('session_token_b64', cache['session_token_b64'])
+        logger.info("Session token stored in session context")
 
 def parse_session_token_expiry(session_token):
     # session_token is a string like 'tid=...;exp=1234567890;...'
@@ -98,16 +104,16 @@ def getproxies():
                 AD_PASSWORD = decoded_bytes.decode('utf-8')
 
                 proxies = {
-                    "http":  os.environ.get('HTTP_PROXY','').replace('{{AD_STAFF_ID}}',AD_STAFF_ID).replace('{{AD_PASSWORD}}',AD_PASSWORD),
-                    "https": os.environ.get('HTTPS_PROXY','').replace('{{AD_STAFF_ID}}',AD_STAFF_ID).replace('{{AD_PASSWORD}}',AD_PASSWORD)
+                    "http": config.get('HTTP_PROXY', '').replace('{{AD_STAFF_ID}}', AD_STAFF_ID).replace('{{AD_PASSWORD}}', AD_PASSWORD),
+                    "https": config.get('HTTPS_PROXY', '').replace('{{AD_STAFF_ID}}', AD_STAFF_ID).replace('{{AD_PASSWORD}}', AD_PASSWORD)
                 }
                 return proxies
             except Exception as e:
                 logger.error(f"Error setting up complex proxies: {e}")
         
         # FALLBACK: Just use the raw environment proxy if it exists
-        raw_http = os.environ.get('HTTP_PROXY')
-        raw_https = os.environ.get('HTTPS_PROXY')
+        raw_http = config.get('HTTP_PROXY')
+        raw_https = config.get('HTTPS_PROXY')
         
         # Detect if placeholders are still present and ignore them
         if raw_http and "{{" in raw_http:
@@ -139,9 +145,9 @@ def construct_data(prompt, system_role, previous_question, previous_answer, stre
 
     data = {
         "messages": messages,
-        "model": os.environ.get('GITHUB_COPILOT_MODEL', 'gpt-4o'),
-        "max_tokens": int(os.environ.get('GITHUB_COPILOT_MAX_TOKENS', 4096)),
-        "temperature": float(os.environ.get('GITHUB_COPILOT_TEMPERATURE', 0.1)),
+        "model": config.get('GITHUB_COPILOT_MODEL', 'gpt-4o'),
+        "max_tokens": config.get('GITHUB_COPILOT_MAX_TOKENS', 4096),
+        "temperature": config.get('GITHUB_COPILOT_TEMPERATURE', 0.1),
         "top_p": 1,
         "n": 1,
         "stream": stream,
@@ -167,11 +173,11 @@ def get_sessionToken(access_token):
         "User-Agent": "GitHubCopilot/1.155.0"
     }
     current_proxies = getproxies()
-    logger.info(f"Fetching session token from {os.environ.get('GITHUB_COPILOT_LLM_TOKEN_URL')}")
+    logger.info(f"Fetching session token from {config.get('GITHUB_COPILOT_LLM_TOKEN_URL')}")
     try:
-        url = os.environ.get('GITHUB_COPILOT_LLM_TOKEN_URL')
+        url = config.get('GITHUB_COPILOT_LLM_TOKEN_URL')
         if not url:
-            logger.error("GITHUB_COPILOT_LLM_TOKEN_URL not set in environment.")
+            logger.error("GITHUB_COPILOT_LLM_TOKEN_URL not configured.")
             return None, 0, "URL_MISSING"
 
         try:
@@ -246,20 +252,21 @@ def generate_response(prompt, sessionToken_b64, stream: bool = True, checkSessio
     }
 
     try:
-        system_role = os.environ.get("COPILOT_SYSTEM_ROLE") or _default_system_role()
-        if os.environ.get("COPILOT_STREAM") is not None:
-            stream = os.environ.get("COPILOT_STREAM", "1").lower() in ("1", "true", "yes")
-        data = construct_data(prompt, system_role, "", "", stream)
+        # Read from config, not os.environ
+        system_role = _default_system_role()
+        stream_enabled = True  # Default to True (can be made configurable later)
+        
+        data = construct_data(prompt, system_role, "", "", stream_enabled)
         
         # Log the target environment
-        logger.info(f"Targeting LLM URL: {os.environ.get('GITHUB_COPILOT_LLM_CHAT_URL')}")
+        logger.info(f"Targeting LLM URL: {config.get('GITHUB_COPILOT_LLM_CHAT_URL')}")
         
         # PROXY FAILSAFE: If the configured proxy fails, we retry direct.
         # This is critical for users moving between office (HSBC) and home network.
         current_proxies = getproxies()
         try:
             response = requests.post(
-                os.environ.get('GITHUB_COPILOT_LLM_CHAT_URL'),
+                config.get('GITHUB_COPILOT_LLM_CHAT_URL'),
                 headers=headers,
                 json=data,
                 proxies=current_proxies,
@@ -270,7 +277,7 @@ def generate_response(prompt, sessionToken_b64, stream: bool = True, checkSessio
         except (requests.exceptions.ProxyError, requests.exceptions.ConnectionError, requests.exceptions.ChunkedEncodingError) as e:
             logger.info(f"Connection issue ({type(e).__name__}). Retrying direct connection...")
             response = requests.post(
-                os.environ.get('GITHUB_COPILOT_LLM_CHAT_URL'),
+                config.get('GITHUB_COPILOT_LLM_CHAT_URL'),
                 headers=headers,
                 json=data,
                 proxies={'http': None, 'https': None},
@@ -312,7 +319,7 @@ def count_tokens(prompt):
     return len(tokens)
 
 def split_prompt_by_token_limit(filtered_df, base_prompt, model="gpt-4o"):
-    max_tokens = int(os.environ.get('GITHUB_COPILOT_MAX_TOKENS', 4096)) * 0.4 
+    max_tokens = config.get('GITHUB_COPILOT_MAX_TOKENS', 4096) * 0.4 
     prompt_chunks = []
     current_prompt = base_prompt
     current_token_count = count_tokens(base_prompt)
@@ -340,8 +347,8 @@ def getDeviceCode():
         'editor-version': 'vscode/1.93.1',
         'user-agent': 'GitHubCopilot/1.155.0'
     }
-    data = {"client_id": os.environ.get("GITHUB_COPILOT_CLIENT_ID"), "scope": "read:user"}
-    url = os.environ.get('GITHUB_COPILOT_DEVICE_CODE_URL')
+    data = {"client_id": config.get("GITHUB_COPILOT_CLIENT_ID"), "scope": "read:user"}
+    url = config.get('GITHUB_COPILOT_DEVICE_CODE_URL')
     
     current_proxies = getproxies()
     try:
@@ -380,12 +387,12 @@ def getGithubCopilotToken(device_code, cache=None):
     poll_interval = 5
     while True:
         data = {
-            "client_id": os.environ.get("GITHUB_COPILOT_CLIENT_ID"),
+            "client_id": config.get("GITHUB_COPILOT_CLIENT_ID"),
             "device_code": device_code,
             "grant_type": "urn:ietf:params:oauth:grant-type:device_code"
         }
         try:
-            url = os.environ.get('GITHUB_COPILOT_ACCESS_TOKEN_URL')
+            url = config.get('GITHUB_COPILOT_ACCESS_TOKEN_URL')
             try:
                 resp = requests.post(url, headers=headers, data=data, proxies=current_proxies, verify=ssl_cert_file, timeout=30)
             except (requests.exceptions.ProxyError, requests.exceptions.ConnectionError):
@@ -440,7 +447,7 @@ def getGithubCopilotToken(device_code, cache=None):
     if cache is not None:
         cache['access_token'] = access_token
         save_token_cache(cache)
-        logger.info(f"Access token cached to {TOKEN_CACHE_FILE}")
+        logger.info("Access token cached to environment context")
 
     # Logging for user visibility to be sure it worked
     logger.info(">>> Authentication Successful!")
@@ -456,7 +463,7 @@ def getGithubCopilotToken(device_code, cache=None):
     if cache is not None and sessionToken_b64:
         cache['session_token_b64'] = sessionToken_b64
         save_token_cache(cache)
-        logger.info("Full token cache updated.")
+        logger.info("Full token cache updated in environment context.")
     return sessionToken_b64, access_token
 
 if __name__ == "__main__":
