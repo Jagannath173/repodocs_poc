@@ -15,13 +15,16 @@ import { ensureCopilotSession } from "../../utils/session";
 import type { StoredReview } from "../../review/applyFixes";
 import {
   findAppliedIndicesByKeys,
+  findingMatchesStoredKey,
   getAppliedFindingKeysForDocumentUri,
   getRejectedFindingKeysForDocumentUri,
   getStoredReviewForDocumentUri,
   makeFindingKey,
+  remapPriorAppliedIndicesToCombined,
   saveLastReview,
   toStoredReview,
 } from "../../review/applyFixes";
+import { disposeReviewPanelsForDocument } from "../../review/reviewBridge";
 import { tryGetGitDiffVsHead } from "../../utils/gitDiff";
 import { isFindingAlreadySatisfiedByFile } from "../../utils/reviewFilter";
 import { openAuthWebviewAndAuthenticate } from "../webview/auth_webview/authPanel";
@@ -138,6 +141,7 @@ export async function runCodeReview(): Promise<void> {
   });
 
   const documentUri = editor.document.uri.toString();
+  disposeReviewPanelsForDocument(documentUri);
   const panel = new ReviewWebviewSession(extensionContext, `Review: ${fileName}`, documentUri);
   /** Snapshot before this run — used to re-inject dismissed rows when the model repeats the same finding keys. */
   const priorStoredBeforeRun = getStoredReviewForDocumentUri(editor.document.uri);
@@ -258,16 +262,16 @@ export async function runCodeReview(): Promise<void> {
       let skippedApplied = 0;
       let skippedRejectedOnly = 0;
       for (const f of filtered) {
-        const k = makeFindingKey(f);
-        if (priorAppliedKeySet.has(k)) {
+        if ([...priorAppliedKeySet].some((sk) => findingMatchesStoredKey(f, sk))) {
           skippedApplied += 1;
-        } else if (priorRejectedKeySet.has(k)) {
+        } else if ([...priorRejectedKeySet].some((sk) => findingMatchesStoredKey(f, sk))) {
           skippedRejectedOnly += 1;
         }
       }
       const unseen = filtered.filter((f) => {
-        const k = makeFindingKey(f);
-        return !priorAppliedKeySet.has(k) && !priorRejectedKeySet.has(k);
+        const applied = [...priorAppliedKeySet].some((sk) => findingMatchesStoredKey(f, sk));
+        const rejected = [...priorRejectedKeySet].some((sk) => findingMatchesStoredKey(f, sk));
+        return !applied && !rejected;
       });
       if (skippedApplied > 0) {
         panel.addReviewLog(`[${label}] Skipped ${skippedApplied} previously applied finding(s).`, "info");
@@ -298,11 +302,16 @@ export async function runCodeReview(): Promise<void> {
       appendMissingRejectedFindings(combinedFindings, priorStoredBeforeRun, priorRejectedKeys);
       updatePreviouslyRejectedSection(combinedFindings, sections, priorRejectedKeys);
 
+      const preferredApplied = remapPriorAppliedIndicesToCombined(
+        priorStoredBeforeRun?.findings,
+        priorStoredBeforeRun?.appliedIndices,
+        combinedFindings
+      );
       const stagePayload: ReviewPayload = {
         summary: `Completed ${i + 1}/${REVIEW_SEQUENCE.length} review stages.`,
         findings: combinedFindings,
         sections,
-        appliedIndices: findAppliedIndicesByKeys(combinedFindings, priorAppliedKeys),
+        appliedIndices: findAppliedIndicesByKeys(combinedFindings, priorAppliedKeys, preferredApplied),
         appliedFindingKeys: priorAppliedKeys,
         rejectedIndices: [],
         rejectedFindingKeys: priorRejectedKeys,
@@ -311,11 +320,16 @@ export async function runCodeReview(): Promise<void> {
       await saveLastReview(toStoredReview(editor.document.uri, fileName, stagePayload, fullText));
     }
 
+    const finalPreferredApplied = remapPriorAppliedIndicesToCombined(
+      priorStoredBeforeRun?.findings,
+      priorStoredBeforeRun?.appliedIndices,
+      combinedFindings
+    );
     const finalReview: ReviewPayload = {
       summary: "Combined review completed across all review endpoints.",
       findings: combinedFindings,
       sections,
-      appliedIndices: findAppliedIndicesByKeys(combinedFindings, priorAppliedKeys),
+      appliedIndices: findAppliedIndicesByKeys(combinedFindings, priorAppliedKeys, finalPreferredApplied),
       appliedFindingKeys: priorAppliedKeys,
       rejectedIndices: [],
       rejectedFindingKeys: priorRejectedKeys,
@@ -340,13 +354,15 @@ function appendMissingRejectedFindings(
   priorStored: StoredReview | undefined,
   rejectedKeys: string[]
 ): void {
-  const keysInCombined = new Set(combinedFindings.map((f) => makeFindingKey(f)));
   for (const key of rejectedKeys) {
-    if (keysInCombined.has(key)) continue;
-    const oldF = priorStored?.findings?.find((f) => makeFindingKey(f) === key);
-    if (!oldF) continue;
+    if (combinedFindings.some((f) => findingMatchesStoredKey(f, key))) {
+      continue;
+    }
+    const oldF = priorStored?.findings?.find((f) => findingMatchesStoredKey(f, key));
+    if (!oldF) {
+      continue;
+    }
     combinedFindings.push(oldF);
-    keysInCombined.add(key);
   }
 }
 
@@ -356,11 +372,11 @@ function updatePreviouslyRejectedSection(
   sections: ReviewSectionPayload[],
   rejectedKeys: string[]
 ): void {
-  const keySet = new Set(rejectedKeys);
   const rejFindings: ReviewSectionFinding[] = [];
   for (let i = 0; i < combinedFindings.length; i++) {
-    if (keySet.has(makeFindingKey(combinedFindings[i]))) {
-      rejFindings.push({ ...combinedFindings[i], globalIndex: i });
+    const f = combinedFindings[i];
+    if (rejectedKeys.some((sk) => findingMatchesStoredKey(f, sk))) {
+      rejFindings.push({ ...f, globalIndex: i });
     }
   }
   const idx = sections.findIndex((s) => s.name === "Previously rejected");

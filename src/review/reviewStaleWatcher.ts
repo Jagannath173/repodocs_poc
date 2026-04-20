@@ -1,7 +1,7 @@
 import * as vscode from "vscode";
 import { hashDocumentText } from "../utils/documentHash";
 import { notifyReviewUpdated } from "./reviewBridge";
-import { getStoredReview, saveLastReview } from "./applyFixes";
+import { getStoredReviewForDocumentUri, saveLastReview } from "./applyFixes";
 import { isReviewStaleFlushSuppressed } from "./reviewStaleSuppress";
 
 let debounceTimer: NodeJS.Timeout | undefined;
@@ -21,8 +21,8 @@ async function handleMaybeStale(document: vscode.TextDocument): Promise<void> {
   if (isReviewStaleFlushSuppressed(document.uri)) {
     return;
   }
-  const stored = getStoredReview();
-  if (!stored?.reviewedDocumentHash || stored.documentUri !== document.uri.toString()) {
+  const stored = getStoredReviewForDocumentUri(document.uri);
+  if (!stored?.reviewedDocumentHash) {
     return;
   }
   if (!stored.findings?.length && !stored.appliedIndices?.length && !stored.rejectedIndices?.length) {
@@ -47,8 +47,8 @@ async function flushStaleReview(uri: vscode.Uri, latestText: string): Promise<vo
   if (isReviewStaleFlushSuppressed(uri)) {
     return;
   }
-  const stored = getStoredReview();
-  if (!stored?.reviewedDocumentHash || stored.documentUri !== uri.toString()) {
+  const stored = getStoredReviewForDocumentUri(uri);
+  if (!stored?.reviewedDocumentHash) {
     return;
   }
   const now = hashDocumentText(latestText);
@@ -56,28 +56,12 @@ async function flushStaleReview(uri: vscode.Uri, latestText: string): Promise<vo
     return;
   }
 
-  await saveLastReview({
-    documentUri: stored.documentUri,
-    fileName: stored.fileName,
-    summary:
-      "This file was edited after the last review. Run **Code Review: Review** again — with local git changes you will only review the diff vs HEAD.",
-    findings: [],
-    appliedIndices: [],
-    appliedFindingKeys: [],
-    rejectedIndices: [],
-    reviewedDocumentHash: now,
-    reviewFindingCount: 0,
-  });
-  notifyReviewUpdated({
-    documentUri: stored.documentUri,
-    fileName: stored.fileName,
-    summary:
-      "This file was edited after the last review. Run Code Review again to analyze your current changes (incremental diff when available).",
-    findings: [],
-    appliedIndices: [],
-    appliedFindingKeys: [],
-    rejectedIndices: [],
-    reviewedDocumentHash: now,
-    reviewFindingCount: 0,
-  });
+  /**
+   * Only advance the snapshot hash to match the current buffer.
+   * Clearing findings/applied state here made Apply fixes fail with “Run Code Review first”
+   * after any edit (including successful fix applies once the suppress window ended).
+   */
+  const next = { ...stored, reviewedDocumentHash: now };
+  await saveLastReview(next);
+  notifyReviewUpdated(next);
 }

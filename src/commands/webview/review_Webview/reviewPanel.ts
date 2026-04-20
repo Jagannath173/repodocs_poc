@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import { registerReviewPanel, unregisterReviewPanel } from "../../../review/reviewBridge";
 import { AssistantResultPanel } from "../../../assistant";
+import { basenameFromUriString, resolveAppliedFixRecordsForUi } from "../../../review/reviewReportDemo";
 
 export interface ReviewFinding {
   severity: string;
@@ -8,6 +9,21 @@ export interface ReviewFinding {
   title: string;
   detail: string;
   suggestion: string;
+}
+
+/** One accepted fix: text fields + unified diff for reports. */
+export interface AppliedFixRecord {
+  findingIndex: number;
+  title: string;
+  detail: string;
+  suggestion: string;
+  severity: string;
+  category: string;
+  /** Unified diff snippet (before → after for this fix). */
+  unifiedDiff: string;
+  appliedAt?: string;
+  /** True when this row is generated sample data (no real fix recorded yet). */
+  isDemo?: boolean;
 }
 
 export interface ReviewPayload {
@@ -24,6 +40,8 @@ export interface ReviewPayload {
   rejectedIndices?: number[];
   /** Stable count of findings from the review (for Genie metrics when rows are filtered). */
   reviewFindingCount?: number;
+  /** Per-accepted-fix diffs for export / “Review fix” panel. */
+  appliedFixRecords?: AppliedFixRecord[];
 }
 
 export interface ReviewSectionFinding extends ReviewFinding {
@@ -50,6 +68,7 @@ export interface ReviewTableState {
   reviewedDocumentHash?: string;
   /** How many findings the review originally reported (never decreases; drives webview totals). */
   reviewFindingCount?: number;
+  appliedFixRecords?: AppliedFixRecord[];
 }
 
 export class ReviewWebviewSession {
@@ -129,6 +148,8 @@ export class ReviewWebviewSession {
         : findingsLen;
     /** Keep totals truthful when `findings` is empty but fingerprint fix state persists (re-review, cleared table). */
     const totalFindingsCount = Math.max(declaredCount, findingsLen, appliedKeyCount + rejectedKeyCount);
+    const reportLabel = basenameFromUriString(this.documentUri);
+    const resolved = resolveAppliedFixRecordsForUi(payload.appliedFixRecords, reportLabel);
     const structuredData = {
       summary: payload.summary,
       findings: payload.findings,
@@ -139,6 +160,9 @@ export class ReviewWebviewSession {
       rejectedIndices: payload.rejectedIndices ?? [],
       totalFindingsCount,
       reviewFindingCount: totalFindingsCount,
+      appliedFixRecords: resolved.records,
+      usingDemoFixRecords: resolved.usingDemo,
+      reportFileLabel: reportLabel,
     } as unknown as Record<string, unknown>;
     this.lastReviewStructuredData = structuredData;
     this.panel.setStreamText("");
@@ -191,6 +215,7 @@ export class ReviewWebviewSession {
       rejectedFindingKeys: stored.rejectedFindingKeys ?? [],
       rejectedIndices: stored.rejectedIndices ?? [],
       reviewFindingCount,
+      appliedFixRecords: stored.appliedFixRecords,
     });
   }
 

@@ -52,6 +52,12 @@ export class GeniePanelHost {
           void vscode.commands.executeCommand("codeReview.authenticate");
           return;
         }
+        if (msg?.command === "exportReviewReport") {
+          const m = msg as { format?: string };
+          const fmt = m.format === "xlsx" ? "xlsx" : "pdf";
+          void vscode.commands.executeCommand("codeReview.exportReviewReport", fmt);
+          return;
+        }
         const sessionId = msg?.sessionId;
         if (!sessionId) {
           return;

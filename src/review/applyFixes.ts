@@ -2,8 +2,10 @@ import * as vscode from "vscode";
 import { extensionContext } from "../extension";
 import { ensureCopilotSession } from "../utils/session";
 import { runCopilotInference } from "../utils/pythonRunner";
+import { createTwoFilesPatch } from "diff";
 import {
   extractFirstJsonObject,
+  type AppliedFixRecord,
   type ReviewFinding,
   type ReviewPayload,
 } from "../commands/webview/review_Webview/reviewPanel";
@@ -17,10 +19,16 @@ import { suppressReviewStaleFlushForUri } from "./reviewStaleSuppress";
 import { log, sanitizeForLog } from "../utils/logger";
 import { hashDocumentText } from "../utils/documentHash";
 import { previewFixInEditorAndWait } from "../preview/fixInEditorPreview";
+import { revealAndHighlightAppliedFix } from "./postApplyHighlight";
 
 export const LAST_REVIEW_STATE_KEY = "codeReview.lastReview";
+const REVIEW_STATE_BY_URI_KEY = "codeReview.reviewByUri";
 
 export type StoredReview = ReviewTableState;
+type ReviewStateByUri = {
+  lastDocumentUri?: string;
+  byDocumentUri: Record<string, StoredReview>;
+};
 
 const FIX_SYSTEM_ROLE = `You apply a single code-review suggestion to an entire source file.
 Respond with ONLY valid JSON (no markdown outside JSON) in this exact shape:
@@ -169,11 +177,37 @@ function appendAssistantFromSseLine(line: string, state: { text: string }): void
   }
 }
 
+function readReviewStateByUri(): ReviewStateByUri {
+  const state = extensionContext.workspaceState.get<ReviewStateByUri>(REVIEW_STATE_BY_URI_KEY);
+  if (!state || typeof state !== "object") {
+    return { byDocumentUri: {} };
+  }
+  const byDocumentUri =
+    state.byDocumentUri && typeof state.byDocumentUri === "object" ? state.byDocumentUri : {};
+  return {
+    lastDocumentUri: typeof state.lastDocumentUri === "string" ? state.lastDocumentUri : undefined,
+    byDocumentUri,
+  };
+}
+
 export async function saveLastReview(payload: StoredReview): Promise<void> {
+  const state = readReviewStateByUri();
+  state.byDocumentUri[payload.documentUri] = payload;
+  state.lastDocumentUri = payload.documentUri;
+  await extensionContext.workspaceState.update(REVIEW_STATE_BY_URI_KEY, state);
+  // Keep legacy key for backward compatibility with already persisted data.
   await extensionContext.workspaceState.update(LAST_REVIEW_STATE_KEY, payload);
 }
 
 export function getStoredReview(): StoredReview | undefined {
+  const state = readReviewStateByUri();
+  const activeUri = vscode.window.activeTextEditor?.document?.uri?.toString();
+  if (activeUri && state.byDocumentUri[activeUri]) {
+    return state.byDocumentUri[activeUri];
+  }
+  if (state.lastDocumentUri && state.byDocumentUri[state.lastDocumentUri]) {
+    return state.byDocumentUri[state.lastDocumentUri];
+  }
   return extensionContext.workspaceState.get<StoredReview>(LAST_REVIEW_STATE_KEY);
 }
 
@@ -191,11 +225,16 @@ export function getStoredReviewMatchingDocument(uri: vscode.Uri, documentText: s
 
 /** Latest workspace review row when it targets this file (hash need not match — used to merge fix state after edits/reload). */
 export function getStoredReviewForDocumentUri(uri: vscode.Uri): StoredReview | undefined {
-  const s = getStoredReview();
-  if (!s || s.documentUri !== uri.toString()) {
-    return undefined;
+  const state = readReviewStateByUri();
+  const byUri = state.byDocumentUri[uri.toString()];
+  if (byUri) {
+    return byUri;
   }
-  return s;
+  const legacy = extensionContext.workspaceState.get<StoredReview>(LAST_REVIEW_STATE_KEY);
+  if (legacy && legacy.documentUri === uri.toString()) {
+    return legacy;
+  }
+  return undefined;
 }
 
 /** Persisted applied-fix fingerprints for this file (same URI as workspace-stored review). */
@@ -227,28 +266,120 @@ export function getRejectedFindingKeysForDocumentUri(uri: vscode.Uri): string[] 
   return keys;
 }
 
-export function makeFindingKey(finding: ReviewFinding): string {
-  const norm = (v: string): string => v.trim().toLowerCase().replace(/\s+/g, " ");
+const normKeyPart = (v: string): string => v.trim().toLowerCase().replace(/\s+/g, " ");
+
+/** Legacy fingerprint (title|category|severity|suggestion) for matching older workspace state. */
+export function legacyFindingKey(finding: ReviewFinding): string {
   return [
-    norm(finding.title || ""),
-    norm(finding.category || ""),
-    norm(finding.severity || ""),
-    norm(finding.suggestion || ""),
+    normKeyPart(finding.title || ""),
+    normKeyPart(finding.category || ""),
+    normKeyPart(finding.severity || ""),
+    normKeyPart(finding.suggestion || ""),
   ].join("|");
 }
 
-export function findAppliedIndicesByKeys(findings: ReviewFinding[], appliedKeys: string[]): number[] {
+/**
+ * Stable fingerprint for a finding; includes a trimmed detail prefix so distinct rows
+ * rarely share the same key (fixes wrong-row Accepted/Rejected when keys collided).
+ */
+export function makeFindingKey(finding: ReviewFinding): string {
+  const base = legacyFindingKey(finding);
+  const d = normKeyPart((finding.detail || "").slice(0, 96));
+  return d.length > 0 ? `${base}|${d}` : base;
+}
+
+/** True if persisted key refers to this finding (supports pre-detail keys). */
+export function findingMatchesStoredKey(finding: ReviewFinding, storedKey: string): boolean {
+  if (makeFindingKey(finding) === storedKey) {
+    return true;
+  }
+  return legacyFindingKey(finding) === storedKey;
+}
+
+/**
+ * Map applied row indices from a key list. Each stored key matches at most one row.
+ * When `preferredIndices` is set (usually `stored.appliedIndices`), those rows win first so
+ * duplicate keys do not mark the wrong row after a fix.
+ */
+export function findAppliedIndicesByKeys(
+  findings: ReviewFinding[],
+  appliedKeys: string[],
+  preferredIndices?: number[]
+): number[] {
   if (!appliedKeys.length) {
     return [];
   }
-  const keySet = new Set(appliedKeys);
-  const matched: number[] = [];
-  for (let i = 0; i < findings.length; i++) {
-    if (keySet.has(makeFindingKey(findings[i]))) {
-      matched.push(i);
+  const matched = new Set<number>();
+  const keysConsumed = new Set<string>();
+
+  if (preferredIndices?.length) {
+    for (const idx of preferredIndices) {
+      if (idx < 0 || idx >= findings.length) {
+        continue;
+      }
+      const f = findings[idx];
+      let hitKey: string | undefined;
+      for (const sk of appliedKeys) {
+        if (keysConsumed.has(sk)) {
+          continue;
+        }
+        if (findingMatchesStoredKey(f, sk)) {
+          hitKey = sk;
+          break;
+        }
+      }
+      if (hitKey === undefined) {
+        continue;
+      }
+      matched.add(idx);
+      keysConsumed.add(hitKey);
     }
   }
-  return matched;
+
+  for (let i = 0; i < findings.length; i++) {
+    if (matched.has(i)) {
+      continue;
+    }
+    for (const sk of appliedKeys) {
+      if (keysConsumed.has(sk)) {
+        continue;
+      }
+      if (!findingMatchesStoredKey(findings[i], sk)) {
+        continue;
+      }
+      matched.add(i);
+      keysConsumed.add(sk);
+      break;
+    }
+  }
+
+  return Array.from(matched).sort((a, b) => a - b);
+}
+
+/** After findings are merged/reordered, map a prior review’s `appliedIndices` onto `combined`. */
+export function remapPriorAppliedIndicesToCombined(
+  priorFindings: ReviewFinding[] | undefined,
+  priorAppliedIndices: number[] | undefined,
+  combined: ReviewFinding[]
+): number[] | undefined {
+  if (!priorFindings?.length || !priorAppliedIndices?.length) {
+    return undefined;
+  }
+  const out: number[] = [];
+  for (const idx of priorAppliedIndices) {
+    if (idx < 0 || idx >= priorFindings.length) {
+      continue;
+    }
+    const pf = priorFindings[idx];
+    const j = combined.findIndex(
+      (cf) =>
+        makeFindingKey(cf) === makeFindingKey(pf) || legacyFindingKey(cf) === legacyFindingKey(pf)
+    );
+    if (j >= 0) {
+      out.push(j);
+    }
+  }
+  return out.length ? Array.from(new Set(out)).sort((a, b) => a - b) : undefined;
 }
 
 const fixOperationQueues = new Map<string, Promise<void>>();
@@ -292,7 +423,45 @@ async function withBufferHashSnapshot(base: StoredReview): Promise<StoredReview>
   }
 }
 
-async function markFindingApplied(originalIndex: number): Promise<void> {
+const MAX_STORED_DIFF_CHARS = 120_000;
+
+function buildAppliedFixRecord(
+  originalIndex: number,
+  finding: ReviewFinding | undefined,
+  baseText: string,
+  afterText: string
+): AppliedFixRecord {
+  const b = baseText.replace(/\r\n/g, "\n");
+  const a = afterText.replace(/\r\n/g, "\n");
+  let unifiedDiff = "";
+  try {
+    unifiedDiff = createTwoFilesPatch(
+      `${finding?.title ?? "finding"} (before)`,
+      `${finding?.title ?? "finding"} (after)`,
+      b,
+      a,
+      "snapshot",
+      "snapshot"
+    );
+  } catch {
+    unifiedDiff = "(could not build diff)";
+  }
+  if (unifiedDiff.length > MAX_STORED_DIFF_CHARS) {
+    unifiedDiff = unifiedDiff.slice(0, MAX_STORED_DIFF_CHARS) + "\n… [truncated]";
+  }
+  return {
+    findingIndex: originalIndex,
+    title: finding?.title ?? "",
+    detail: finding?.detail ?? "",
+    suggestion: finding?.suggestion ?? "",
+    severity: finding?.severity ?? "",
+    category: finding?.category ?? "",
+    unifiedDiff,
+    appliedAt: new Date().toISOString(),
+  };
+}
+
+async function markFindingApplied(originalIndex: number, fixRecord?: AppliedFixRecord): Promise<void> {
   const s = getStoredReview();
   if (!s) {
     return;
@@ -311,12 +480,19 @@ async function markFindingApplied(originalIndex: number): Promise<void> {
   if (findingKey) {
     rejectedKeys.delete(findingKey);
   }
+  let nextRecords = s.appliedFixRecords ? [...s.appliedFixRecords] : [];
+  if (fixRecord) {
+    nextRecords = nextRecords.filter((r) => r.findingIndex !== originalIndex);
+    nextRecords.push(fixRecord);
+    nextRecords.sort((x, y) => x.findingIndex - y.findingIndex);
+  }
   let next: StoredReview = {
     ...s,
     appliedIndices: Array.from(applied).sort((a, b) => a - b),
     appliedFindingKeys: Array.from(appliedKeys).sort(),
     rejectedIndices: Array.from(rejected).sort((a, b) => a - b),
     rejectedFindingKeys: Array.from(rejectedKeys).sort(),
+    appliedFixRecords: nextRecords,
   };
   next = await withBufferHashSnapshot(next);
   await saveLastReview(next);
@@ -338,11 +514,16 @@ async function markFindingRejected(originalIndex: number): Promise<void> {
   rejected.add(originalIndex);
   const applied = new Set(s.appliedIndices ?? []);
   applied.delete(originalIndex);
+  const appliedKeys = new Set(s.appliedFindingKeys ?? []);
+  if (findingKey) {
+    appliedKeys.delete(findingKey);
+  }
   const next: StoredReview = {
     ...s,
     rejectedIndices: Array.from(rejected).sort((a, b) => a - b),
     appliedIndices: Array.from(applied).sort((a, b) => a - b),
     rejectedFindingKeys: Array.from(rejectedKeys).sort(),
+    appliedFindingKeys: Array.from(appliedKeys).sort(),
   };
   await saveLastReview(next);
   notifyReviewUpdated(next);
@@ -546,7 +727,11 @@ export async function applyFixesFromReview(
     return;
   }
 
-  const persistedAppliedByKey = findAppliedIndicesByKeys(stored.findings, stored.appliedFindingKeys ?? []);
+  const persistedAppliedByKey = findAppliedIndicesByKeys(
+    stored.findings,
+    stored.appliedFindingKeys ?? [],
+    stored.appliedIndices
+  );
   if (persistedAppliedByKey.length) {
     const mergedApplied = new Set([...(stored.appliedIndices ?? []), ...persistedAppliedByKey]);
     const nextStored: StoredReview = {
@@ -660,8 +845,18 @@ export async function applyFixesFromReview(
       }
       for (let step = 0; step < targetIndices.length; step++) {
         const originalIndex = targetIndices[step];
+        const live = getStoredReview();
+        if (!live?.findings?.length || originalIndex < 0 || originalIndex >= live.findings.length) {
+          panel.addFixLog("Review data is missing or out of date; stopping fix run. Run Code Review again if needed.", "warn");
+          break;
+        }
+        if (live.appliedIndices?.includes(originalIndex)) {
+          panel.addFixLog(`Row ${originalIndex + 1} is already applied — skipping.`, "info");
+          continue;
+        }
+
         await clearFindingRejectedForIndex(originalIndex);
-        const finding = stored.findings[originalIndex];
+        const finding = live.findings[originalIndex];
         panel.startFixStep(step + 1, total, finding.title);
         panel.addFixLog("Sending fix request to model.", "info");
 
@@ -673,8 +868,8 @@ export async function applyFixesFromReview(
           const gateState = { text: "" };
           const excerpt = buildCodeExcerptForGate(baseText, GATE_CODE_EXCERPT_MAX_CHARS);
           const gatePrompt = buildExtraInstructionGatePrompt(
-            stored.fileName,
-            stored.summary,
+            live.fileName,
+            live.summary,
             finding,
             excerpt,
             extra.trim()
@@ -721,7 +916,7 @@ export async function applyFixesFromReview(
           }
         }
 
-        const prompt = buildFixPrompt(stored.fileName, baseText, stored.summary, finding, extra);
+        const prompt = buildFixPrompt(live.fileName, baseText, live.summary, finding, extra);
         const state = { text: "" };
 
         panel.setApplyingFixIndex(originalIndex);
@@ -774,9 +969,11 @@ export async function applyFixesFromReview(
         const normalizedAfter = afterText.replace(/\r\n/g, "\n");
         if (normalizedBase === normalizedAfter) {
           panel.setApplyingFixIndex(null);
-          await markFindingApplied(originalIndex);
+          const fixRec = buildAppliedFixRecord(originalIndex, finding, baseText, afterText);
+          await markFindingApplied(originalIndex, fixRec);
           appliedCount += 1;
           doc = await vscode.workspace.openTextDocument(uri);
+          await revealAndHighlightAppliedFix(uri, baseText, afterText);
           continue;
         }
 
@@ -795,9 +992,11 @@ export async function applyFixesFromReview(
         }
 
         panel.setApplyingFixIndex(null);
-        await markFindingApplied(originalIndex);
+        const fixRec = buildAppliedFixRecord(originalIndex, finding, baseText, afterText);
+        await markFindingApplied(originalIndex, fixRec);
         appliedCount += 1;
         doc = await vscode.workspace.openTextDocument(uri);
+        await revealAndHighlightAppliedFix(uri, baseText, afterText);
       }
 
       log.info("applyFixes", "Apply fixes completed", { appliedCount, total });
@@ -820,7 +1019,9 @@ export async function applyFixesFromReview(
       panel.showFixError(`Apply fixes failed: ${msg}`);
       void vscode.window.showErrorMessage(`Apply fixes: ${msg}`);
     } finally {
-      staleSuppress.dispose();
+      setTimeout(() => {
+        staleSuppress.dispose();
+      }, 550);
       panel.setApplyingFixIndex(null);
       if (isBulkRun) {
         panel.setApplyingFixAll(false);
@@ -860,5 +1061,6 @@ export function toStoredReview(
     rejectedFindingKeys,
     reviewedDocumentHash: hashDocumentText(documentText),
     reviewFindingCount,
+    appliedFixRecords: payload.appliedFixRecords ?? (sameDoc ? prior?.appliedFixRecords : undefined),
   };
 }
