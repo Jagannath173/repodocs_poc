@@ -68,6 +68,8 @@ export interface CopilotInferenceOptions {
   systemRole?: string;
   /** When false, sets COPILOT_STREAM=0 so the proxy returns one non-streaming completion (better for JSON edits). */
   stream?: boolean;
+  /** Abort in-flight proxy process (used by Stop actions). */
+  signal?: AbortSignal;
 }
 
 export async function runCopilotInference(
@@ -115,6 +117,32 @@ export async function runCopilotInference(
     }
 
     const child = spawn(pythonPath, [scriptPath], { cwd: pythonDir, env });
+    let aborted = false;
+    const cleanupAbortListener = () => {
+      if (options?.signal && abortHandler) {
+        options.signal.removeEventListener("abort", abortHandler);
+      }
+    };
+    const abortHandler = () => {
+      aborted = true;
+      try {
+        child.kill();
+      } catch {
+        /* ignore */
+      }
+    };
+    if (options?.signal) {
+      if (options.signal.aborted) {
+        aborted = true;
+        try {
+          child.kill();
+        } catch {
+          /* ignore */
+        }
+      } else {
+        options.signal.addEventListener("abort", abortHandler);
+      }
+    }
 
     child.stdin.write(prompt);
     child.stdin.end();
@@ -170,8 +198,24 @@ export async function runCopilotInference(
         markAuthFailure(s.trim());
       }
     });
-    child.on("error", reject);
+    child.on("error", (err) => {
+      cleanupAbortListener();
+      if (aborted) {
+        const e = new Error("Copilot inference cancelled.");
+        e.name = "AbortError";
+        reject(e);
+        return;
+      }
+      reject(err);
+    });
     child.on("close", async (code) => {
+      cleanupAbortListener();
+      if (aborted) {
+        const e = new Error("Copilot inference cancelled.");
+        e.name = "AbortError";
+        reject(e);
+        return;
+      }
       if (authFailureDetected) {
         await context.globalState.update("copilot_session_id", undefined);
         await context.globalState.update("copilot_access_token_override", undefined);

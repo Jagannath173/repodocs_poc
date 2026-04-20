@@ -690,8 +690,9 @@
       btnStopReview.type = "button";
       btnStopReview.className = "secondary";
       btnStopReview.textContent = "⏹ Stop";
-      btnStopReview.disabled = !reviewStillRunning;
-      if (reviewStillRunning) {
+      var stopAvailable = reviewStillRunning || fixRunInProgress;
+      btnStopReview.disabled = !stopAvailable;
+      if (stopAvailable) {
         btnStopReview.onclick = function () {
           vscode.postMessage({ command: "stopReview", sessionId: activeSessionId });
         };
@@ -739,13 +740,11 @@
           fallbackGlobalIndex += 1;
           var isApplied = applied.indexOf(globalIndex) >= 0;
           var isRejected = !isApplied && rejected.indexOf(globalIndex) >= 0;
-          // Hide accepted/applied rows; show only actionable or rejected rows.
-          if (isApplied) {
-            return;
-          }
           rowNum += 1;
           var tr = document.createElement("tr");
-          if (isRejected) {
+          if (isApplied) {
+            tr.className = "row-applied";
+          } else if (isRejected) {
             tr.className = "row-rejected";
           }
           var tdNum = document.createElement("td");
@@ -768,7 +767,12 @@
           tr.appendChild(tdSug);
           var tdFix = document.createElement("td");
           tdFix.className = "col-fix";
-          if (isRejected) {
+          if (isApplied) {
+            var spA = document.createElement("span");
+            spA.className = "review-status-accepted review-fix-status-pill";
+            spA.textContent = "Accepted";
+            tdFix.appendChild(spA);
+          } else if (isRejected) {
             var spR = document.createElement("span");
             spR.className = "review-status-rejected review-fix-status-pill";
             spR.textContent = "Rejected";

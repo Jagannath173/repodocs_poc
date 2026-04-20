@@ -126,6 +126,11 @@ export class ReviewWebviewSession {
     this.panel.setStatus(message);
   }
 
+  reveal(): void {
+    if (this.disposed) return;
+    this.panel.reveal();
+  }
+
   addReviewLog(message: string, level: "info" | "warn" | "error" | "success" = "info"): void {
     if (this.disposed) return;
     this.panel.setProgressStep(`[${level}] ${message}`);

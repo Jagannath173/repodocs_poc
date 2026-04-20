@@ -18,9 +18,8 @@ import {
 import { suppressReviewStaleFlushForUri } from "./reviewStaleSuppress";
 import { log, sanitizeForLog } from "../utils/logger";
 import { hashDocumentText } from "../utils/documentHash";
-import { previewFixInEditorAndWait } from "../preview/fixInEditorPreview";
+import { cancelFixPreviewForDocumentUri, previewFixInEditorAndWait } from "../preview/fixInEditorPreview";
 import { revealAndHighlightAppliedFix } from "./postApplyHighlight";
-import { isCodeReviewRunningForDocument } from "../commands/review/codeReview";
 
 export const LAST_REVIEW_STATE_KEY = "codeReview.lastReview";
 const REVIEW_STATE_BY_URI_KEY = "codeReview.reviewByUri";
@@ -392,21 +391,21 @@ export function remapPriorAppliedIndicesToCombined(
 }
 
 const fixOperationQueues = new Map<string, Promise<void>>();
+const stopRequestedByDocumentUri = new Set<string>();
+const activeFixAbortByDocumentUri = new Map<string, AbortController>();
 
-async function waitForReviewToFinish(documentUri: string, timeoutMs = 180_000): Promise<boolean> {
-  if (!isCodeReviewRunningForDocument(documentUri)) {
-    return true;
-  }
-  const startedAt = Date.now();
-  let delayMs = 240;
-  while (Date.now() - startedAt < timeoutMs) {
-    await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
-    if (!isCodeReviewRunningForDocument(documentUri)) {
-      return true;
-    }
-    delayMs = Math.min(1400, Math.floor(delayMs * 1.25));
-  }
-  return !isCodeReviewRunningForDocument(documentUri);
+export function requestStopForDocumentUri(documentUri: string): void {
+  stopRequestedByDocumentUri.add(documentUri);
+  activeFixAbortByDocumentUri.get(documentUri)?.abort();
+  void cancelFixPreviewForDocumentUri(documentUri);
+}
+
+function clearStopForDocumentUri(documentUri: string): void {
+  stopRequestedByDocumentUri.delete(documentUri);
+}
+
+function isStopRequestedForDocumentUri(documentUri: string): boolean {
+  return stopRequestedByDocumentUri.has(documentUri);
 }
 
 /**
@@ -768,23 +767,8 @@ export async function applyFixesFromReview(
   }
 
   const documentUri = stored.documentUri;
+  clearStopForDocumentUri(documentUri);
   const uriCheck = vscode.Uri.parse(documentUri);
-  if (isCodeReviewRunningForDocument(documentUri)) {
-    void vscode.window.showInformationMessage(
-      "Review is still running. Fix request queued and will run automatically when review finishes."
-    );
-    const finished = await waitForReviewToFinish(documentUri);
-    if (!finished) {
-      void vscode.window.showWarningMessage(
-        "Review is still running for too long. Try again in a moment, or stop/re-run review."
-      );
-      return;
-    }
-    const refreshed = getStoredReviewForDocumentUri(uriCheck);
-    if (refreshed) {
-      stored = refreshed;
-    }
-  }
   const docCheck = await vscode.workspace.openTextDocument(uriCheck);
   if (stored.reviewedDocumentHash && hashDocumentText(docCheck.getText()) !== stored.reviewedDocumentHash) {
     log.warn("applyFixes", "Stored review does not match current file buffer");
@@ -903,6 +887,11 @@ export async function applyFixesFromReview(
   await runWithDocumentFixQueue(stored.documentUri, async () => {
     const staleSuppress = suppressReviewStaleFlushForUri(uriCheck);
     try {
+      if (isStopRequestedForDocumentUri(stored.documentUri)) {
+        panel.addFixLog("Fix run stopped by user.", "warn");
+        panel.reveal?.();
+        return;
+      }
       if (holisticApply && extra?.trim()) {
         panel.addFixLog(
           "All review rows are already applied or rejected — running a whole-file pass from your instructions.",
@@ -921,6 +910,12 @@ export async function applyFixesFromReview(
         panel.addFixLog("Applying fixes with your extra instructions.", "info");
       }
       for (let step = 0; step < targetIndices.length; step++) {
+        if (isStopRequestedForDocumentUri(stored.documentUri)) {
+          panel.addFixLog("Fix run stopped by user.", "warn");
+          panel.reveal?.();
+          void vscode.window.showInformationMessage("Fix run stopped.");
+          return;
+        }
         const livePanel = getReviewPanelForDocument(stored.documentUri);
         if (!livePanel || livePanel.isDisposed?.()) {
           panel.addFixLog("Review tab was closed. Stopping fix run.", "warn");
@@ -958,6 +953,8 @@ export async function applyFixesFromReview(
             extra.trim()
           );
           try {
+            const gateAbort = new AbortController();
+            activeFixAbortByDocumentUri.set(stored.documentUri, gateAbort);
             await runCopilotInference(
               extensionContext,
               gatePrompt,
@@ -965,8 +962,9 @@ export async function applyFixesFromReview(
                 log.proxyLine("applyFixesGate", line);
                 appendAssistantFromSseLine(line, gateState);
               },
-              { systemRole: EXTRA_INSTRUCTION_GATE_SYSTEM_ROLE, stream: false }
+              { systemRole: EXTRA_INSTRUCTION_GATE_SYSTEM_ROLE, stream: false, signal: gateAbort.signal }
             );
+            activeFixAbortByDocumentUri.delete(stored.documentUri);
             const gate = parseRelevanceGateResponse(gateState.text);
             if (!gate.relevant) {
               skippedIrrelevantInstructionCount += 1;
@@ -984,6 +982,13 @@ export async function applyFixesFromReview(
             }
             panel.addFixLog("Extra instruction fits this step; generating fix.", "success");
           } catch (e: unknown) {
+            activeFixAbortByDocumentUri.delete(stored.documentUri);
+            if (e instanceof Error && e.name === "AbortError") {
+              panel.addFixLog("Fix run stopped by user.", "warn");
+              panel.reveal?.();
+              void vscode.window.showInformationMessage("Fix run stopped.");
+              return;
+            }
             const msg = e instanceof Error ? e.message : String(e);
             log.warn("applyFixes", "Relevance gate failed", { step: step + 1, error: sanitizeForLog(msg) });
             skippedIrrelevantInstructionCount += 1;
@@ -1004,6 +1009,8 @@ export async function applyFixesFromReview(
 
         panel.setApplyingFixIndex(originalIndex);
         try {
+          const fixAbort = new AbortController();
+          activeFixAbortByDocumentUri.set(stored.documentUri, fixAbort);
           log.debug("applyFixes", "Sending fix prompt", { step: step + 1, total, promptChars: prompt.length });
           await runCopilotInference(
             extensionContext,
@@ -1012,11 +1019,19 @@ export async function applyFixesFromReview(
               log.proxyLine("applyFixes", line);
               appendAssistantFromSseLine(line, state);
             },
-            { systemRole: FIX_SYSTEM_ROLE, stream: true }
+            { systemRole: FIX_SYSTEM_ROLE, stream: true, signal: fixAbort.signal }
           );
+          activeFixAbortByDocumentUri.delete(stored.documentUri);
           log.info("applyFixes", "Fix inference finished", { step: step + 1, responseChars: state.text.length });
           panel.addFixLog("Model response received.", "success");
         } catch (e: unknown) {
+          activeFixAbortByDocumentUri.delete(stored.documentUri);
+          if (e instanceof Error && e.name === "AbortError") {
+            panel.addFixLog("Fix run stopped by user.", "warn");
+            panel.reveal?.();
+            void vscode.window.showInformationMessage("Fix run stopped.");
+            return;
+          }
           const msg = e instanceof Error ? e.message : String(e);
           log.error("applyFixes", "Copilot request failed for fix step", { step: step + 1, error: sanitizeForLog(msg) });
           failedCount += 1;
@@ -1102,6 +1117,7 @@ export async function applyFixesFromReview(
       panel.showFixError(`Apply fixes failed: ${msg}`);
       void vscode.window.showErrorMessage(`Apply fixes: ${msg}`);
     } finally {
+      activeFixAbortByDocumentUri.delete(stored.documentUri);
       setTimeout(() => {
         staleSuppress.dispose();
       }, 550);

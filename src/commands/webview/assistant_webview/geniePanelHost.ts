@@ -180,6 +180,10 @@ export class GeniePanelHost {
     return this.panel.webview.postMessage(message);
   }
 
+  reveal(): void {
+    this.panel.reveal(vscode.ViewColumn.Beside, false);
+  }
+
   closeSession(sessionId: string): void {
     if (this.listeners.size <= 1) {
       this.panel.dispose();

@@ -22,6 +22,8 @@ export interface ReviewPanelLike {
   beginGuidedApplyStream(): void;
   setGuidedApplyStream(text: string): void;
   endGuidedApplyStream(): void;
+  /** Bring the review webview to foreground when needed (e.g. stop requested). */
+  reveal?(): void;
 }
 
 const registered = new Set<ReviewPanelLike>();

@@ -20,6 +20,7 @@ import {
   getRejectedFindingKeysForDocumentUri,
   getStoredReviewForDocumentUri,
   remapPriorAppliedIndicesToCombined,
+  requestStopForDocumentUri,
   saveLastReview,
   toStoredReview,
 } from "../../review/applyFixes";
@@ -166,8 +167,10 @@ export async function runCodeReview(): Promise<void> {
   panel.setLoading("Running review suite…");
   let reviewRunDone = false;
   let stopRequested = false;
+  let activeReviewAbort: AbortController | undefined;
   panel.onDispose(() => {
     stopRequested = true;
+    activeReviewAbort?.abort();
   });
   if (reviewInputMode === "incremental") {
     panel.addReviewLog("Scope: git diff vs HEAD — findings should target your local changes only.", "info");
@@ -195,7 +198,10 @@ export async function runCodeReview(): Promise<void> {
       void vscode.commands.executeCommand("codeReview.applyFixes", mode, idx, extraPassThrough, selectedIndices);
     } else if (m?.command === "stopReview") {
       stopRequested = true;
+      activeReviewAbort?.abort();
+      requestStopForDocumentUri(documentUri);
       panel.addReviewLog("Stop requested. Finishing current stage and halting further review steps.", "warn");
+      panel.reveal();
     } else if (m?.command === "authenticate") {
       void vscode.commands.executeCommand("codeReview.authenticate");
     }
@@ -225,48 +231,63 @@ export async function runCodeReview(): Promise<void> {
       let authError = false;
       panel.beginReviewStreamStage();
 
-      await runCopilotInference(
-        extensionContext,
-        prompt,
-        (data) => {
-          log.proxyLine("codeReview", data);
-          const trimmed = data.trim();
-          if (trimmed.includes("Error: No active Copilot session")) {
-            authError = true;
-          }
-          if (!trimmed.startsWith("data: ")) {
-            return;
-          }
-          const jsonStr = trimmed.substring(6).trim();
-          if (jsonStr === "[DONE]") {
-            return;
-          }
-          try {
-            const json = JSON.parse(jsonStr) as {
-              choices?: Array<{ delta?: { content?: string }; message?: { content?: string }; text?: string }>;
-            };
-            const text =
-              json.choices?.[0]?.delta?.content ||
-              json.choices?.[0]?.message?.content ||
-              json.choices?.[0]?.text;
-            if (text) {
-              assistantText += text;
-              panel.setReviewStream(assistantText);
-              log.debug("codeReview", "SSE text delta added", {
-                endpoint,
-                deltaChars: text.length,
-                totalChars: assistantText.length,
-              });
-              if (text.length > 0) {
-                panel.addReviewLog(`[${label}] +${text.length} chars (total ${assistantText.length})`, "info");
-              }
+      activeReviewAbort = new AbortController();
+      try {
+        await runCopilotInference(
+          extensionContext,
+          prompt,
+          (data) => {
+            log.proxyLine("codeReview", data);
+            const trimmed = data.trim();
+            if (trimmed.includes("Error: No active Copilot session")) {
+              authError = true;
             }
-          } catch {
-            log.debug("codeReview", "Skipped non-JSON SSE payload", { endpoint, lineChars: trimmed.length });
-          }
-        },
-        { systemRole: systemRoleForReview }
-      );
+            if (!trimmed.startsWith("data: ")) {
+              return;
+            }
+            const jsonStr = trimmed.substring(6).trim();
+            if (jsonStr === "[DONE]") {
+              return;
+            }
+            try {
+              const json = JSON.parse(jsonStr) as {
+                choices?: Array<{ delta?: { content?: string }; message?: { content?: string }; text?: string }>;
+              };
+              const text =
+                json.choices?.[0]?.delta?.content ||
+                json.choices?.[0]?.message?.content ||
+                json.choices?.[0]?.text;
+              if (text) {
+                assistantText += text;
+                panel.setReviewStream(assistantText);
+                log.debug("codeReview", "SSE text delta added", {
+                  endpoint,
+                  deltaChars: text.length,
+                  totalChars: assistantText.length,
+                });
+                if (text.length > 0) {
+                  panel.addReviewLog(`[${label}] +${text.length} chars (total ${assistantText.length})`, "info");
+                }
+              }
+            } catch {
+              log.debug("codeReview", "Skipped non-JSON SSE payload", { endpoint, lineChars: trimmed.length });
+            }
+          },
+          { systemRole: systemRoleForReview, signal: activeReviewAbort.signal }
+        );
+      } catch (e: unknown) {
+        const isAbort = e instanceof Error && e.name === "AbortError";
+        if (isAbort || stopRequested) {
+          panel.addReviewLog("Review stopped by user.", "warn");
+          panel.setStatus("Review stopped.");
+          panel.setBusy(false);
+          reviewRunDone = true;
+          return;
+        }
+        throw e;
+      } finally {
+        activeReviewAbort = undefined;
+      }
 
       if (stopRequested) {
         panel.addReviewLog("Review stopped by user.", "warn");
@@ -352,11 +373,16 @@ export async function runCodeReview(): Promise<void> {
         rejectedIndices: [],
         rejectedFindingKeys: [],
       };
-      panel.setReview(stagePayload);
+      const mergedStagePayload = mergeLiveAppliedIntoPayload(
+        editor.document.uri,
+        combinedFindings,
+        stagePayload
+      );
+      panel.setReview(mergedStagePayload);
       panel.setBusy(true);
       panel.setStatus(`Running review suite… (${i + 1}/${REVIEW_SEQUENCE.length})`);
       const latestStageText = (await vscode.workspace.openTextDocument(editor.document.uri)).getText();
-      await saveLastReview(toStoredReview(editor.document.uri, fileName, stagePayload, latestStageText));
+      await saveLastReview(toStoredReview(editor.document.uri, fileName, mergedStagePayload, latestStageText));
     }
 
     const finalReview: ReviewPayload = {
@@ -376,12 +402,17 @@ export async function runCodeReview(): Promise<void> {
       rejectedIndices: [],
       rejectedFindingKeys: [],
     };
+    const mergedFinalReview = mergeLiveAppliedIntoPayload(
+      editor.document.uri,
+      combinedFindings,
+      finalReview
+    );
     log.info("codeReview", "All review stages completed", { findings: combinedFindings.length });
     panel.addReviewLog("All review stages completed.", "success");
     const latestFinalText = (await vscode.workspace.openTextDocument(editor.document.uri)).getText();
-    await saveLastReview(toStoredReview(editor.document.uri, fileName, finalReview, latestFinalText));
+    await saveLastReview(toStoredReview(editor.document.uri, fileName, mergedFinalReview, latestFinalText));
     log.debug("codeReview", "Last review saved to workspace state", { fileName });
-    panel.setReview(finalReview);
+    panel.setReview(mergedFinalReview);
     reviewRunDone = true;
   } catch (e: unknown) {
     const raw = e instanceof Error ? e.message : typeof e === "string" ? e : "Unknown error";
@@ -393,6 +424,31 @@ export async function runCodeReview(): Promise<void> {
     reviewRunDone = true;
     runningReviewUris.delete(documentUri);
   }
+}
+
+function mergeLiveAppliedIntoPayload(
+  uri: vscode.Uri,
+  combinedFindings: ReviewFinding[],
+  payload: ReviewPayload
+): ReviewPayload {
+  const live = getStoredReviewForDocumentUri(uri);
+  if (!live) {
+    return payload;
+  }
+  const liveAppliedKeys = live.appliedFindingKeys ?? [];
+  const preferredApplied = remapPriorAppliedIndicesToCombined(
+    live.findings,
+    live.appliedIndices,
+    combinedFindings
+  );
+  const liveAppliedIndices = findAppliedIndicesByKeys(combinedFindings, liveAppliedKeys, preferredApplied);
+  return {
+    ...payload,
+    appliedIndices: Array.from(new Set([...(payload.appliedIndices ?? []), ...liveAppliedIndices])).sort(
+      (a, b) => a - b
+    ),
+    appliedFindingKeys: Array.from(new Set([...(payload.appliedFindingKeys ?? []), ...liveAppliedKeys])).sort(),
+  };
 }
 
 /** Carry forward dismissed rows when the model would otherwise repeat the same fingerprint. */

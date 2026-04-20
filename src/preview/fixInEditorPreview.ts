@@ -21,6 +21,21 @@ type FixPreviewSessionHandlers = {
 };
 
 let activeFixPreviewSession: FixPreviewSessionHandlers | undefined;
+let activeFixPreviewCancellation:
+  | {
+      documentUri: string;
+      cancel: () => Promise<void>;
+    }
+  | undefined;
+
+export async function cancelFixPreviewForDocumentUri(documentUri: string): Promise<boolean> {
+  const active = activeFixPreviewCancellation;
+  if (!active || active.documentUri !== documentUri) {
+    return false;
+  }
+  await active.cancel();
+  return true;
+}
 
 function flattenArgs(args: unknown[]): unknown[] {
   let a = [...args];
@@ -641,6 +656,9 @@ export async function previewFixInEditorAndWait(
     if (resolved) return;
     resolved = true;
     activeFixPreviewSession = undefined;
+    if (activeFixPreviewCancellation?.documentUri === docUri.toString()) {
+      activeFixPreviewCancellation = undefined;
+    }
     fixPreviewLensState = undefined;
     fixPreviewCodeLensChangeEmitter.fire();
     for (const fn of cleanupCallbacks) {
@@ -775,6 +793,23 @@ export async function previewFixInEditorAndWait(
           finalChoiceResolver("reject");
         }
       } finally {
+        cleanup();
+      }
+    },
+  };
+  activeFixPreviewCancellation = {
+    documentUri: docUri.toString(),
+    cancel: async () => {
+      if (resolved) {
+        return;
+      }
+      try {
+        const ok = await applyWholeDocumentReplace(docUri, baseText);
+        if (ok) {
+          await revealEditorForUri(docUri);
+        }
+      } finally {
+        finalChoiceResolver("reject");
         cleanup();
       }
     },
