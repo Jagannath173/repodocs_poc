@@ -558,6 +558,12 @@ export async function previewFixInEditorAndWait(
     backgroundColor: "rgba(63, 185, 80, 0.2)",
     border: "1px solid rgba(63, 185, 80, 0.45)",
   });
+  // Red = chunk includes removed/changed content from the original snapshot.
+  const decorationDiffRemoved = vscode.window.createTextEditorDecorationType({
+    isWholeLine: true,
+    backgroundColor: "rgba(248, 81, 73, 0.16)",
+    border: "1px solid rgba(248, 81, 73, 0.4)",
+  });
 
   const buildRangesForLines = (lines: number[]): vscode.Range[] =>
     lines.map((l) => new vscode.Range(new vscode.Position(l, 0), new vscode.Position(l, 0)));
@@ -593,7 +599,25 @@ export async function previewFixInEditorAndWait(
       }
       return !chunkDiffDismissed[cid];
     });
+    const removedLikeLines: number[] = [];
+    for (const c of chunks) {
+      if (chunkDiffDismissed[c.id]) {
+        continue;
+      }
+      if (!c.removedLineNumbers.length) {
+        continue;
+      }
+      const r = rangeMap.get(c.id);
+      if (!r) {
+        continue;
+      }
+      for (let li = r.startLine; li < r.endLineExclusive; li++) {
+        removedLikeLines.push(li);
+      }
+    }
+    const removedLikeUnique = Array.from(new Set(removedLikeLines));
     currentEditor.setDecorations(decorationDiffAdded, buildRangesForLines(toHighlight));
+    currentEditor.setDecorations(decorationDiffRemoved, buildRangesForLines(removedLikeUnique));
   };
 
   const applyCurrentPreviewToEditor = async (): Promise<boolean> => {
@@ -626,6 +650,7 @@ export async function previewFixInEditorAndWait(
       }
     }
     decorationDiffAdded.dispose();
+    decorationDiffRemoved.dispose();
   };
 
   const finishWhenAllChunksDismissed = async (): Promise<void> => {

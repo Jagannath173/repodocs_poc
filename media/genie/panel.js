@@ -407,9 +407,10 @@
       }
       var applied = Array.isArray(view.appliedIndices) ? view.appliedIndices : [];
       var rejected = Array.isArray(view.rejectedIndices) ? view.rejectedIndices : [];
+      var reviewStillRunning = !!(session && (session.busy || session.streamLive));
       var applyingIndex = session && session.fixApplyingIndex != null ? session.fixApplyingIndex : null;
       var applyingAll = !!(session && session.fixApplyingAll);
-      var fixRunInProgress = applyingAll || applyingIndex !== null;
+      var fixRunInProgress = applyingAll || applyingIndex !== null || reviewStillRunning;
       function buildCaughtUpActions() {
         var row = document.createElement("div");
         row.className = "review-report-actions-btns";
@@ -632,6 +633,9 @@
         spAll.className = "spinner";
         btnAll.appendChild(spAll);
         btnAll.appendChild(document.createTextNode(" Applying..."));
+      } else if (reviewStillRunning) {
+        btnAll.disabled = true;
+        btnAll.textContent = "Review running...";
       } else if (applyingIndex !== null) {
         btnAll.disabled = true;
         btnAll.textContent = "Fix All One by One";
@@ -768,9 +772,10 @@
               var fixBtn2 = document.createElement("button");
               fixBtn2.type = "button";
               fixBtn2.className = primaryClasses;
-              fixBtn2.textContent = "Fix";
-              fixBtn2.disabled = !!fixRowLocked;
-              if (!fixRowLocked) {
+              fixBtn2.textContent = reviewStillRunning ? "Review running..." : "Fix";
+              var disableRowFix = !!fixRowLocked || reviewStillRunning;
+              fixBtn2.disabled = disableRowFix;
+              if (!disableRowFix) {
                 (function (idx) {
                   fixBtn2.onclick = function () {
                     vscode.postMessage({
@@ -804,10 +809,13 @@
       var renderedAnySection = false;
       sections.forEach(function (sec, idx) {
         if (!sec || typeof sec !== "object") return;
+        var sectionName = sec.name || ("Section " + (idx + 1));
+        if (String(sectionName).trim().toLowerCase() === "previously rejected") {
+          return;
+        }
         var findings = Array.isArray(sec.findings) ? sec.findings : [];
         if (!findings.length) return;
         renderedAnySection = true;
-        var sectionName = sec.name || ("Section " + (idx + 1));
         if (typeof sec.summary === "string" && sec.summary.trim()) {
           addParagraph(root, sectionName + " Summary", sec.summary.trim());
         }

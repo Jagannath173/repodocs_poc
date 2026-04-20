@@ -20,6 +20,7 @@ import { log, sanitizeForLog } from "../utils/logger";
 import { hashDocumentText } from "../utils/documentHash";
 import { previewFixInEditorAndWait } from "../preview/fixInEditorPreview";
 import { revealAndHighlightAppliedFix } from "./postApplyHighlight";
+import { isCodeReviewRunningForDocument } from "../commands/review/codeReview";
 
 export const LAST_REVIEW_STATE_KEY = "codeReview.lastReview";
 const REVIEW_STATE_BY_URI_KEY = "codeReview.reviewByUri";
@@ -384,6 +385,22 @@ export function remapPriorAppliedIndicesToCombined(
 
 const fixOperationQueues = new Map<string, Promise<void>>();
 
+async function waitForReviewToFinish(documentUri: string, timeoutMs = 180_000): Promise<boolean> {
+  if (!isCodeReviewRunningForDocument(documentUri)) {
+    return true;
+  }
+  const startedAt = Date.now();
+  let delayMs = 240;
+  while (Date.now() - startedAt < timeoutMs) {
+    await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
+    if (!isCodeReviewRunningForDocument(documentUri)) {
+      return true;
+    }
+    delayMs = Math.min(1400, Math.floor(delayMs * 1.25));
+  }
+  return !isCodeReviewRunningForDocument(documentUri);
+}
+
 /**
  * Runs fix operations concurrently across different files, but serializes operations
  * for the same document to avoid edit races and conflicting writes.
@@ -425,6 +442,17 @@ async function withBufferHashSnapshot(base: StoredReview): Promise<StoredReview>
 
 const MAX_STORED_DIFF_CHARS = 120_000;
 
+function getStoredReviewForUriString(documentUri?: string): StoredReview | undefined {
+  if (!documentUri) {
+    return getStoredReview();
+  }
+  try {
+    return getStoredReviewForDocumentUri(vscode.Uri.parse(documentUri)) ?? getStoredReview();
+  } catch {
+    return getStoredReview();
+  }
+}
+
 function buildAppliedFixRecord(
   originalIndex: number,
   finding: ReviewFinding | undefined,
@@ -461,8 +489,12 @@ function buildAppliedFixRecord(
   };
 }
 
-async function markFindingApplied(originalIndex: number, fixRecord?: AppliedFixRecord): Promise<void> {
-  const s = getStoredReview();
+async function markFindingApplied(
+  originalIndex: number,
+  fixRecord?: AppliedFixRecord,
+  documentUri?: string
+): Promise<void> {
+  const s = getStoredReviewForUriString(documentUri);
   if (!s) {
     return;
   }
@@ -482,9 +514,16 @@ async function markFindingApplied(originalIndex: number, fixRecord?: AppliedFixR
   }
   let nextRecords = s.appliedFixRecords ? [...s.appliedFixRecords] : [];
   if (fixRecord) {
-    nextRecords = nextRecords.filter((r) => r.findingIndex !== originalIndex);
+    // Keep cumulative history across runs; do not overwrite earlier records for the same row.
     nextRecords.push(fixRecord);
-    nextRecords.sort((x, y) => x.findingIndex - y.findingIndex);
+    nextRecords.sort((x, y) => {
+      const ax = Date.parse(x.appliedAt ?? "");
+      const ay = Date.parse(y.appliedAt ?? "");
+      if (!Number.isNaN(ax) && !Number.isNaN(ay) && ax !== ay) {
+        return ax - ay;
+      }
+      return x.findingIndex - y.findingIndex;
+    });
   }
   let next: StoredReview = {
     ...s,
@@ -499,8 +538,8 @@ async function markFindingApplied(originalIndex: number, fixRecord?: AppliedFixR
   notifyReviewUpdated(next);
 }
 
-async function markFindingRejected(originalIndex: number): Promise<void> {
-  const s = getStoredReview();
+async function markFindingRejected(originalIndex: number, documentUri?: string): Promise<void> {
+  const s = getStoredReviewForUriString(documentUri);
   if (!s) {
     return;
   }
@@ -530,8 +569,11 @@ async function markFindingRejected(originalIndex: number): Promise<void> {
 }
 
 /** Clears rejected status when the user starts a new fix attempt for that finding. */
-async function clearFindingRejectedForIndex(originalIndex: number): Promise<void> {
-  const s = getStoredReview();
+async function clearFindingRejectedForIndex(
+  originalIndex: number,
+  documentUri?: string
+): Promise<void> {
+  const s = getStoredReviewForUriString(documentUri);
   if (!s) {
     return;
   }
@@ -558,8 +600,8 @@ async function clearFindingRejectedForIndex(originalIndex: number): Promise<void
   notifyReviewUpdated(next);
 }
 
-async function persistStoredReviewHashOnly(): Promise<void> {
-  const s = getStoredReview();
+async function persistStoredReviewHashOnly(documentUri?: string): Promise<void> {
+  const s = getStoredReviewForUriString(documentUri);
   if (!s) {
     return;
   }
@@ -688,7 +730,7 @@ async function runHolisticApplyWithExtra(params: {
     return;
   }
 
-  await persistStoredReviewHashOnly();
+  await persistStoredReviewHashOnly(stored.documentUri);
   panel.addFixLog("Accepted — file updated. Review snapshot refreshed.", "success");
   void vscode.window.showInformationMessage(`Guided edit applied for ${stored.fileName}. Save if needed.`);
 }
@@ -710,21 +752,48 @@ export async function applyFixesFromReview(
     return;
   }
 
-  const stored = getStoredReview();
+  let stored = getStoredReview();
   if (!stored || !stored.findings?.length) {
     log.warn("applyFixes", "No stored review findings");
     void vscode.window.showWarningMessage("Run Code Review on a file first, then use Apply fixes.");
     return;
   }
 
-  const uriCheck = vscode.Uri.parse(stored.documentUri);
+  const documentUri = stored.documentUri;
+  const uriCheck = vscode.Uri.parse(documentUri);
+  if (isCodeReviewRunningForDocument(documentUri)) {
+    void vscode.window.showInformationMessage(
+      "Review is still running. Fix request queued and will run automatically when review finishes."
+    );
+    const finished = await waitForReviewToFinish(documentUri);
+    if (!finished) {
+      void vscode.window.showWarningMessage(
+        "Review is still running for too long. Try again in a moment, or stop/re-run review."
+      );
+      return;
+    }
+    const refreshed = getStoredReviewForDocumentUri(uriCheck);
+    if (refreshed) {
+      stored = refreshed;
+    }
+  }
   const docCheck = await vscode.workspace.openTextDocument(uriCheck);
   if (stored.reviewedDocumentHash && hashDocumentText(docCheck.getText()) !== stored.reviewedDocumentHash) {
     log.warn("applyFixes", "Stored review does not match current file buffer");
-    void vscode.window.showWarningMessage(
-      "This file changed since the last review. Run Code Review again before applying fixes."
+    const choice = await vscode.window.showWarningMessage(
+      "This file changed since the last review. Continue applying fixes on the latest buffer, or re-run review first?",
+      { modal: true },
+      "Continue",
+      "Re-run Review"
     );
-    return;
+    if (choice !== "Continue") {
+      void vscode.commands.executeCommand("codeReview.runReview");
+      return;
+    }
+    const refreshed: StoredReview = { ...stored, reviewedDocumentHash: hashDocumentText(docCheck.getText()) };
+    await saveLastReview(refreshed);
+    notifyReviewUpdated(refreshed);
+    stored = refreshed;
   }
 
   const persistedAppliedByKey = findAppliedIndicesByKeys(
@@ -797,11 +866,9 @@ export async function applyFixesFromReview(
     return;
   }
 
-  const panel = getReviewPanelForDocument(stored.documentUri);
-  if (!panel) {
-    log.warn("applyFixes", "Review panel not open for document");
-    void vscode.window.showWarningMessage("Open the review tab for this file and run Apply fixes again.");
-    return;
+  const panel = getReviewPanelForDocument(stored.documentUri) ?? createFallbackReviewPanel(stored.documentUri);
+  if (!getReviewPanelForDocument(stored.documentUri)) {
+    log.warn("applyFixes", "Using fallback panel; review tab session unavailable");
   }
 
   const total = targetIndices.length;
@@ -845,7 +912,7 @@ export async function applyFixesFromReview(
       }
       for (let step = 0; step < targetIndices.length; step++) {
         const originalIndex = targetIndices[step];
-        const live = getStoredReview();
+        const live = getStoredReviewForDocumentUri(uri);
         if (!live?.findings?.length || originalIndex < 0 || originalIndex >= live.findings.length) {
           panel.addFixLog("Review data is missing or out of date; stopping fix run. Run Code Review again if needed.", "warn");
           break;
@@ -855,7 +922,7 @@ export async function applyFixesFromReview(
           continue;
         }
 
-        await clearFindingRejectedForIndex(originalIndex);
+        await clearFindingRejectedForIndex(originalIndex, live.documentUri);
         const finding = live.findings[originalIndex];
         panel.startFixStep(step + 1, total, finding.title);
         panel.addFixLog("Sending fix request to model.", "info");
@@ -970,7 +1037,7 @@ export async function applyFixesFromReview(
         if (normalizedBase === normalizedAfter) {
           panel.setApplyingFixIndex(null);
           const fixRec = buildAppliedFixRecord(originalIndex, finding, baseText, afterText);
-          await markFindingApplied(originalIndex, fixRec);
+          await markFindingApplied(originalIndex, fixRec, live.documentUri);
           appliedCount += 1;
           doc = await vscode.workspace.openTextDocument(uri);
           await revealAndHighlightAppliedFix(uri, baseText, afterText);
@@ -981,7 +1048,7 @@ export async function applyFixesFromReview(
         const choice = await previewFixInEditorAndWait(doc, baseText, afterText, previewTitle);
         if (choice === "reject") {
           panel.setApplyingFixIndex(null);
-          await markFindingRejected(originalIndex);
+          await markFindingRejected(originalIndex, live.documentUri);
           rejectedCount += 1;
           panel.addFixLog(`Step ${step + 1}/${total} rejected. Continuing with next finding.`, "warn");
           if (!isBulkRun) {
@@ -993,7 +1060,7 @@ export async function applyFixesFromReview(
 
         panel.setApplyingFixIndex(null);
         const fixRec = buildAppliedFixRecord(originalIndex, finding, baseText, afterText);
-        await markFindingApplied(originalIndex, fixRec);
+        await markFindingApplied(originalIndex, fixRec, live.documentUri);
         appliedCount += 1;
         doc = await vscode.workspace.openTextDocument(uri);
         await revealAndHighlightAppliedFix(uri, baseText, afterText);
@@ -1028,6 +1095,43 @@ export async function applyFixesFromReview(
       }
     }
   });
+}
+
+function createFallbackReviewPanel(documentUri: string): ReviewPanelLike {
+  return {
+    refreshFromStored: () => {
+      /* no-op fallback */
+    },
+    getDocumentUri: () => documentUri,
+    startFixStep: () => {
+      /* no-op fallback */
+    },
+    addFixLog: () => {
+      /* no-op fallback */
+    },
+    showFixDiff: () => {
+      /* no-op fallback */
+    },
+    showFixError: (message: string) => {
+      void vscode.window.showErrorMessage(message);
+    },
+    waitForFixChoice: async () => "reject",
+    setApplyingFixIndex: () => {
+      /* no-op fallback */
+    },
+    setApplyingFixAll: () => {
+      /* no-op fallback */
+    },
+    beginGuidedApplyStream: () => {
+      /* no-op fallback */
+    },
+    setGuidedApplyStream: () => {
+      /* no-op fallback */
+    },
+    endGuidedApplyStream: () => {
+      /* no-op fallback */
+    },
+  };
 }
 
 /** Map ReviewPayload + editor uri to stored shape (used from codeReview). */

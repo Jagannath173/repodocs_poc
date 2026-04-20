@@ -111,6 +111,16 @@ export class ReviewWebviewSession {
     this.panel.setProgressStep("Review started");
   }
 
+  setBusy(value: boolean): void {
+    if (this.disposed) return;
+    this.panel.setBusy(value);
+  }
+
+  setStatus(message: string): void {
+    if (this.disposed) return;
+    this.panel.setStatus(message);
+  }
+
   addReviewLog(message: string, level: "info" | "warn" | "error" | "success" = "info"): void {
     if (this.disposed) return;
     this.panel.setProgressStep(`[${level}] ${message}`);
