@@ -1,9 +1,19 @@
+# VS Code & Git
 .vscode/**
 .git/**
 .gitignore
+
+# Source (exclude TS, keep compiled JS)
 src/**
 tsconfig.json
 eslint.config.js
 **/*.map
+
+# Node
 node_modules/**
 !node_modules/diff/**
+
+# ❌ Python virtual environment (CRITICAL)
+python/venv/**
+# ✅ Keep compiled output
+!out/**
