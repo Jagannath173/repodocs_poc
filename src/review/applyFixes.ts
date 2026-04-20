@@ -839,7 +839,12 @@ export function toStoredReview(
   const prior = getStoredReview();
   const sameDoc = prior?.documentUri === uri.toString();
   const n = payload.findings?.length ?? 0;
-  const reviewFindingCount = sameDoc ? Math.max(prior?.reviewFindingCount ?? 0, n) : n;
+  const keyApplied = payload.appliedFindingKeys?.length ?? 0;
+  const keyRejected = payload.rejectedFindingKeys?.length ?? 0;
+  const floorFromKeys = keyApplied + keyRejected;
+  const reviewFindingCount = sameDoc
+    ? Math.max(prior?.reviewFindingCount ?? 0, n, floorFromKeys)
+    : Math.max(n, floorFromKeys);
   const rejectedFindingKeys =
     payload.rejectedFindingKeys ??
     (sameDoc ? prior?.rejectedFindingKeys : undefined) ??

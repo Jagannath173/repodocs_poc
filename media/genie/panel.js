@@ -277,12 +277,22 @@
       }
       return Math.max(flat, fromSections);
     }
-    /** Total / applied / rejected / pending — prefers host `totalFindingsCount` so metrics stay correct when findings[] is empty. */
+    /**
+     * Total / applied / rejected / pending.
+     * When the model returns no open rows (`findings` empty), `appliedIndices` is often empty too because
+     * indices are resolved from the findings list — persisted `appliedFindingKeys` / `rejectedFindingKeys`
+     * still carry counts. Use max(indices, keys) and never let total drop below applied+rejected.
+     */
     function computeReviewMetrics(view) {
+      if (!view || typeof view !== "object") {
+        return { total: 0, applied: 0, rejected: 0, pending: 0 };
+      }
       var applied = Array.isArray(view.appliedIndices) ? view.appliedIndices : [];
       var rejected = Array.isArray(view.rejectedIndices) ? view.rejectedIndices : [];
-      var appliedOnly = applied.length;
-      var rejectedOnly = rejected.length;
+      var appliedKeyCount = Array.isArray(view.appliedFindingKeys) ? view.appliedFindingKeys.length : 0;
+      var rejectedKeyCount = Array.isArray(view.rejectedFindingKeys) ? view.rejectedFindingKeys.length : 0;
+      var appliedOnly = Math.max(applied.length, appliedKeyCount);
+      var rejectedOnly = Math.max(rejected.length, rejectedKeyCount);
       var nFromView = countFindingsInView(view);
       var declared =
         typeof view.totalFindingsCount === "number" && !isNaN(view.totalFindingsCount)
@@ -290,8 +300,11 @@
           : typeof view.reviewFindingCount === "number" && !isNaN(view.reviewFindingCount)
             ? Math.max(0, Math.floor(view.reviewFindingCount))
             : -1;
+      var floorFromFixState = appliedOnly + rejectedOnly;
       var totalOnly =
-        declared >= 0 ? declared : Math.max(nFromView, appliedOnly + rejectedOnly);
+        declared >= 0
+          ? Math.max(declared, nFromView, floorFromFixState)
+          : Math.max(nFromView, floorFromFixState);
       var pendingOnly = Math.max(0, totalOnly - appliedOnly - rejectedOnly);
       return { total: totalOnly, applied: appliedOnly, rejected: rejectedOnly, pending: pendingOnly };
     }

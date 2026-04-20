@@ -120,10 +120,15 @@ export class ReviewWebviewSession {
         return `${i + 1}. [${f.severity || "info"}] ${f.title || "Issue"}\nCategory: ${f.category || "-"}\nDetail: ${f.detail || "-"}\nSuggestion: ${f.suggestion || "-"}`;
       })
       .join("\n\n");
-    const totalFindingsCount =
-      typeof payload.reviewFindingCount === "number"
+    const findingsLen = payload.findings?.length ?? 0;
+    const appliedKeyCount = payload.appliedFindingKeys?.length ?? 0;
+    const rejectedKeyCount = payload.rejectedFindingKeys?.length ?? 0;
+    const declaredCount =
+      typeof payload.reviewFindingCount === "number" && !Number.isNaN(payload.reviewFindingCount)
         ? Math.max(0, payload.reviewFindingCount)
-        : payload.findings?.length ?? 0;
+        : findingsLen;
+    /** Keep totals truthful when `findings` is empty but fingerprint fix state persists (re-review, cleared table). */
+    const totalFindingsCount = Math.max(declaredCount, findingsLen, appliedKeyCount + rejectedKeyCount);
     const structuredData = {
       summary: payload.summary,
       findings: payload.findings,
@@ -165,10 +170,18 @@ export class ReviewWebviewSession {
         };
       }),
     }));
-    const reviewFindingCount =
-      typeof stored.reviewFindingCount === "number"
+    const storedDeclared =
+      typeof stored.reviewFindingCount === "number" && !Number.isNaN(stored.reviewFindingCount)
         ? stored.reviewFindingCount
-        : stored.findings?.length ?? 0;
+        : 0;
+    const storedFindingsLen = stored.findings?.length ?? 0;
+    const storedAppliedK = stored.appliedFindingKeys?.length ?? 0;
+    const storedRejectedK = stored.rejectedFindingKeys?.length ?? 0;
+    const reviewFindingCount = Math.max(
+      storedDeclared,
+      storedFindingsLen,
+      storedAppliedK + storedRejectedK
+    );
     this.setReview({
       summary: stored.summary,
       findings: stored.findings,
