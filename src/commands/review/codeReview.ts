@@ -201,6 +201,9 @@ export async function runCodeReview(): Promise<void> {
       activeReviewAbort?.abort();
       requestStopForDocumentUri(documentUri);
       panel.addReviewLog("Stop requested. Finishing current stage and halting further review steps.", "warn");
+      panel.setStatus("Stopping…");
+      panel.setApplyingFixIndex(null);
+      panel.setApplyingFixAll(false);
       panel.reveal();
     } else if (m?.command === "authenticate") {
       void vscode.commands.executeCommand("codeReview.authenticate");

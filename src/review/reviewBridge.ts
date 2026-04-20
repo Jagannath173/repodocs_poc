@@ -13,6 +13,7 @@ export interface ReviewPanelLike {
   addFixLog(message: string, level?: "info" | "warn" | "error" | "success"): void;
   showFixDiff(parts: Array<{ kind: "add" | "remove" | "same"; text: string }>): void;
   showFixError(message: string): void;
+  setStatus?(message: string): void;
   waitForFixChoice(): Promise<"accept" | "reject">;
   /** Highlights which finding row is currently running a fix (spinner in UI). */
   setApplyingFixIndex(index: number | null): void;

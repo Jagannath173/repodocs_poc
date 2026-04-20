@@ -889,6 +889,7 @@ export async function applyFixesFromReview(
     try {
       if (isStopRequestedForDocumentUri(stored.documentUri)) {
         panel.addFixLog("Fix run stopped by user.", "warn");
+        panel.setStatus?.("Fix run stopped.");
         panel.reveal?.();
         return;
       }
@@ -912,6 +913,7 @@ export async function applyFixesFromReview(
       for (let step = 0; step < targetIndices.length; step++) {
         if (isStopRequestedForDocumentUri(stored.documentUri)) {
           panel.addFixLog("Fix run stopped by user.", "warn");
+          panel.setStatus?.("Fix run stopped.");
           panel.reveal?.();
           void vscode.window.showInformationMessage("Fix run stopped.");
           return;
@@ -985,6 +987,7 @@ export async function applyFixesFromReview(
             activeFixAbortByDocumentUri.delete(stored.documentUri);
             if (e instanceof Error && e.name === "AbortError") {
               panel.addFixLog("Fix run stopped by user.", "warn");
+              panel.setStatus?.("Fix run stopped.");
               panel.reveal?.();
               void vscode.window.showInformationMessage("Fix run stopped.");
               return;
@@ -1028,6 +1031,7 @@ export async function applyFixesFromReview(
           activeFixAbortByDocumentUri.delete(stored.documentUri);
           if (e instanceof Error && e.name === "AbortError") {
             panel.addFixLog("Fix run stopped by user.", "warn");
+            panel.setStatus?.("Fix run stopped.");
             panel.reveal?.();
             void vscode.window.showInformationMessage("Fix run stopped.");
             return;
