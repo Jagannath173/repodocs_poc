@@ -61,8 +61,16 @@ const MOCK_REVIEW_STAGE_LABELS = [
 
 let mockReviewStageCall = 0;
 
+let mockFixStepCall = 0;
+
+/** Reset with each new Code Review run (`resetMockReviewStage`). */
+export function resetMockFixStep(): void {
+  mockFixStepCall = 0;
+}
+
 export function resetMockReviewStage(): void {
   mockReviewStageCall = 0;
+  resetMockFixStep();
 }
 
 function mockReviewBody(): string {
@@ -82,10 +90,17 @@ function mockReviewBody(): string {
   });
 }
 
-/** Echo file unchanged so preview has no diff and applies immediately (no banner lines in the editor). */
+/**
+ * Returns a slightly modified file so each fix has a real diff (preview + scroll-to-highlight work).
+ * Without this, every mock fix echoed the same buffer and sequential “one by one” flows looked broken.
+ */
 function mockFixBody(prompt: string): string {
   const file = extractCurrentFileFromFixPrompt(prompt) ?? "";
-  return JSON.stringify({ fileContent: file });
+  mockFixStepCall += 1;
+  const base = file.replace(/\r\n/g, "\n");
+  const nl = base.endsWith("\n") || base.length === 0 ? "" : "\n";
+  const marker = `${nl}// [code-review mock] fix step ${mockFixStepCall}\n`;
+  return JSON.stringify({ fileContent: base + marker });
 }
 
 /** Extra-instruction relevance gate (include `MOCK_GATE_IRRELEVANT` in the instruction to simulate off-topic). */

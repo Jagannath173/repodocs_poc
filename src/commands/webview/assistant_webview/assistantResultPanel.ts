@@ -92,6 +92,10 @@ export class AssistantResultPanel {
     return this.host.onMessage(this.sessionId, handler);
   }
 
+  reveal(): void {
+    this.host.reveal();
+  }
+
   close(): void {
     this.host.closeSession(this.sessionId);
   }

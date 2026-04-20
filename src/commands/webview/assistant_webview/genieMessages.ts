@@ -7,4 +7,5 @@ export type GenieCommand =
   | "copyText"
   | "applyFixes"
   | "authenticate"
-  | "submitPrompt";
+  | "submitPrompt"
+  | "exportReviewReport";

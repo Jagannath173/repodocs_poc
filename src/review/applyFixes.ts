@@ -2,8 +2,10 @@ import * as vscode from "vscode";
 import { extensionContext } from "../extension";
 import { ensureCopilotSession } from "../utils/session";
 import { runCopilotInference } from "../utils/pythonRunner";
+import { createTwoFilesPatch } from "diff";
 import {
   extractFirstJsonObject,
+  type AppliedFixRecord,
   type ReviewFinding,
   type ReviewPayload,
 } from "../commands/webview/review_Webview/reviewPanel";
@@ -16,11 +18,17 @@ import {
 import { suppressReviewStaleFlushForUri } from "./reviewStaleSuppress";
 import { log, sanitizeForLog } from "../utils/logger";
 import { hashDocumentText } from "../utils/documentHash";
-import { previewFixInEditorAndWait } from "../preview/fixInEditorPreview";
+import { cancelFixPreviewForDocumentUri, previewFixInEditorAndWait } from "../preview/fixInEditorPreview";
+import { revealAndHighlightAppliedFix } from "./postApplyHighlight";
 
 export const LAST_REVIEW_STATE_KEY = "codeReview.lastReview";
+const REVIEW_STATE_BY_URI_KEY = "codeReview.reviewByUri";
 
 export type StoredReview = ReviewTableState;
+type ReviewStateByUri = {
+  lastDocumentUri?: string;
+  byDocumentUri: Record<string, StoredReview>;
+};
 
 const FIX_SYSTEM_ROLE = `You apply a single code-review suggestion to an entire source file.
 Respond with ONLY valid JSON (no markdown outside JSON) in this exact shape:
@@ -28,6 +36,9 @@ Respond with ONLY valid JSON (no markdown outside JSON) in this exact shape:
 Rules:
 - "fileContent" must be the full file text after the edit, not a diff and not a fragment.
 - Preserve the file's style, imports, and formatting unless the suggestion requires changing them.
+- Prefer the smallest localized edit that fixes the reported issue; avoid unrelated refactors.
+- Change the code near the described issue location/detail whenever possible.
+- If the finding is already satisfied by the current file, return the file unchanged.
 - Follow "Additional instructions from the developer" when present (they were already verified as related to this task).
 - Do not add commentary outside the JSON object.`;
 
@@ -139,6 +150,11 @@ Apply ONLY the following single finding next (do not address other issues unless
 - Severity: ${finding.severity} | Category: ${finding.category}
 - Detail: ${finding.detail}
 - Suggestion: ${finding.suggestion}
+
+Implementation constraints:
+- Keep edits minimal and localized to code related to this finding.
+- Do not change unrelated functions/blocks.
+- Preserve naming and existing behavior outside the target fix.
 ${extra}
 
 Return JSON: {"fileContent": "..."} with the full updated file.`;
@@ -169,11 +185,37 @@ function appendAssistantFromSseLine(line: string, state: { text: string }): void
   }
 }
 
+function readReviewStateByUri(): ReviewStateByUri {
+  const state = extensionContext.workspaceState.get<ReviewStateByUri>(REVIEW_STATE_BY_URI_KEY);
+  if (!state || typeof state !== "object") {
+    return { byDocumentUri: {} };
+  }
+  const byDocumentUri =
+    state.byDocumentUri && typeof state.byDocumentUri === "object" ? state.byDocumentUri : {};
+  return {
+    lastDocumentUri: typeof state.lastDocumentUri === "string" ? state.lastDocumentUri : undefined,
+    byDocumentUri,
+  };
+}
+
 export async function saveLastReview(payload: StoredReview): Promise<void> {
+  const state = readReviewStateByUri();
+  state.byDocumentUri[payload.documentUri] = payload;
+  state.lastDocumentUri = payload.documentUri;
+  await extensionContext.workspaceState.update(REVIEW_STATE_BY_URI_KEY, state);
+  // Keep legacy key for backward compatibility with already persisted data.
   await extensionContext.workspaceState.update(LAST_REVIEW_STATE_KEY, payload);
 }
 
 export function getStoredReview(): StoredReview | undefined {
+  const state = readReviewStateByUri();
+  const activeUri = vscode.window.activeTextEditor?.document?.uri?.toString();
+  if (activeUri && state.byDocumentUri[activeUri]) {
+    return state.byDocumentUri[activeUri];
+  }
+  if (state.lastDocumentUri && state.byDocumentUri[state.lastDocumentUri]) {
+    return state.byDocumentUri[state.lastDocumentUri];
+  }
   return extensionContext.workspaceState.get<StoredReview>(LAST_REVIEW_STATE_KEY);
 }
 
@@ -191,11 +233,16 @@ export function getStoredReviewMatchingDocument(uri: vscode.Uri, documentText: s
 
 /** Latest workspace review row when it targets this file (hash need not match — used to merge fix state after edits/reload). */
 export function getStoredReviewForDocumentUri(uri: vscode.Uri): StoredReview | undefined {
-  const s = getStoredReview();
-  if (!s || s.documentUri !== uri.toString()) {
-    return undefined;
+  const state = readReviewStateByUri();
+  const byUri = state.byDocumentUri[uri.toString()];
+  if (byUri) {
+    return byUri;
   }
-  return s;
+  const legacy = extensionContext.workspaceState.get<StoredReview>(LAST_REVIEW_STATE_KEY);
+  if (legacy && legacy.documentUri === uri.toString()) {
+    return legacy;
+  }
+  return undefined;
 }
 
 /** Persisted applied-fix fingerprints for this file (same URI as workspace-stored review). */
@@ -227,31 +274,139 @@ export function getRejectedFindingKeysForDocumentUri(uri: vscode.Uri): string[] 
   return keys;
 }
 
-export function makeFindingKey(finding: ReviewFinding): string {
-  const norm = (v: string): string => v.trim().toLowerCase().replace(/\s+/g, " ");
+const normKeyPart = (v: string): string => v.trim().toLowerCase().replace(/\s+/g, " ");
+
+/** Legacy fingerprint (title|category|severity|suggestion) for matching older workspace state. */
+export function legacyFindingKey(finding: ReviewFinding): string {
   return [
-    norm(finding.title || ""),
-    norm(finding.category || ""),
-    norm(finding.severity || ""),
-    norm(finding.suggestion || ""),
+    normKeyPart(finding.title || ""),
+    normKeyPart(finding.category || ""),
+    normKeyPart(finding.severity || ""),
+    normKeyPart(finding.suggestion || ""),
   ].join("|");
 }
 
-export function findAppliedIndicesByKeys(findings: ReviewFinding[], appliedKeys: string[]): number[] {
+/**
+ * Stable fingerprint for a finding; includes a trimmed detail prefix so distinct rows
+ * rarely share the same key (fixes wrong-row Accepted/Rejected when keys collided).
+ */
+export function makeFindingKey(finding: ReviewFinding): string {
+  const base = legacyFindingKey(finding);
+  const d = normKeyPart((finding.detail || "").slice(0, 96));
+  return d.length > 0 ? `${base}|${d}` : base;
+}
+
+/** True if persisted key refers to this finding (supports pre-detail keys). */
+export function findingMatchesStoredKey(finding: ReviewFinding, storedKey: string): boolean {
+  if (makeFindingKey(finding) === storedKey) {
+    return true;
+  }
+  return legacyFindingKey(finding) === storedKey;
+}
+
+/**
+ * Map applied row indices from a key list. Each stored key matches at most one row.
+ * When `preferredIndices` is set (usually `stored.appliedIndices`), those rows win first so
+ * duplicate keys do not mark the wrong row after a fix.
+ */
+export function findAppliedIndicesByKeys(
+  findings: ReviewFinding[],
+  appliedKeys: string[],
+  preferredIndices?: number[]
+): number[] {
   if (!appliedKeys.length) {
     return [];
   }
-  const keySet = new Set(appliedKeys);
-  const matched: number[] = [];
-  for (let i = 0; i < findings.length; i++) {
-    if (keySet.has(makeFindingKey(findings[i]))) {
-      matched.push(i);
+  const matched = new Set<number>();
+  const keysConsumed = new Set<string>();
+
+  if (preferredIndices?.length) {
+    for (const idx of preferredIndices) {
+      if (idx < 0 || idx >= findings.length) {
+        continue;
+      }
+      const f = findings[idx];
+      let hitKey: string | undefined;
+      for (const sk of appliedKeys) {
+        if (keysConsumed.has(sk)) {
+          continue;
+        }
+        if (findingMatchesStoredKey(f, sk)) {
+          hitKey = sk;
+          break;
+        }
+      }
+      if (hitKey === undefined) {
+        continue;
+      }
+      matched.add(idx);
+      keysConsumed.add(hitKey);
     }
   }
-  return matched;
+
+  for (let i = 0; i < findings.length; i++) {
+    if (matched.has(i)) {
+      continue;
+    }
+    for (const sk of appliedKeys) {
+      if (keysConsumed.has(sk)) {
+        continue;
+      }
+      if (!findingMatchesStoredKey(findings[i], sk)) {
+        continue;
+      }
+      matched.add(i);
+      keysConsumed.add(sk);
+      break;
+    }
+  }
+
+  return Array.from(matched).sort((a, b) => a - b);
+}
+
+/** After findings are merged/reordered, map a prior review’s `appliedIndices` onto `combined`. */
+export function remapPriorAppliedIndicesToCombined(
+  priorFindings: ReviewFinding[] | undefined,
+  priorAppliedIndices: number[] | undefined,
+  combined: ReviewFinding[]
+): number[] | undefined {
+  if (!priorFindings?.length || !priorAppliedIndices?.length) {
+    return undefined;
+  }
+  const out: number[] = [];
+  for (const idx of priorAppliedIndices) {
+    if (idx < 0 || idx >= priorFindings.length) {
+      continue;
+    }
+    const pf = priorFindings[idx];
+    const j = combined.findIndex(
+      (cf) =>
+        makeFindingKey(cf) === makeFindingKey(pf) || legacyFindingKey(cf) === legacyFindingKey(pf)
+    );
+    if (j >= 0) {
+      out.push(j);
+    }
+  }
+  return out.length ? Array.from(new Set(out)).sort((a, b) => a - b) : undefined;
 }
 
 const fixOperationQueues = new Map<string, Promise<void>>();
+const stopRequestedByDocumentUri = new Set<string>();
+const activeFixAbortByDocumentUri = new Map<string, AbortController>();
+
+export function requestStopForDocumentUri(documentUri: string): void {
+  stopRequestedByDocumentUri.add(documentUri);
+  activeFixAbortByDocumentUri.get(documentUri)?.abort();
+  void cancelFixPreviewForDocumentUri(documentUri);
+}
+
+function clearStopForDocumentUri(documentUri: string): void {
+  stopRequestedByDocumentUri.delete(documentUri);
+}
+
+function isStopRequestedForDocumentUri(documentUri: string): boolean {
+  return stopRequestedByDocumentUri.has(documentUri);
+}
 
 /**
  * Runs fix operations concurrently across different files, but serializes operations
@@ -292,8 +447,61 @@ async function withBufferHashSnapshot(base: StoredReview): Promise<StoredReview>
   }
 }
 
-async function markFindingApplied(originalIndex: number): Promise<void> {
-  const s = getStoredReview();
+const MAX_STORED_DIFF_CHARS = 120_000;
+
+function getStoredReviewForUriString(documentUri?: string): StoredReview | undefined {
+  if (!documentUri) {
+    return getStoredReview();
+  }
+  try {
+    return getStoredReviewForDocumentUri(vscode.Uri.parse(documentUri)) ?? getStoredReview();
+  } catch {
+    return getStoredReview();
+  }
+}
+
+function buildAppliedFixRecord(
+  originalIndex: number,
+  finding: ReviewFinding | undefined,
+  baseText: string,
+  afterText: string
+): AppliedFixRecord {
+  const b = baseText.replace(/\r\n/g, "\n");
+  const a = afterText.replace(/\r\n/g, "\n");
+  let unifiedDiff = "";
+  try {
+    unifiedDiff = createTwoFilesPatch(
+      `${finding?.title ?? "finding"} (before)`,
+      `${finding?.title ?? "finding"} (after)`,
+      b,
+      a,
+      "snapshot",
+      "snapshot"
+    );
+  } catch {
+    unifiedDiff = "(could not build diff)";
+  }
+  if (unifiedDiff.length > MAX_STORED_DIFF_CHARS) {
+    unifiedDiff = unifiedDiff.slice(0, MAX_STORED_DIFF_CHARS) + "\n… [truncated]";
+  }
+  return {
+    findingIndex: originalIndex,
+    title: finding?.title ?? "",
+    detail: finding?.detail ?? "",
+    suggestion: finding?.suggestion ?? "",
+    severity: finding?.severity ?? "",
+    category: finding?.category ?? "",
+    unifiedDiff,
+    appliedAt: new Date().toISOString(),
+  };
+}
+
+async function markFindingApplied(
+  originalIndex: number,
+  fixRecord?: AppliedFixRecord,
+  documentUri?: string
+): Promise<void> {
+  const s = getStoredReviewForUriString(documentUri);
   if (!s) {
     return;
   }
@@ -311,20 +519,34 @@ async function markFindingApplied(originalIndex: number): Promise<void> {
   if (findingKey) {
     rejectedKeys.delete(findingKey);
   }
+  let nextRecords = s.appliedFixRecords ? [...s.appliedFixRecords] : [];
+  if (fixRecord) {
+    // Keep cumulative history across runs; do not overwrite earlier records for the same row.
+    nextRecords.push(fixRecord);
+    nextRecords.sort((x, y) => {
+      const ax = Date.parse(x.appliedAt ?? "");
+      const ay = Date.parse(y.appliedAt ?? "");
+      if (!Number.isNaN(ax) && !Number.isNaN(ay) && ax !== ay) {
+        return ax - ay;
+      }
+      return x.findingIndex - y.findingIndex;
+    });
+  }
   let next: StoredReview = {
     ...s,
     appliedIndices: Array.from(applied).sort((a, b) => a - b),
     appliedFindingKeys: Array.from(appliedKeys).sort(),
     rejectedIndices: Array.from(rejected).sort((a, b) => a - b),
     rejectedFindingKeys: Array.from(rejectedKeys).sort(),
+    appliedFixRecords: nextRecords,
   };
   next = await withBufferHashSnapshot(next);
   await saveLastReview(next);
   notifyReviewUpdated(next);
 }
 
-async function markFindingRejected(originalIndex: number): Promise<void> {
-  const s = getStoredReview();
+async function markFindingRejected(originalIndex: number, documentUri?: string): Promise<void> {
+  const s = getStoredReviewForUriString(documentUri);
   if (!s) {
     return;
   }
@@ -338,19 +560,27 @@ async function markFindingRejected(originalIndex: number): Promise<void> {
   rejected.add(originalIndex);
   const applied = new Set(s.appliedIndices ?? []);
   applied.delete(originalIndex);
+  const appliedKeys = new Set(s.appliedFindingKeys ?? []);
+  if (findingKey) {
+    appliedKeys.delete(findingKey);
+  }
   const next: StoredReview = {
     ...s,
     rejectedIndices: Array.from(rejected).sort((a, b) => a - b),
     appliedIndices: Array.from(applied).sort((a, b) => a - b),
     rejectedFindingKeys: Array.from(rejectedKeys).sort(),
+    appliedFindingKeys: Array.from(appliedKeys).sort(),
   };
   await saveLastReview(next);
   notifyReviewUpdated(next);
 }
 
 /** Clears rejected status when the user starts a new fix attempt for that finding. */
-async function clearFindingRejectedForIndex(originalIndex: number): Promise<void> {
-  const s = getStoredReview();
+async function clearFindingRejectedForIndex(
+  originalIndex: number,
+  documentUri?: string
+): Promise<void> {
+  const s = getStoredReviewForUriString(documentUri);
   if (!s) {
     return;
   }
@@ -377,8 +607,8 @@ async function clearFindingRejectedForIndex(originalIndex: number): Promise<void
   notifyReviewUpdated(next);
 }
 
-async function persistStoredReviewHashOnly(): Promise<void> {
-  const s = getStoredReview();
+async function persistStoredReviewHashOnly(documentUri?: string): Promise<void> {
+  const s = getStoredReviewForUriString(documentUri);
   if (!s) {
     return;
   }
@@ -507,7 +737,7 @@ async function runHolisticApplyWithExtra(params: {
     return;
   }
 
-  await persistStoredReviewHashOnly();
+  await persistStoredReviewHashOnly(stored.documentUri);
   panel.addFixLog("Accepted — file updated. Review snapshot refreshed.", "success");
   void vscode.window.showInformationMessage(`Guided edit applied for ${stored.fileName}. Save if needed.`);
 }
@@ -529,24 +759,40 @@ export async function applyFixesFromReview(
     return;
   }
 
-  const stored = getStoredReview();
+  let stored = getStoredReview();
   if (!stored || !stored.findings?.length) {
     log.warn("applyFixes", "No stored review findings");
     void vscode.window.showWarningMessage("Run Code Review on a file first, then use Apply fixes.");
     return;
   }
 
-  const uriCheck = vscode.Uri.parse(stored.documentUri);
+  const documentUri = stored.documentUri;
+  clearStopForDocumentUri(documentUri);
+  const uriCheck = vscode.Uri.parse(documentUri);
   const docCheck = await vscode.workspace.openTextDocument(uriCheck);
   if (stored.reviewedDocumentHash && hashDocumentText(docCheck.getText()) !== stored.reviewedDocumentHash) {
     log.warn("applyFixes", "Stored review does not match current file buffer");
-    void vscode.window.showWarningMessage(
-      "This file changed since the last review. Run Code Review again before applying fixes."
+    const choice = await vscode.window.showWarningMessage(
+      "This file changed since the last review. Continue applying fixes on the latest buffer, or re-run review first?",
+      { modal: true },
+      "Continue",
+      "Re-run Review"
     );
-    return;
+    if (choice !== "Continue") {
+      void vscode.commands.executeCommand("codeReview.runReview");
+      return;
+    }
+    const refreshed: StoredReview = { ...stored, reviewedDocumentHash: hashDocumentText(docCheck.getText()) };
+    await saveLastReview(refreshed);
+    notifyReviewUpdated(refreshed);
+    stored = refreshed;
   }
 
-  const persistedAppliedByKey = findAppliedIndicesByKeys(stored.findings, stored.appliedFindingKeys ?? []);
+  const persistedAppliedByKey = findAppliedIndicesByKeys(
+    stored.findings,
+    stored.appliedFindingKeys ?? [],
+    stored.appliedIndices
+  );
   if (persistedAppliedByKey.length) {
     const mergedApplied = new Set([...(stored.appliedIndices ?? []), ...persistedAppliedByKey]);
     const nextStored: StoredReview = {
@@ -613,9 +859,9 @@ export async function applyFixesFromReview(
   }
 
   const panel = getReviewPanelForDocument(stored.documentUri);
-  if (!panel) {
-    log.warn("applyFixes", "Review panel not open for document");
-    void vscode.window.showWarningMessage("Open the review tab for this file and run Apply fixes again.");
+  if (!panel || panel.isDisposed?.()) {
+    log.warn("applyFixes", "Review tab not open; aborting apply fixes");
+    void vscode.window.showWarningMessage("Review tab is closed. Open review and run fixes again.");
     return;
   }
 
@@ -641,6 +887,12 @@ export async function applyFixesFromReview(
   await runWithDocumentFixQueue(stored.documentUri, async () => {
     const staleSuppress = suppressReviewStaleFlushForUri(uriCheck);
     try {
+      if (isStopRequestedForDocumentUri(stored.documentUri)) {
+        panel.addFixLog("Fix run stopped by user.", "warn");
+        panel.setStatus?.("Fix run stopped.");
+        panel.reveal?.();
+        return;
+      }
       if (holisticApply && extra?.trim()) {
         panel.addFixLog(
           "All review rows are already applied or rejected — running a whole-file pass from your instructions.",
@@ -659,9 +911,32 @@ export async function applyFixesFromReview(
         panel.addFixLog("Applying fixes with your extra instructions.", "info");
       }
       for (let step = 0; step < targetIndices.length; step++) {
+        if (isStopRequestedForDocumentUri(stored.documentUri)) {
+          panel.addFixLog("Fix run stopped by user.", "warn");
+          panel.setStatus?.("Fix run stopped.");
+          panel.reveal?.();
+          void vscode.window.showInformationMessage("Fix run stopped.");
+          return;
+        }
+        const livePanel = getReviewPanelForDocument(stored.documentUri);
+        if (!livePanel || livePanel.isDisposed?.()) {
+          panel.addFixLog("Review tab was closed. Stopping fix run.", "warn");
+          void vscode.window.showWarningMessage("Fix run stopped because review tab was closed.");
+          return;
+        }
         const originalIndex = targetIndices[step];
-        await clearFindingRejectedForIndex(originalIndex);
-        const finding = stored.findings[originalIndex];
+        const live = getStoredReviewForDocumentUri(uri);
+        if (!live?.findings?.length || originalIndex < 0 || originalIndex >= live.findings.length) {
+          panel.addFixLog("Review data is missing or out of date; stopping fix run. Run Code Review again if needed.", "warn");
+          break;
+        }
+        if (live.appliedIndices?.includes(originalIndex)) {
+          panel.addFixLog(`Row ${originalIndex + 1} is already applied — skipping.`, "info");
+          continue;
+        }
+
+        await clearFindingRejectedForIndex(originalIndex, live.documentUri);
+        const finding = live.findings[originalIndex];
         panel.startFixStep(step + 1, total, finding.title);
         panel.addFixLog("Sending fix request to model.", "info");
 
@@ -673,13 +948,15 @@ export async function applyFixesFromReview(
           const gateState = { text: "" };
           const excerpt = buildCodeExcerptForGate(baseText, GATE_CODE_EXCERPT_MAX_CHARS);
           const gatePrompt = buildExtraInstructionGatePrompt(
-            stored.fileName,
-            stored.summary,
+            live.fileName,
+            live.summary,
             finding,
             excerpt,
             extra.trim()
           );
           try {
+            const gateAbort = new AbortController();
+            activeFixAbortByDocumentUri.set(stored.documentUri, gateAbort);
             await runCopilotInference(
               extensionContext,
               gatePrompt,
@@ -687,8 +964,9 @@ export async function applyFixesFromReview(
                 log.proxyLine("applyFixesGate", line);
                 appendAssistantFromSseLine(line, gateState);
               },
-              { systemRole: EXTRA_INSTRUCTION_GATE_SYSTEM_ROLE, stream: false }
+              { systemRole: EXTRA_INSTRUCTION_GATE_SYSTEM_ROLE, stream: false, signal: gateAbort.signal }
             );
+            activeFixAbortByDocumentUri.delete(stored.documentUri);
             const gate = parseRelevanceGateResponse(gateState.text);
             if (!gate.relevant) {
               skippedIrrelevantInstructionCount += 1;
@@ -706,6 +984,14 @@ export async function applyFixesFromReview(
             }
             panel.addFixLog("Extra instruction fits this step; generating fix.", "success");
           } catch (e: unknown) {
+            activeFixAbortByDocumentUri.delete(stored.documentUri);
+            if (e instanceof Error && e.name === "AbortError") {
+              panel.addFixLog("Fix run stopped by user.", "warn");
+              panel.setStatus?.("Fix run stopped.");
+              panel.reveal?.();
+              void vscode.window.showInformationMessage("Fix run stopped.");
+              return;
+            }
             const msg = e instanceof Error ? e.message : String(e);
             log.warn("applyFixes", "Relevance gate failed", { step: step + 1, error: sanitizeForLog(msg) });
             skippedIrrelevantInstructionCount += 1;
@@ -721,11 +1007,13 @@ export async function applyFixesFromReview(
           }
         }
 
-        const prompt = buildFixPrompt(stored.fileName, baseText, stored.summary, finding, extra);
+        const prompt = buildFixPrompt(live.fileName, baseText, live.summary, finding, extra);
         const state = { text: "" };
 
         panel.setApplyingFixIndex(originalIndex);
         try {
+          const fixAbort = new AbortController();
+          activeFixAbortByDocumentUri.set(stored.documentUri, fixAbort);
           log.debug("applyFixes", "Sending fix prompt", { step: step + 1, total, promptChars: prompt.length });
           await runCopilotInference(
             extensionContext,
@@ -734,11 +1022,20 @@ export async function applyFixesFromReview(
               log.proxyLine("applyFixes", line);
               appendAssistantFromSseLine(line, state);
             },
-            { systemRole: FIX_SYSTEM_ROLE, stream: true }
+            { systemRole: FIX_SYSTEM_ROLE, stream: true, signal: fixAbort.signal }
           );
+          activeFixAbortByDocumentUri.delete(stored.documentUri);
           log.info("applyFixes", "Fix inference finished", { step: step + 1, responseChars: state.text.length });
           panel.addFixLog("Model response received.", "success");
         } catch (e: unknown) {
+          activeFixAbortByDocumentUri.delete(stored.documentUri);
+          if (e instanceof Error && e.name === "AbortError") {
+            panel.addFixLog("Fix run stopped by user.", "warn");
+            panel.setStatus?.("Fix run stopped.");
+            panel.reveal?.();
+            void vscode.window.showInformationMessage("Fix run stopped.");
+            return;
+          }
           const msg = e instanceof Error ? e.message : String(e);
           log.error("applyFixes", "Copilot request failed for fix step", { step: step + 1, error: sanitizeForLog(msg) });
           failedCount += 1;
@@ -774,9 +1071,11 @@ export async function applyFixesFromReview(
         const normalizedAfter = afterText.replace(/\r\n/g, "\n");
         if (normalizedBase === normalizedAfter) {
           panel.setApplyingFixIndex(null);
-          await markFindingApplied(originalIndex);
+          const fixRec = buildAppliedFixRecord(originalIndex, finding, baseText, afterText);
+          await markFindingApplied(originalIndex, fixRec, live.documentUri);
           appliedCount += 1;
           doc = await vscode.workspace.openTextDocument(uri);
+          await revealAndHighlightAppliedFix(uri, baseText, afterText);
           continue;
         }
 
@@ -784,7 +1083,7 @@ export async function applyFixesFromReview(
         const choice = await previewFixInEditorAndWait(doc, baseText, afterText, previewTitle);
         if (choice === "reject") {
           panel.setApplyingFixIndex(null);
-          await markFindingRejected(originalIndex);
+          await markFindingRejected(originalIndex, live.documentUri);
           rejectedCount += 1;
           panel.addFixLog(`Step ${step + 1}/${total} rejected. Continuing with next finding.`, "warn");
           if (!isBulkRun) {
@@ -795,9 +1094,11 @@ export async function applyFixesFromReview(
         }
 
         panel.setApplyingFixIndex(null);
-        await markFindingApplied(originalIndex);
+        const fixRec = buildAppliedFixRecord(originalIndex, finding, baseText, afterText);
+        await markFindingApplied(originalIndex, fixRec, live.documentUri);
         appliedCount += 1;
         doc = await vscode.workspace.openTextDocument(uri);
+        await revealAndHighlightAppliedFix(uri, baseText, afterText);
       }
 
       log.info("applyFixes", "Apply fixes completed", { appliedCount, total });
@@ -820,7 +1121,10 @@ export async function applyFixesFromReview(
       panel.showFixError(`Apply fixes failed: ${msg}`);
       void vscode.window.showErrorMessage(`Apply fixes: ${msg}`);
     } finally {
-      staleSuppress.dispose();
+      activeFixAbortByDocumentUri.delete(stored.documentUri);
+      setTimeout(() => {
+        staleSuppress.dispose();
+      }, 550);
       panel.setApplyingFixIndex(null);
       if (isBulkRun) {
         panel.setApplyingFixAll(false);
@@ -860,5 +1164,6 @@ export function toStoredReview(
     rejectedFindingKeys,
     reviewedDocumentHash: hashDocumentText(documentText),
     reviewFindingCount,
+    appliedFixRecords: payload.appliedFixRecords ?? (sameDoc ? prior?.appliedFixRecords : undefined),
   };
 }

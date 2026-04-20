@@ -1,17 +1,8 @@
 import * as vscode from "vscode";
 import { diffLines } from "diff";
+import { revealAndHighlightAppliedFix } from "../review/postApplyHighlight";
 
 export type FixInEditorChoice = "accept" | "reject";
-
-/** Always append exactly two newlines during preview so the last buffer line is reserved for whole-file CodeLens (strip this suffix for diff highlighting). */
-function appendFixPreviewPad(merged: string): string {
-  return merged.replace(/\r\n/g, "\n") + "\n\n";
-}
-
-function stripFixPreviewPad(docText: string): string {
-  const t = docText.replace(/\r\n/g, "\n");
-  return t.endsWith("\n\n") ? t.slice(0, -2) : t;
-}
 
 /** CodeLens uses these ids (declared in package.json) with `arguments: [chunkIndex]`. */
 const CMD_ACCEPT_CHUNK = "codeReview.fixPreview.acceptChunk";
@@ -30,6 +21,21 @@ type FixPreviewSessionHandlers = {
 };
 
 let activeFixPreviewSession: FixPreviewSessionHandlers | undefined;
+let activeFixPreviewCancellation:
+  | {
+      documentUri: string;
+      cancel: () => Promise<void>;
+    }
+  | undefined;
+
+export async function cancelFixPreviewForDocumentUri(documentUri: string): Promise<boolean> {
+  const active = activeFixPreviewCancellation;
+  if (!active || active.documentUri !== documentUri) {
+    return false;
+  }
+  await active.cancel();
+  return true;
+}
 
 function flattenArgs(args: unknown[]): unknown[] {
   let a = [...args];
@@ -542,6 +548,16 @@ export async function previewFixInEditorAndWait(
     return "accept";
   }
 
+  /** Extra trailing newlines so each chunk’s CodeLens can land on its own line (short files). */
+  const padTailNewlines = Math.max(2, chunks.length + 1);
+  const appendFixPreviewPad = (merged: string): string =>
+    merged.replace(/\r\n/g, "\n") + "\n".repeat(padTailNewlines);
+  const stripFixPreviewPad = (docText: string): string => {
+    const t = docText.replace(/\r\n/g, "\n");
+    const suffix = "\n".repeat(padTailNewlines);
+    return t.endsWith(suffix) ? t.slice(0, -padTailNewlines) : t;
+  };
+
   const decisions = chunks.map(() => true); // default: accept all chunks
   /** After Accept/Reject on a block, stop highlighting that block (user confirmed). */
   const chunkDiffDismissed = chunks.map(() => false);
@@ -556,6 +572,12 @@ export async function previewFixInEditorAndWait(
     isWholeLine: true,
     backgroundColor: "rgba(63, 185, 80, 0.2)",
     border: "1px solid rgba(63, 185, 80, 0.45)",
+  });
+  // Red = chunk includes removed/changed content from the original snapshot.
+  const decorationDiffRemoved = vscode.window.createTextEditorDecorationType({
+    isWholeLine: true,
+    backgroundColor: "rgba(248, 81, 73, 0.16)",
+    border: "1px solid rgba(248, 81, 73, 0.4)",
   });
 
   const buildRangesForLines = (lines: number[]): vscode.Range[] =>
@@ -592,7 +614,26 @@ export async function previewFixInEditorAndWait(
       }
       return !chunkDiffDismissed[cid];
     });
+    const removedLikeLines: number[] = [];
+    for (const c of chunks) {
+      if (chunkDiffDismissed[c.id]) {
+        continue;
+      }
+      if (!c.removedLineNumbers.length) {
+        continue;
+      }
+      const r = rangeMap.get(c.id);
+      if (!r) {
+        continue;
+      }
+      for (let li = r.startLine; li < r.endLineExclusive; li++) {
+        removedLikeLines.push(li);
+      }
+    }
+    const addedSet = new Set(toHighlight);
+    const removedLikeUnique = Array.from(new Set(removedLikeLines)).filter((line) => !addedSet.has(line));
     currentEditor.setDecorations(decorationDiffAdded, buildRangesForLines(toHighlight));
+    currentEditor.setDecorations(decorationDiffRemoved, buildRangesForLines(removedLikeUnique));
   };
 
   const applyCurrentPreviewToEditor = async (): Promise<boolean> => {
@@ -615,6 +656,9 @@ export async function previewFixInEditorAndWait(
     if (resolved) return;
     resolved = true;
     activeFixPreviewSession = undefined;
+    if (activeFixPreviewCancellation?.documentUri === docUri.toString()) {
+      activeFixPreviewCancellation = undefined;
+    }
     fixPreviewLensState = undefined;
     fixPreviewCodeLensChangeEmitter.fire();
     for (const fn of cleanupCallbacks) {
@@ -625,6 +669,7 @@ export async function previewFixInEditorAndWait(
       }
     }
     decorationDiffAdded.dispose();
+    decorationDiffRemoved.dispose();
   };
 
   const finishWhenAllChunksDismissed = async (): Promise<void> => {
@@ -677,6 +722,8 @@ export async function previewFixInEditorAndWait(
       if (chunkId < 0 || chunkId >= decisions.length) return;
       decisions[chunkId] = true;
       chunkDiffDismissed[chunkId] = true;
+      const beforeDoc = await vscode.workspace.openTextDocument(docUri);
+      const beforeNorm = normalizeReviewText(stripFixPreviewPad(beforeDoc.getText()));
       const ok = await applyCurrentPreviewToEditor();
       if (!ok) {
         chunkDiffDismissed[chunkId] = false;
@@ -685,6 +732,9 @@ export async function previewFixInEditorAndWait(
         );
         return;
       }
+      const afterDoc = await vscode.workspace.openTextDocument(docUri);
+      const afterNorm = normalizeReviewText(stripFixPreviewPad(afterDoc.getText()));
+      await revealAndHighlightAppliedFix(docUri, beforeNorm, afterNorm);
       updateDecorations();
       fixPreviewCodeLensChangeEmitter.fire();
       refreshLenses();
@@ -719,6 +769,7 @@ export async function previewFixInEditorAndWait(
         const ok = await applyWholeDocumentReplace(docUri, mergedText);
         if (ok) {
           await revealEditorForUri(docUri);
+          await revealAndHighlightAppliedFix(docUri, baseText, mergedText);
         }
         if (!ok) {
           finalChoiceResolver("reject");
@@ -742,6 +793,23 @@ export async function previewFixInEditorAndWait(
           finalChoiceResolver("reject");
         }
       } finally {
+        cleanup();
+      }
+    },
+  };
+  activeFixPreviewCancellation = {
+    documentUri: docUri.toString(),
+    cancel: async () => {
+      if (resolved) {
+        return;
+      }
+      try {
+        const ok = await applyWholeDocumentReplace(docUri, baseText);
+        if (ok) {
+          await revealEditorForUri(docUri);
+        }
+      } finally {
+        finalChoiceResolver("reject");
         cleanup();
       }
     },
@@ -774,6 +842,10 @@ export async function previewFixInEditorAndWait(
   const initialOk = await applyWholeDocumentReplace(docUri, appendFixPreviewPad(buildCurrentMergedText()));
   if (initialOk) {
     await revealEditorForUri(docUri);
+    /** Scroll/center on the proposed changes as soon as the preview buffer is written (Fix / fix-all steps). */
+    const snapDoc = await vscode.workspace.openTextDocument(docUri);
+    const proposedNorm = normalizeReviewText(stripFixPreviewPad(snapDoc.getText()));
+    await revealAndHighlightAppliedFix(docUri, baseText, proposedNorm);
   } else {
     void vscode.window.showWarningMessage(
       "Could not open fix preview in the editor. Check if the document is read-only or locked."

@@ -6,10 +6,14 @@ export type { ReviewTableState } from "../commands/webview/review_Webview/review
 export interface ReviewPanelLike {
   refreshFromStored(stored: ReviewTableState): void;
   getDocumentUri(): string | undefined;
+  isDisposed?(): boolean;
+  /** When present, called before a new review session for the same file so stale panels do not steal extension messages. */
+  dispose?(): void;
   startFixStep(step: number, total: number, findingTitle: string): void;
   addFixLog(message: string, level?: "info" | "warn" | "error" | "success"): void;
   showFixDiff(parts: Array<{ kind: "add" | "remove" | "same"; text: string }>): void;
   showFixError(message: string): void;
+  setStatus?(message: string): void;
   waitForFixChoice(): Promise<"accept" | "reject">;
   /** Highlights which finding row is currently running a fix (spinner in UI). */
   setApplyingFixIndex(index: number | null): void;
@@ -19,6 +23,8 @@ export interface ReviewPanelLike {
   beginGuidedApplyStream(): void;
   setGuidedApplyStream(text: string): void;
   endGuidedApplyStream(): void;
+  /** Bring the review webview to foreground when needed (e.g. stop requested). */
+  reveal?(): void;
 }
 
 const registered = new Set<ReviewPanelLike>();
@@ -48,4 +54,14 @@ export function getReviewPanelForDocument(documentUri: string): ReviewPanelLike 
     }
   }
   return undefined;
+}
+
+/** Drop every open review panel for this document so the next session is the sole handler (stable Genie session id overwrites listeners). */
+export function disposeReviewPanelsForDocument(documentUri: string): void {
+  const snapshot = [...registered];
+  for (const p of snapshot) {
+    if (p.getDocumentUri() === documentUri) {
+      p.dispose?.();
+    }
+  }
 }

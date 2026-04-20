@@ -100,6 +100,10 @@
         "command": "codeReview.showLogs",
         "title": "Code Review: Show extension logs",
         "icon": "$(output)"
+      },
+      {
+        "command": "codeReview.exportReviewReport",
+        "title": "Code Review: Export review report (PDF or Excel from palette)"
       }
     ],
     "viewsContainers": {
@@ -183,6 +187,8 @@
   },
   "homepage": "https://github.com/Jagannath173/repodocs_poc#readme",
   "dependencies": {
-    "diff": "^9.0.0"
+    "diff": "^9.0.0",
+    "exceljs": "^4.4.0",
+    "pdf-lib": "^1.17.1"
   }
 }

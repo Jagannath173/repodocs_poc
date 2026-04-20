@@ -10,6 +10,7 @@
   var sessions = {};
   var sessionOrder = [];
   var activeSessionId = "";
+  var restoringState = false;
   var generatedFiles = [];
   var renderedPanelEl = document.getElementById("rendered-panel");
   var explainToggleBtn = document.getElementById("explain-toggle");
@@ -17,6 +18,40 @@
   if (!renderedPanelEl || !explainToggleBtn || !tabsEl) {
     document.body.innerHTML = '<p style="padding:16px;font-family:system-ui;color:#f14c4c;">Genie UI failed to load (missing DOM). Reload the window.</p>';
     return;
+  }
+  function persistUiState() {
+    if (restoringState) return;
+    try {
+      vscode.setState({
+        sessions: sessions,
+        sessionOrder: sessionOrder,
+        activeSessionId: activeSessionId,
+      });
+    } catch (e) {
+      // ignore persistence errors
+    }
+  }
+  function restoreUiStateIfAvailable() {
+    try {
+      var st = vscode.getState ? vscode.getState() : null;
+      if (!st || typeof st !== "object") return false;
+      var ss = st.sessions && typeof st.sessions === "object" ? st.sessions : null;
+      var so = Array.isArray(st.sessionOrder) ? st.sessionOrder : [];
+      var aid = typeof st.activeSessionId === "string" ? st.activeSessionId : "";
+      if (!ss || !so.length) return false;
+      restoringState = true;
+      sessions = ss;
+      sessionOrder = so.filter(function (id) { return !!sessions[id]; });
+      activeSessionId = aid && sessions[aid] ? aid : (sessionOrder[sessionOrder.length - 1] || "");
+      renderTabs();
+      if (activeSessionId) renderSession();
+      else renderEmptyState();
+      restoringState = false;
+      return true;
+    } catch (e) {
+      restoringState = false;
+      return false;
+    }
   }
 
     function newSession(title) {
@@ -46,6 +81,7 @@
         authCode: "",
         fixApplyingIndex: null,
         fixApplyingAll: false,
+        reviewFixDetailsOpen: false,
         applyingCurrent: false,
         refactorCode: "",
       };
@@ -256,6 +292,35 @@
       var head = detail.split(/\\n\\nCode:/i)[0].trim();
       return head || "—";
     }
+    function renderSuggestedFixContent(cell, text) {
+      var raw = String(text || "").trim();
+      if (!raw) {
+        cell.textContent = "—";
+        return;
+      }
+      var lines = raw.split(/\r?\n/);
+      var hasDiffLike = lines.some(function (line) {
+        var t = String(line || "").trimStart();
+        return t.startsWith("+") || t.startsWith("-");
+      });
+      if (!hasDiffLike) {
+        // Avoid false coloring when the model returns plain prose.
+        // Only explicit +/- diff lines are colorized.
+        cell.textContent = raw;
+        return;
+      }
+      lines.forEach(function (line) {
+        var ln = document.createElement("div");
+        ln.className = "suggestion-line";
+        var t = String(line || "");
+        var trimmed = t.trimStart();
+        if (trimmed.startsWith("+")) ln.classList.add("add");
+        else if (trimmed.startsWith("-")) ln.classList.add("del");
+        else ln.classList.add("same");
+        ln.textContent = t || " ";
+        cell.appendChild(ln);
+      });
+    }
     function sevClass(sev) {
       var x = String(sev || "").toLowerCase();
       if (x === "critical") return "sev-critical";
@@ -277,11 +342,43 @@
       }
       return Math.max(flat, fromSections);
     }
+    /** Unique finding indices represented by current response rows (sections first, then flat fallback). */
+    function collectVisibleFindingIndices(view) {
+      var out = [];
+      if (!view || typeof view !== "object") return out;
+      var seen = {};
+      var sections = Array.isArray(view.sections) ? view.sections : [];
+      var usedSections = false;
+      for (var si = 0; si < sections.length; si++) {
+        var sec = sections[si];
+        var findings = sec && Array.isArray(sec.findings) ? sec.findings : [];
+        if (!findings.length) continue;
+        usedSections = true;
+        for (var fi = 0; fi < findings.length; fi++) {
+          var f = findings[fi] || {};
+          var idx = typeof f.globalIndex === "number" ? f.globalIndex : fi;
+          var key = String(idx);
+          if (!seen[key]) {
+            seen[key] = true;
+            out.push(idx);
+          }
+        }
+      }
+      if (usedSections) return out;
+      var flat = Array.isArray(view.findings) ? view.findings : [];
+      for (var i = 0; i < flat.length; i++) {
+        var key2 = String(i);
+        if (!seen[key2]) {
+          seen[key2] = true;
+          out.push(i);
+        }
+      }
+      return out;
+    }
     /**
      * Total / applied / rejected / pending.
-     * When the model returns no open rows (`findings` empty), `appliedIndices` is often empty too because
-     * indices are resolved from the findings list — persisted `appliedFindingKeys` / `rejectedFindingKeys`
-     * still carry counts. Use max(indices, keys) and never let total drop below applied+rejected.
+     * With visible findings rows, compute all values from those exact rows so the bar always matches
+     * what's shown in the response tables. Key-count fallback is only for empty-row states.
      */
     function computeReviewMetrics(view) {
       if (!view || typeof view !== "object") {
@@ -289,11 +386,27 @@
       }
       var applied = Array.isArray(view.appliedIndices) ? view.appliedIndices : [];
       var rejected = Array.isArray(view.rejectedIndices) ? view.rejectedIndices : [];
+      var visibleIndices = collectVisibleFindingIndices(view);
+      if (visibleIndices.length > 0) {
+        var appliedVisible = 0;
+        var rejectedVisible = 0;
+        for (var vi = 0; vi < visibleIndices.length; vi++) {
+          var idx2 = visibleIndices[vi];
+          if (applied.indexOf(idx2) >= 0) appliedVisible += 1;
+          else if (rejected.indexOf(idx2) >= 0) rejectedVisible += 1;
+        }
+        return {
+          total: visibleIndices.length,
+          applied: appliedVisible,
+          rejected: rejectedVisible,
+          pending: Math.max(0, visibleIndices.length - appliedVisible - rejectedVisible),
+        };
+      }
       var appliedKeyCount = Array.isArray(view.appliedFindingKeys) ? view.appliedFindingKeys.length : 0;
       var rejectedKeyCount = Array.isArray(view.rejectedFindingKeys) ? view.rejectedFindingKeys.length : 0;
+      var nFromView = countFindingsInView(view);
       var appliedOnly = Math.max(applied.length, appliedKeyCount);
       var rejectedOnly = Math.max(rejected.length, rejectedKeyCount);
-      var nFromView = countFindingsInView(view);
       var declared =
         typeof view.totalFindingsCount === "number" && !isNaN(view.totalFindingsCount)
           ? Math.max(0, Math.floor(view.totalFindingsCount))
@@ -312,33 +425,10 @@
       if (!view || typeof view !== "object") {
         return false;
       }
-      var applied = Array.isArray(view.appliedIndices) ? view.appliedIndices : [];
-      var sections = Array.isArray(view.sections) ? view.sections : [];
-      var totalFindings = Array.isArray(view.findings) ? view.findings.length : 0;
-      if (totalFindings > 0) {
-        return false;
-      }
-      if (sections.length) {
-        for (var si = 0; si < sections.length; si++) {
-          var sec = sections[si];
-          var findings = sec && Array.isArray(sec.findings) ? sec.findings : [];
-          for (var fi = 0; fi < findings.length; fi++) {
-            var f = findings[fi];
-            var idx = typeof f.globalIndex === "number" ? f.globalIndex : fi;
-            if (applied.indexOf(idx) < 0) {
-              return false;
-            }
-          }
-        }
-        return true;
-      }
-      var flatFindings = Array.isArray(view.findings) ? view.findings : [];
-      for (var i = 0; i < flatFindings.length; i++) {
-        if (applied.indexOf(i) < 0) {
-          return false;
-        }
-      }
-      return true;
+      var m = computeReviewMetrics(view);
+      // Enter "caught up only" mode whenever all tracked findings are accepted.
+      // This keeps the green card stable when reopening the same file/tab.
+      return m.total > 0 && m.pending === 0 && m.rejected === 0 && m.applied >= m.total;
     }
     function renderCodeReview(root, view, fallbackText, session) {
       if (!view || typeof view !== "object") {
@@ -346,9 +436,174 @@
       }
       var applied = Array.isArray(view.appliedIndices) ? view.appliedIndices : [];
       var rejected = Array.isArray(view.rejectedIndices) ? view.rejectedIndices : [];
+      var reviewStillRunning = !!(session && (session.busy || session.streamLive));
       var applyingIndex = session && session.fixApplyingIndex != null ? session.fixApplyingIndex : null;
       var applyingAll = !!(session && session.fixApplyingAll);
       var fixRunInProgress = applyingAll || applyingIndex !== null;
+      function buildCaughtUpActions() {
+        var row = document.createElement("div");
+        row.className = "review-report-actions-btns";
+        var btnDetails = document.createElement("button");
+        btnDetails.type = "button";
+        btnDetails.className = "secondary";
+        btnDetails.textContent = "Review fix details";
+        btnDetails.onclick = function () {
+          var s = sessions[activeSessionId];
+          if (!s) return;
+          s.reviewFixDetailsOpen = !s.reviewFixDetailsOpen;
+          renderSession();
+        };
+        var btnPdf = document.createElement("button");
+        btnPdf.type = "button";
+        btnPdf.className = "secondary";
+        btnPdf.textContent = "Download PDF";
+        btnPdf.onclick = function () {
+          vscode.postMessage({ command: "exportReviewReport", format: "pdf" });
+        };
+        var btnXlsx = document.createElement("button");
+        btnXlsx.type = "button";
+        btnXlsx.className = "secondary";
+        btnXlsx.textContent = "Download Excel";
+        btnXlsx.onclick = function () {
+          vscode.postMessage({ command: "exportReviewReport", format: "xlsx" });
+        };
+        row.appendChild(btnDetails);
+        row.appendChild(btnPdf);
+        row.appendChild(btnXlsx);
+        return row;
+      }
+      function buildCaughtUpDetails() {
+        if (!(session && session.reviewFixDetailsOpen)) {
+          return null;
+        }
+        var details = document.createElement("div");
+        details.className = "review-fix-details";
+        var heading = document.createElement("h3");
+        heading.className = "review-report-title";
+        heading.textContent = "Review report";
+        details.appendChild(heading);
+
+        var summary = document.createElement("p");
+        summary.className = "review-report-summary";
+        summary.textContent = (typeof view.summary === "string" && view.summary.trim()) ? view.summary.trim() : "Combined review details.";
+        details.appendChild(summary);
+
+        var metrics = computeReviewMetrics(view);
+        var bullets = document.createElement("ul");
+        bullets.className = "review-report-bullets";
+        [
+          "Total findings: " + metrics.total,
+          "Fixed (Accepted): " + metrics.applied,
+          "Rejected: " + metrics.rejected,
+          "Still open: " + metrics.pending
+        ].forEach(function (txt) {
+          var li = document.createElement("li");
+          li.textContent = txt;
+          bullets.appendChild(li);
+        });
+        details.appendChild(bullets);
+
+        function statusForIndex(idx) {
+          if (applied.indexOf(idx) >= 0) return "Accepted";
+          if (rejected.indexOf(idx) >= 0) return "Rejected";
+          return "Open";
+        }
+
+        function pushSectionTable(title, findings, summaryText) {
+          if (!Array.isArray(findings) || !findings.length) return;
+          var h = document.createElement("h4");
+          h.className = "review-report-section-title";
+          h.textContent = title;
+          details.appendChild(h);
+          if (summaryText && String(summaryText).trim()) {
+            var secSum = document.createElement("p");
+            secSum.className = "review-report-section-summary";
+            secSum.textContent = String(summaryText).trim();
+            details.appendChild(secSum);
+          }
+
+          var wrap = document.createElement("div");
+          wrap.className = "review-report-table-wrap";
+          var table = document.createElement("table");
+          table.className = "review-report-table";
+          var thead = document.createElement("thead");
+          var headRow = document.createElement("tr");
+          ["#", "Severity", "Description", "Suggested fix", "Status"].forEach(function (label) {
+            var th = document.createElement("th");
+            th.textContent = label;
+            headRow.appendChild(th);
+          });
+          thead.appendChild(headRow);
+          table.appendChild(thead);
+          var tbody = document.createElement("tbody");
+          findings.forEach(function (f, i) {
+            var item = f && typeof f === "object" ? f : {};
+            var idx = typeof item.globalIndex === "number" ? item.globalIndex : i;
+            var tr = document.createElement("tr");
+            [
+              String(i + 1),
+              String(item.severity || "—"),
+              issueDescriptionOnly(item),
+              String(item.suggestion || "—"),
+              statusForIndex(idx),
+            ].forEach(function (text) {
+              var td = document.createElement("td");
+              td.textContent = text;
+              tr.appendChild(td);
+            });
+            tbody.appendChild(tr);
+          });
+          table.appendChild(tbody);
+          wrap.appendChild(table);
+          details.appendChild(wrap);
+        }
+
+        var sections = Array.isArray(view.sections) ? view.sections : [];
+        var renderedSection = false;
+        sections.forEach(function (sec, si) {
+          if (!sec || typeof sec !== "object") return;
+          var findings = Array.isArray(sec.findings) ? sec.findings : [];
+          if (!findings.length) return;
+          renderedSection = true;
+          pushSectionTable(sec.name || ("Section " + (si + 1)), findings, sec.summary || "");
+        });
+        if (!renderedSection) {
+          var flat = Array.isArray(view.findings) ? view.findings : [];
+          if (flat.length) {
+            pushSectionTable("Findings", flat);
+          }
+        }
+
+        var records = Array.isArray(view.appliedFixRecords) ? view.appliedFixRecords : [];
+        if (records.length) {
+          var acceptedHeading = document.createElement("h4");
+          acceptedHeading.className = "review-report-section-title";
+          acceptedHeading.textContent = "Accepted fix details";
+          details.appendChild(acceptedHeading);
+        }
+        records.forEach(function (rec) {
+          var r = rec && typeof rec === "object" ? rec : {};
+          var block = document.createElement("div");
+          block.className = "review-fix-detail-block";
+          var h2 = document.createElement("div");
+          h2.className = "review-fix-detail-title";
+          var fi = typeof r.findingIndex === "number" ? r.findingIndex : 0;
+          h2.textContent = "#" + (fi + 1) + " · " + (r.title || "Finding");
+          block.appendChild(h2);
+          [["Description", r.detail || "—"], ["Suggested fix", r.suggestion || "—"], ["Unified diff", r.unifiedDiff || "—"]].forEach(function (pair) {
+            var sub = document.createElement("div");
+            sub.className = "review-fix-detail-label";
+            sub.textContent = pair[0];
+            block.appendChild(sub);
+            var pre = document.createElement("pre");
+            pre.className = "review-fix-detail-pre";
+            pre.textContent = String(pair[1]);
+            block.appendChild(pre);
+          });
+          details.appendChild(block);
+        });
+        return details;
+      }
       if (isReviewCaughtUpOnly(view)) {
         clearEl(root);
         var m = computeReviewMetrics(view);
@@ -366,7 +621,8 @@
 
         var doneSub = document.createElement("p");
         doneSub.className = "review-complete-sub";
-        doneSub.textContent = "Accepted fixes are hidden to keep this view focused and fast.";
+        doneSub.textContent =
+          "Description and suggested fixes stay listed above whenever rows are shown. Run review again after large edits.";
         doneCard.appendChild(doneSub);
 
         var chips = document.createElement("div");
@@ -383,6 +639,11 @@
           chips.appendChild(chip);
         });
         doneCard.appendChild(chips);
+        doneCard.appendChild(buildCaughtUpActions());
+        var caughtDetails = buildCaughtUpDetails();
+        if (caughtDetails) {
+          doneCard.appendChild(caughtDetails);
+        }
 
         onlyWrap.appendChild(doneCard);
         root.appendChild(onlyWrap);
@@ -425,6 +686,18 @@
       }
       toolbar.appendChild(btnAll);
       toolbar.appendChild(btnExtra);
+      var btnStopReview = document.createElement("button");
+      btnStopReview.type = "button";
+      btnStopReview.className = "secondary";
+      btnStopReview.textContent = "⏹ Stop";
+      var stopAvailable = reviewStillRunning || fixRunInProgress;
+      btnStopReview.disabled = !stopAvailable;
+      if (stopAvailable) {
+        btnStopReview.onclick = function () {
+          vscode.postMessage({ command: "stopReview", sessionId: activeSessionId });
+        };
+      }
+      toolbar.appendChild(btnStopReview);
       root.appendChild(toolbar);
 
       var rm = computeReviewMetrics(view);
@@ -441,16 +714,6 @@
         rm.pending +
         " still open";
       root.appendChild(metricsBar);
-
-      var overallSummary = "";
-      if (typeof view.summary === "string" && view.summary.trim()) {
-        overallSummary = view.summary.trim();
-      } else if (fallbackText && String(fallbackText).trim()) {
-        overallSummary = String(fallbackText).trim();
-      }
-      if (overallSummary) {
-        addParagraph(root, "Summary", overallSummary);
-      }
 
       var fallbackGlobalIndex = 0;
       function renderFindingTable(sectionLabel, findings) {
@@ -494,22 +757,13 @@
           tdSev.textContent = sevText || "—";
           tr.appendChild(tdSev);
           var tdDesc = document.createElement("td");
-          if (isApplied) {
-            tdDesc.className = "col-applied-muted";
-            tdDesc.textContent = "—";
-          } else {
-            tdDesc.textContent = issueDescriptionOnly(item);
-          }
+          tdDesc.className = isApplied ? "col-description col-description-applied" : "";
+          tdDesc.textContent = issueDescriptionOnly(item);
           tr.appendChild(tdDesc);
           var tdSug = document.createElement("td");
           var sugText = String(item.suggestion || "").trim();
-          if (isApplied) {
-            tdSug.className = "col-suggestion col-suggestion-applied-done";
-            tdSug.textContent = "—";
-          } else {
-            tdSug.className = "col-suggestion";
-            tdSug.textContent = sugText || "—";
-          }
+          tdSug.className = isApplied ? "col-suggestion col-suggestion-applied" : "col-suggestion";
+          renderSuggestedFixContent(tdSug, sugText);
           tr.appendChild(tdSug);
           var tdFix = document.createElement("td");
           tdFix.className = "col-fix";
@@ -518,6 +772,11 @@
             spA.className = "review-status-accepted review-fix-status-pill";
             spA.textContent = "Accepted";
             tdFix.appendChild(spA);
+          } else if (isRejected) {
+            var spR = document.createElement("span");
+            spR.className = "review-status-rejected review-fix-status-pill";
+            spR.textContent = "Rejected";
+            tdFix.appendChild(spR);
           } else {
             var showApplying =
               applyingAll || (applyingIndex !== null && applyingIndex === globalIndex);
@@ -537,23 +796,26 @@
               fixBtn.appendChild(sp);
               fixBtn.appendChild(document.createTextNode(" Applying..."));
               tdFix.appendChild(fixBtn);
-            } else if (isRejected) {
-              var spR = document.createElement("span");
-              spR.className = "review-status-rejected review-fix-status-pill";
-              spR.textContent = "Rejected";
-              tdFix.appendChild(spR);
             } else {
-              var fixBtn = document.createElement("button");
-              fixBtn.type = "button";
-              fixBtn.className = primaryClasses;
-              fixBtn.textContent = "Fix";
-              fixBtn.disabled = !!fixRowLocked;
-              if (!fixRowLocked) {
-                fixBtn.onclick = function () {
-                  vscode.postMessage({ command: "applyFixes", mode: "one", index: globalIndex, sessionId: activeSessionId });
-                };
+              var fixBtn2 = document.createElement("button");
+              fixBtn2.type = "button";
+              fixBtn2.className = primaryClasses;
+              fixBtn2.textContent = "Fix";
+              var disableRowFix = !!fixRowLocked;
+              fixBtn2.disabled = disableRowFix;
+              if (!disableRowFix) {
+                (function (idx) {
+                  fixBtn2.onclick = function () {
+                    vscode.postMessage({
+                      command: "applyFixes",
+                      mode: "one",
+                      index: idx,
+                      sessionId: activeSessionId
+                    });
+                  };
+                })(globalIndex);
               }
-              tdFix.appendChild(fixBtn);
+              tdFix.appendChild(fixBtn2);
             }
           }
           tr.appendChild(tdFix);
@@ -575,10 +837,13 @@
       var renderedAnySection = false;
       sections.forEach(function (sec, idx) {
         if (!sec || typeof sec !== "object") return;
+        var sectionName = sec.name || ("Section " + (idx + 1));
+        if (String(sectionName).trim().toLowerCase() === "previously rejected") {
+          return;
+        }
         var findings = Array.isArray(sec.findings) ? sec.findings : [];
         if (!findings.length) return;
         renderedAnySection = true;
-        var sectionName = sec.name || ("Section " + (idx + 1));
         if (typeof sec.summary === "string" && sec.summary.trim()) {
           addParagraph(root, sectionName + " Summary", sec.summary.trim());
         }
@@ -614,9 +879,10 @@
 
         var doneSub = document.createElement("p");
         doneSub.className = "review-complete-sub";
-        doneSub.textContent = totalFindings > 0
-          ? "Accepted fixes are hidden to keep this view focused and fast."
-          : "Nothing to apply right now.";
+        doneSub.textContent =
+          totalFindings > 0
+            ? "Export PDF or Excel from the command palette: “Code Review: Export review report (PDF or Excel from palette)”."
+            : "Nothing to apply right now.";
         doneCard.appendChild(doneSub);
 
         if (totalFindings > 0 || mm.applied > 0 || mm.rejected > 0 || mm.pending > 0) {
@@ -634,6 +900,13 @@
             chips2.appendChild(chip);
           });
           doneCard.appendChild(chips2);
+        }
+        if (totalFindings > 0 || mm.applied > 0) {
+          doneCard.appendChild(buildCaughtUpActions());
+          var fallbackDetails = buildCaughtUpDetails();
+          if (fallbackDetails) {
+            doneCard.appendChild(fallbackDetails);
+          }
         }
         root.appendChild(doneCard);
       }
@@ -679,6 +952,7 @@
           activeSessionId = id;
           renderTabs();
           renderSession();
+          persistUiState();
         };
         var close = document.createElement("button");
         close.type = "button";
@@ -716,6 +990,7 @@
       document.getElementById("generated-code-panel").classList.add("hidden");
       document.getElementById("meta").classList.add("hidden");
       document.getElementById("err").textContent = "";
+      persistUiState();
     }
     function closeSession(id, notifyHost) {
       if (!sessions[id]) return;
@@ -729,6 +1004,7 @@
       }
       renderTabs();
       if (activeSessionId) renderSession(); else renderEmptyState();
+      persistUiState();
     }
     function renderSession() {
       var s = sessions[activeSessionId];
@@ -1008,6 +1284,7 @@
         authBox.classList.add("hidden");
       }
       document.getElementById("err").textContent = s.err || "";
+      persistUiState();
     }
 
     function focusPromptComposerAndScrollTop() {
@@ -1136,12 +1413,24 @@
       if (m.type === "createSession") {
         if (!m.sessionId) return;
         if (!sessions[m.sessionId]) {
-          sessions[m.sessionId] = newSession(m.title || "Assistant result");
           sessionOrder.push(m.sessionId);
         }
+        // Keep restored content when available, but reset transient apply/run flags for a fresh run.
+        var prev = sessions[m.sessionId] || null;
+        var next = Object.assign(newSession(m.title || "Assistant result"), prev || {});
+        next.title = m.title || next.title;
+        next.busy = false;
+        next.step = "";
+        next.streamLive = false;
+        next.streamText = "";
+        next.fixApplyingIndex = null;
+        next.fixApplyingAll = false;
+        next.applyingCurrent = false;
+        sessions[m.sessionId] = next;
         activeSessionId = m.sessionId;
         renderTabs();
         renderSession();
+        persistUiState();
         return;
       }
       if (m.type === "closeSession") {
@@ -1206,5 +1495,9 @@
       } else {
         renderTabs();
       }
+      persistUiState();
     });
+    if (!restoreUiStateIfAvailable()) {
+      renderEmptyState();
+    }
 })();

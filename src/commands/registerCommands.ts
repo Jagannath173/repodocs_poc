@@ -8,6 +8,8 @@ import { runAssistantEndpoint, type AssistantEndpoint } from "./assistant/runAss
 import { initExtensionLogger, log, showExtensionLogs } from "../utils/logger";
 import { CodeReviewSidebarProvider } from "./sidebarCommandRegister/CodeReviewSidebarProvider";
 import { registerReviewStaleWatcher } from "../review/reviewStaleWatcher";
+import { exportReviewReportToPdf, exportReviewReportToXlsx } from "../review/exportReviewReport";
+import { getStoredReview } from "../review/applyFixes";
 
 /**
  * Registers all extension commands, sidebar, and fix-preview handlers.
@@ -75,6 +77,20 @@ export function registerCommands(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand("codeReview.sidebar.refresh", () => {
       log.info("command", "Command invoked", { commandId: "codeReview.sidebar.refresh" });
       sidebarProvider.refresh();
+    }),
+    vscode.commands.registerCommand("codeReview.exportReviewReport", async (format?: "pdf" | "xlsx") => {
+      const stored = getStoredReview();
+      if (!stored?.fileName) {
+        void vscode.window.showWarningMessage("No review data to export. Run Code Review and apply fixes first.");
+        return;
+      }
+      const f = format === "xlsx" ? "xlsx" : "pdf";
+      log.info("command", "exportReviewReport", { format: f });
+      if (f === "xlsx") {
+        await exportReviewReportToXlsx(stored);
+      } else {
+        await exportReviewReportToPdf(stored);
+      }
     })
   );
 }
