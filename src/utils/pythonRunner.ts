@@ -120,6 +120,15 @@ export async function runCopilotInference(
     child.stdin.end();
 
     let lineBuffer = "";
+    let authFailureDetected = false;
+    let authFailureMessage = "";
+    const markAuthFailure = (msg: string) => {
+      if (authFailureDetected) {
+        return;
+      }
+      authFailureDetected = true;
+      authFailureMessage = msg;
+    };
 
     child.stdout.on("data", (d: Buffer) => {
       lineBuffer += d.toString();
@@ -130,6 +139,13 @@ export async function runCopilotInference(
         const msg = line.trim();
         if (msg) {
           onLog(msg);
+          if (
+            /No active Copilot session/i.test(msg) ||
+            /status code\s*101/i.test(msg) ||
+            /\b101\b.*(unauthoriz|auth|session)/i.test(msg)
+          ) {
+            markAuthFailure(msg);
+          }
         }
 
         if (msg.includes("SESSION_ID|")) {
@@ -144,10 +160,34 @@ export async function runCopilotInference(
     });
 
     child.stderr.on("data", (d: Buffer) => {
-      onLog(`[Python Error] ${d.toString()}`);
+      const s = d.toString();
+      onLog(`[Python Error] ${s}`);
+      if (
+        /No active Copilot session/i.test(s) ||
+        /status code\s*101/i.test(s) ||
+        /\b101\b.*(unauthoriz|auth|session)/i.test(s)
+      ) {
+        markAuthFailure(s.trim());
+      }
     });
     child.on("error", reject);
-    child.on("close", (code) => (code === 0 ? resolve() : reject(new Error(`Copilot script failed with exit code ${code}`))));
+    child.on("close", async (code) => {
+      if (authFailureDetected) {
+        await context.globalState.update("copilot_session_id", undefined);
+        await context.globalState.update("copilot_access_token_override", undefined);
+        reject(
+          new Error(
+            `Copilot authentication failed (${authFailureMessage || "session expired"}). Please run "Code Review: Authenticate Copilot" and try again.`
+          )
+        );
+        return;
+      }
+      if (code === 0) {
+        resolve();
+        return;
+      }
+      reject(new Error(`Copilot script failed with exit code ${code}`));
+    });
   });
 }
 

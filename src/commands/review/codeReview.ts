@@ -19,7 +19,6 @@ import {
   getAppliedFindingKeysForDocumentUri,
   getRejectedFindingKeysForDocumentUri,
   getStoredReviewForDocumentUri,
-  makeFindingKey,
   remapPriorAppliedIndicesToCombined,
   saveLastReview,
   toStoredReview,
@@ -31,6 +30,7 @@ import { openAuthWebviewAndAuthenticate } from "../webview/auth_webview/authPane
 import { renderPromptTemplate } from "../../utils/promptRenderer";
 import { log, sanitizeForLog } from "../../utils/logger";
 import { resetMockReviewStage } from "../../utils/mockCopilot";
+import { useMockCopilotEnabled } from "../../utils/mockCopilot";
 
 const REVIEW_SYSTEM_ROLE =
   "Respond with only a valid JSON object and no extra text. " +
@@ -83,6 +83,11 @@ const REVIEW_SEQUENCE: ReviewEndpoint[] = [
 
 export async function runCodeReview(): Promise<void> {
   log.info("codeReview", "runCodeReview started");
+  if (useMockCopilotEnabled()) {
+    void vscode.window.showWarningMessage(
+      "Code Review is currently using MOCK mode. Disable `codeReview.useMockCopilot` for real Copilot review."
+    );
+  }
   if (!(await ensureCopilotSession())) {
     log.warn("codeReview", "Aborted: Copilot session not available");
     return;
@@ -151,14 +156,19 @@ export async function runCodeReview(): Promise<void> {
   const panel = new ReviewWebviewSession(extensionContext, `Review: ${fileName}`, documentUri);
   /** Snapshot before this run — used to re-inject dismissed rows when the model repeats the same finding keys. */
   const priorStoredBeforeRun = getStoredReviewForDocumentUri(editor.document.uri);
-  /** Merge fix state by finding fingerprint — do not require `reviewedDocumentHash` match (fixes + reload change the buffer). */
+  /** Applied keys are hidden from actionable review rows across runs. */
   const priorAppliedKeys = getAppliedFindingKeysForDocumentUri(editor.document.uri);
-  const priorRejectedKeys = getRejectedFindingKeysForDocumentUri(editor.document.uri);
   const priorAppliedKeySet = new Set(priorAppliedKeys);
+  /** Keep rejected carry-over only as actionable rows. */
+  const priorRejectedKeys = getRejectedFindingKeysForDocumentUri(editor.document.uri);
   const priorRejectedKeySet = new Set(priorRejectedKeys);
 
   panel.setLoading("Running review suite…");
   let reviewRunDone = false;
+  let stopRequested = false;
+  panel.onDispose(() => {
+    stopRequested = true;
+  });
   if (reviewInputMode === "incremental") {
     panel.addReviewLog("Scope: git diff vs HEAD — findings should target your local changes only.", "info");
   } else if (reviewInputMode === "selection") {
@@ -178,18 +188,14 @@ export async function runCodeReview(): Promise<void> {
       extraInstructions?: string;
     };
     if (m?.command === "applyFixes") {
-      if (!reviewRunDone) {
-        panel.addReviewLog("Review is still running. Apply fixes after all stages finish.", "warn");
-        void vscode.window.showInformationMessage(
-          "Code review is still running. Please wait for completion, then apply fixes."
-        );
-        return;
-      }
       const mode = m.mode === "one" || m.mode === "selected" ? m.mode : "all";
       const idx = typeof m.index === "number" ? m.index : undefined;
       const selectedIndices = Array.isArray(m.indices) ? m.indices.filter((n) => typeof n === "number") : undefined;
       const extraPassThrough = typeof m.extraInstructions === "string" ? m.extraInstructions : "";
       void vscode.commands.executeCommand("codeReview.applyFixes", mode, idx, extraPassThrough, selectedIndices);
+    } else if (m?.command === "stopReview") {
+      stopRequested = true;
+      panel.addReviewLog("Stop requested. Finishing current stage and halting further review steps.", "warn");
     } else if (m?.command === "authenticate") {
       void vscode.commands.executeCommand("codeReview.authenticate");
     }
@@ -201,6 +207,13 @@ export async function runCodeReview(): Promise<void> {
   try {
     resetMockReviewStage();
     for (let i = 0; i < REVIEW_SEQUENCE.length; i++) {
+      if (stopRequested) {
+        panel.addReviewLog("Review stopped by user.", "warn");
+        panel.setStatus("Review stopped.");
+        panel.setBusy(false);
+        reviewRunDone = true;
+        return;
+      }
       const endpoint = REVIEW_SEQUENCE[i];
       const label = REVIEW_ENDPOINT_LABELS[endpoint];
       log.info("codeReview", "Review stage", { stage: `${i + 1}/${REVIEW_SEQUENCE.length}`, endpoint, label });
@@ -255,6 +268,14 @@ export async function runCodeReview(): Promise<void> {
         { systemRole: systemRoleForReview }
       );
 
+      if (stopRequested) {
+        panel.addReviewLog("Review stopped by user.", "warn");
+        panel.setStatus("Review stopped.");
+        panel.setBusy(false);
+        reviewRunDone = true;
+        return;
+      }
+
       if (authError) {
         log.warn("codeReview", "Auth required mid-review; opening sign-in");
         panel.dispose();
@@ -287,7 +308,7 @@ export async function runCodeReview(): Promise<void> {
         return !applied;
       });
       if (skippedApplied > 0) {
-        panel.addReviewLog(`[${label}] Skipped ${skippedApplied} previously applied finding(s).`, "info");
+        panel.addReviewLog(`[${label}] Hidden ${skippedApplied} already-accepted finding(s).`, "info");
       }
       if (skippedRejectedOnly > 0) {
         panel.addReviewLog(`[${label}] Restored ${skippedRejectedOnly} previously rejected finding(s) as actionable Fix rows.`, "info");
@@ -314,53 +335,53 @@ export async function runCodeReview(): Promise<void> {
 
       appendMissingRejectedFindings(combinedFindings, priorStoredBeforeRun, priorRejectedKeys);
 
-      const preferredApplied = remapPriorAppliedIndicesToCombined(
-        priorStoredBeforeRun?.findings,
-        priorStoredBeforeRun?.appliedIndices,
-        combinedFindings
-      );
       const stagePayload: ReviewPayload = {
         summary: `Completed ${i + 1}/${REVIEW_SEQUENCE.length} review stages.`,
         findings: combinedFindings,
         sections,
-        appliedIndices: findAppliedIndicesByKeys(combinedFindings, priorAppliedKeys, preferredApplied),
+        appliedIndices: findAppliedIndicesByKeys(
+          combinedFindings,
+          priorAppliedKeys,
+          remapPriorAppliedIndicesToCombined(
+            priorStoredBeforeRun?.findings,
+            priorStoredBeforeRun?.appliedIndices,
+            combinedFindings
+          )
+        ),
         appliedFindingKeys: priorAppliedKeys,
         rejectedIndices: [],
         rejectedFindingKeys: [],
       };
-      const mergedStagePayload = mergeLiveFixStateIntoPayload(
-        editor.document.uri,
-        combinedFindings,
-        stagePayload
-      );
-      panel.setReview(mergedStagePayload);
+      panel.setReview(stagePayload);
       panel.setBusy(true);
       panel.setStatus(`Running review suite… (${i + 1}/${REVIEW_SEQUENCE.length})`);
       const latestStageText = (await vscode.workspace.openTextDocument(editor.document.uri)).getText();
-      await saveLastReview(toStoredReview(editor.document.uri, fileName, mergedStagePayload, latestStageText));
+      await saveLastReview(toStoredReview(editor.document.uri, fileName, stagePayload, latestStageText));
     }
 
-    const finalPreferredApplied = remapPriorAppliedIndicesToCombined(
-      priorStoredBeforeRun?.findings,
-      priorStoredBeforeRun?.appliedIndices,
-      combinedFindings
-    );
     const finalReview: ReviewPayload = {
       summary: "Combined review completed across all review endpoints.",
       findings: combinedFindings,
       sections,
-      appliedIndices: findAppliedIndicesByKeys(combinedFindings, priorAppliedKeys, finalPreferredApplied),
+      appliedIndices: findAppliedIndicesByKeys(
+        combinedFindings,
+        priorAppliedKeys,
+        remapPriorAppliedIndicesToCombined(
+          priorStoredBeforeRun?.findings,
+          priorStoredBeforeRun?.appliedIndices,
+          combinedFindings
+        )
+      ),
       appliedFindingKeys: priorAppliedKeys,
       rejectedIndices: [],
       rejectedFindingKeys: [],
     };
-    const mergedFinalReview = mergeLiveFixStateIntoPayload(editor.document.uri, combinedFindings, finalReview);
     log.info("codeReview", "All review stages completed", { findings: combinedFindings.length });
     panel.addReviewLog("All review stages completed.", "success");
     const latestFinalText = (await vscode.workspace.openTextDocument(editor.document.uri)).getText();
-    await saveLastReview(toStoredReview(editor.document.uri, fileName, mergedFinalReview, latestFinalText));
+    await saveLastReview(toStoredReview(editor.document.uri, fileName, finalReview, latestFinalText));
     log.debug("codeReview", "Last review saved to workspace state", { fileName });
-    panel.setReview(mergedFinalReview);
+    panel.setReview(finalReview);
     reviewRunDone = true;
   } catch (e: unknown) {
     const raw = e instanceof Error ? e.message : typeof e === "string" ? e : "Unknown error";
@@ -372,27 +393,6 @@ export async function runCodeReview(): Promise<void> {
     reviewRunDone = true;
     runningReviewUris.delete(documentUri);
   }
-}
-
-function mergeLiveFixStateIntoPayload(
-  uri: vscode.Uri,
-  combinedFindings: ReviewFinding[],
-  payload: ReviewPayload
-): ReviewPayload {
-  const live = getStoredReviewForDocumentUri(uri);
-  if (!live) {
-    return payload;
-  }
-  const liveAppliedKeys = live.appliedFindingKeys ?? [];
-  const preferredApplied = remapPriorAppliedIndicesToCombined(live.findings, live.appliedIndices, combinedFindings);
-  const mergedAppliedIndices = findAppliedIndicesByKeys(combinedFindings, liveAppliedKeys, preferredApplied);
-  return {
-    ...payload,
-    appliedIndices: mergedAppliedIndices,
-    appliedFindingKeys: Array.from(new Set([...(payload.appliedFindingKeys ?? []), ...liveAppliedKeys])).sort(),
-    rejectedIndices: payload.rejectedIndices ?? [],
-    rejectedFindingKeys: payload.rejectedFindingKeys ?? [],
-  };
 }
 
 /** Carry forward dismissed rows when the model would otherwise repeat the same fingerprint. */

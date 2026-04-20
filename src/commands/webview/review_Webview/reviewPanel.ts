@@ -79,6 +79,7 @@ export class ReviewWebviewSession {
   /** Preserved so showFixDiff does not wipe applied/rejected indices in the Genie UI. */
   private lastReviewStructuredData: Record<string, unknown> | undefined;
   private readonly subscriptions: vscode.Disposable[] = [];
+  private readonly disposeCallbacks = new Set<() => void>();
 
   constructor(
     context: vscode.ExtensionContext,
@@ -100,6 +101,10 @@ export class ReviewWebviewSession {
 
   getDocumentUri(): string | undefined {
     return this.documentUri;
+  }
+
+  isDisposed(): boolean {
+    return this.disposed;
   }
 
   setLoading(message?: string): void {
@@ -178,7 +183,7 @@ export class ReviewWebviewSession {
     this.panel.setStreamText("");
     this.panel.setStreamLive(false);
     this.panel.setResult({
-      remarks: payload.summary || "Review completed.",
+      remarks: "",
       displayText: formattedFindings || "No findings.",
       endpoint: "codeReview",
       reviewMode: false,
@@ -230,7 +235,11 @@ export class ReviewWebviewSession {
   }
 
   onDispose(callback: () => void): void {
-    void callback;
+    if (this.disposed) {
+      callback();
+      return;
+    }
+    this.disposeCallbacks.add(callback);
   }
 
   setError(message: string, raw?: string, streamedText?: string): void {
@@ -315,7 +324,18 @@ export class ReviewWebviewSession {
   }
 
   dispose(): void {
+    if (this.disposed) {
+      return;
+    }
     this.disposed = true;
+    for (const cb of this.disposeCallbacks) {
+      try {
+        cb();
+      } catch {
+        /* ignore */
+      }
+    }
+    this.disposeCallbacks.clear();
     unregisterReviewPanel(this);
     this.choiceResolver?.("reject");
     while (this.subscriptions.length) {

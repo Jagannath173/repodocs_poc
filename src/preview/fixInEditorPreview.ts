@@ -615,7 +615,8 @@ export async function previewFixInEditorAndWait(
         removedLikeLines.push(li);
       }
     }
-    const removedLikeUnique = Array.from(new Set(removedLikeLines));
+    const addedSet = new Set(toHighlight);
+    const removedLikeUnique = Array.from(new Set(removedLikeLines)).filter((line) => !addedSet.has(line));
     currentEditor.setDecorations(decorationDiffAdded, buildRangesForLines(toHighlight));
     currentEditor.setDecorations(decorationDiffRemoved, buildRangesForLines(removedLikeUnique));
   };

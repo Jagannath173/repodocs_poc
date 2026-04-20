@@ -754,6 +754,28 @@ details.collapse-panel > summary::-webkit-details-marker { display: none; }
   max-width: 420px;
   font-family: var(--vscode-editor-font-family), ui-monospace, "Cascadia Code", "SF Mono", Consolas, monospace;
 }
+.review-findings-table .col-suggestion .suggestion-line {
+  display: block;
+  padding: 1px 6px;
+  border-left: 2px solid transparent;
+  border-radius: 2px;
+  margin-bottom: 2px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.review-findings-table .col-suggestion .suggestion-line.add {
+  background: rgba(63, 185, 80, 0.14);
+  border-left-color: var(--vscode-charts-green, #3fb950);
+  color: var(--vscode-terminal-ansiGreen, #3fb950);
+}
+.review-findings-table .col-suggestion .suggestion-line.del {
+  background: rgba(248, 81, 73, 0.14);
+  border-left-color: var(--vscode-charts-red, #f85149);
+  color: var(--vscode-terminal-ansiBrightRed, #f85149);
+}
+.review-findings-table .col-suggestion .suggestion-line.same {
+  color: var(--vscode-editor-foreground);
+}
 .review-findings-table .col-fix {
   width: 120px;
   min-width: 120px;

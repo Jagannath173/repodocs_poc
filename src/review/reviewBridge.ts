@@ -6,6 +6,7 @@ export type { ReviewTableState } from "../commands/webview/review_Webview/review
 export interface ReviewPanelLike {
   refreshFromStored(stored: ReviewTableState): void;
   getDocumentUri(): string | undefined;
+  isDisposed?(): boolean;
   /** When present, called before a new review session for the same file so stale panels do not steal extension messages. */
   dispose?(): void;
   startFixStep(step: number, total: number, findingTitle: string): void;

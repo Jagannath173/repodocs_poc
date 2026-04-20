@@ -37,6 +37,9 @@ Respond with ONLY valid JSON (no markdown outside JSON) in this exact shape:
 Rules:
 - "fileContent" must be the full file text after the edit, not a diff and not a fragment.
 - Preserve the file's style, imports, and formatting unless the suggestion requires changing them.
+- Prefer the smallest localized edit that fixes the reported issue; avoid unrelated refactors.
+- Change the code near the described issue location/detail whenever possible.
+- If the finding is already satisfied by the current file, return the file unchanged.
 - Follow "Additional instructions from the developer" when present (they were already verified as related to this task).
 - Do not add commentary outside the JSON object.`;
 
@@ -148,6 +151,11 @@ Apply ONLY the following single finding next (do not address other issues unless
 - Severity: ${finding.severity} | Category: ${finding.category}
 - Detail: ${finding.detail}
 - Suggestion: ${finding.suggestion}
+
+Implementation constraints:
+- Keep edits minimal and localized to code related to this finding.
+- Do not change unrelated functions/blocks.
+- Preserve naming and existing behavior outside the target fix.
 ${extra}
 
 Return JSON: {"fileContent": "..."} with the full updated file.`;
@@ -866,9 +874,11 @@ export async function applyFixesFromReview(
     return;
   }
 
-  const panel = getReviewPanelForDocument(stored.documentUri) ?? createFallbackReviewPanel(stored.documentUri);
-  if (!getReviewPanelForDocument(stored.documentUri)) {
-    log.warn("applyFixes", "Using fallback panel; review tab session unavailable");
+  const panel = getReviewPanelForDocument(stored.documentUri);
+  if (!panel || panel.isDisposed?.()) {
+    log.warn("applyFixes", "Review tab not open; aborting apply fixes");
+    void vscode.window.showWarningMessage("Review tab is closed. Open review and run fixes again.");
+    return;
   }
 
   const total = targetIndices.length;
@@ -911,6 +921,12 @@ export async function applyFixesFromReview(
         panel.addFixLog("Applying fixes with your extra instructions.", "info");
       }
       for (let step = 0; step < targetIndices.length; step++) {
+        const livePanel = getReviewPanelForDocument(stored.documentUri);
+        if (!livePanel || livePanel.isDisposed?.()) {
+          panel.addFixLog("Review tab was closed. Stopping fix run.", "warn");
+          void vscode.window.showWarningMessage("Fix run stopped because review tab was closed.");
+          return;
+        }
         const originalIndex = targetIndices[step];
         const live = getStoredReviewForDocumentUri(uri);
         if (!live?.findings?.length || originalIndex < 0 || originalIndex >= live.findings.length) {
@@ -1095,43 +1111,6 @@ export async function applyFixesFromReview(
       }
     }
   });
-}
-
-function createFallbackReviewPanel(documentUri: string): ReviewPanelLike {
-  return {
-    refreshFromStored: () => {
-      /* no-op fallback */
-    },
-    getDocumentUri: () => documentUri,
-    startFixStep: () => {
-      /* no-op fallback */
-    },
-    addFixLog: () => {
-      /* no-op fallback */
-    },
-    showFixDiff: () => {
-      /* no-op fallback */
-    },
-    showFixError: (message: string) => {
-      void vscode.window.showErrorMessage(message);
-    },
-    waitForFixChoice: async () => "reject",
-    setApplyingFixIndex: () => {
-      /* no-op fallback */
-    },
-    setApplyingFixAll: () => {
-      /* no-op fallback */
-    },
-    beginGuidedApplyStream: () => {
-      /* no-op fallback */
-    },
-    setGuidedApplyStream: () => {
-      /* no-op fallback */
-    },
-    endGuidedApplyStream: () => {
-      /* no-op fallback */
-    },
-  };
 }
 
 /** Map ReviewPayload + editor uri to stored shape (used from codeReview). */
