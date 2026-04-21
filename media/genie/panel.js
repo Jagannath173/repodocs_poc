@@ -1040,6 +1040,7 @@
                     });
                   }
                   btnMain.onclick = function (e) {
+                    e.preventDefault();
                     e.stopPropagation();
                     closeMenu();
                     fireAccept();
@@ -1054,11 +1055,13 @@
                     }
                   };
                   menuItemAcc.onclick = function (e) {
+                    e.preventDefault();
                     e.stopPropagation();
                     closeMenu();
                     fireAccept();
                   };
                   menuItemRej.onclick = function (e) {
+                    e.preventDefault();
                     e.stopPropagation();
                     closeMenu();
                     fireReject();

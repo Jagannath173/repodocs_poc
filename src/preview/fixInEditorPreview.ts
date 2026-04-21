@@ -303,6 +303,7 @@ function computeCharDiffDecorations(
   const addedRanges: vscode.Range[] = [];
   const removedBeforeOptions: vscode.DecorationOptions[] = [];
   const removedAnchorRanges: vscode.Range[] = [];
+  const docTextLen = doc.getText().length;
 
   const rangeTouchesChunk = (r: vscode.Range): boolean => {
     for (let ln = r.start.line; ln <= r.end.line; ln++) {
@@ -324,6 +325,34 @@ function computeCharDiffDecorations(
     return t.length > 320 ? t.slice(0, 317) + "…" : t;
   };
 
+  const lineAnchorRangeAtOffset = (offset: number): vscode.Range => {
+    const safe = Math.max(0, Math.min(offset, docTextLen));
+    const pos = doc.positionAt(safe);
+    const lineLen = doc.lineAt(pos.line).text.length;
+    return new vscode.Range(pos.line, 0, pos.line, lineLen);
+  };
+
+  const pushRemovedBlockAtOffset = (removedText: string, offset: number): void => {
+    const anchor = lineAnchorRangeAtOffset(offset);
+    if (!rangeTouchesChunk(anchor)) {
+      return;
+    }
+    removedAnchorRanges.push(anchor);
+    removedBeforeOptions.push({
+      range: anchor,
+      renderOptions: {
+        before: {
+          contentText: "- " + truncateBefore(removedText).replace(/\n/g, "\n- ") + "\n",
+          color: "var(--vscode-charts-red, #f14c4c)",
+          backgroundColor: "rgba(241, 76, 76, 0.24)",
+          border: "1px solid rgba(241, 76, 76, 0.55)",
+          textDecoration: "line-through",
+          fontWeight: "normal",
+        },
+      },
+    });
+  };
+
   for (const part of parts) {
     if (part.removed) {
       pendingRemoved += part.value;
@@ -338,26 +367,16 @@ function computeCharDiffDecorations(
       const r = new vscode.Range(doc.positionAt(start), doc.positionAt(end));
       if (rangeTouchesChunk(r)) {
         addedRanges.push(r);
-        removedAnchorRanges.push(r);
-        removedBeforeOptions.push({
-          range: r,
-          renderOptions: {
-            before: {
-              contentText: "- " + truncateBefore(focusedRemoved).replace(/\n/g, "\n- ") + "\n",
-              color: "var(--vscode-charts-red, #f14c4c)",
-              backgroundColor: "rgba(241, 76, 76, 0.20)",
-              border: "1px solid rgba(241, 76, 76, 0.45)",
-              textDecoration: "line-through",
-              fontWeight: "normal",
-            },
-          },
-        });
+        pushRemovedBlockAtOffset(focusedRemoved, start);
       }
       pendingRemoved = "";
       mergedOffset += part.value.length;
       continue;
     }
-    pendingRemoved = "";
+    if (pendingRemoved.length > 0) {
+      pushRemovedBlockAtOffset(pendingRemoved, mergedOffset);
+      pendingRemoved = "";
+    }
     if (!part.added && !part.removed) {
       mergedOffset += part.value.length;
     } else if (part.added) {
@@ -367,6 +386,10 @@ function computeCharDiffDecorations(
       pushGreen(r);
       mergedOffset = end;
     }
+  }
+
+  if (pendingRemoved.length > 0) {
+    pushRemovedBlockAtOffset(pendingRemoved, mergedOffset);
   }
 
   return { addedRanges, removedBeforeOptions, removedAnchorRanges };
@@ -705,13 +728,17 @@ export async function previewFixInEditorAndWait(
     borderStyle: "solid",
     borderColor: "rgba(56, 139, 253, 0.70)",
     overviewRulerColor: "rgba(56, 139, 253, 0.95)",
-    overviewRulerLane: vscode.OverviewRulerLane.Center,
+    overviewRulerLane: vscode.OverviewRulerLane.Full,
     rangeBehavior: vscode.DecorationRangeBehavior.ClosedClosed,
   });
   const decorationRemovedAnchor = vscode.window.createTextEditorDecorationType({
-    isWholeLine: false,
+    isWholeLine: true,
+    backgroundColor: "rgba(241, 76, 76, 0.10)",
+    borderWidth: "0 0 0 2px",
+    borderStyle: "solid",
+    borderColor: "rgba(241, 76, 76, 0.65)",
     overviewRulerColor: "rgba(241, 76, 76, 0.95)",
-    overviewRulerLane: vscode.OverviewRulerLane.Left,
+    overviewRulerLane: vscode.OverviewRulerLane.Full,
     rangeBehavior: vscode.DecorationRangeBehavior.ClosedClosed,
   });
   const decorationDiffRemovedBefore = vscode.window.createTextEditorDecorationType({
@@ -746,7 +773,9 @@ export async function previewFixInEditorAndWait(
       if (cid === undefined) {
         return false;
       }
-      return !chunkDiffDismissed[cid];
+      // Keep diff coloring tied to actual content changes, not to whether a row button
+      // was already clicked. This preserves highlighting on undo/redo while preview is open.
+      return cid >= 0;
     };
 
     const { addedRanges, removedBeforeOptions, removedAnchorRanges } = computeCharDiffDecorations(
@@ -757,9 +786,6 @@ export async function previewFixInEditorAndWait(
     );
     const changedBlockRanges: vscode.Range[] = [];
     for (const c of chunks) {
-      if (chunkDiffDismissed[c.id]) {
-        continue;
-      }
       const r = rangeMap.get(c.id);
       if (!r || r.endLineExclusive <= r.startLine) {
         continue;
@@ -871,6 +897,14 @@ export async function previewFixInEditorAndWait(
       if (resolved) return;
       if (actionInFlight) return;
       if (chunkId < 0 || chunkId >= decisions.length) return;
+      if (chunkDiffDismissed[chunkId]) {
+        const fallback = chunkDiffDismissed.findIndex((d) => !d);
+        if (fallback < 0) {
+          await finishWhenAllChunksDismissed();
+          return;
+        }
+        chunkId = fallback;
+      }
       actionInFlight = true;
       try {
         decisions[chunkId] = true;
@@ -895,6 +929,14 @@ export async function previewFixInEditorAndWait(
       if (resolved) return;
       if (actionInFlight) return;
       if (chunkId < 0 || chunkId >= decisions.length) return;
+      if (chunkDiffDismissed[chunkId]) {
+        const fallback = chunkDiffDismissed.findIndex((d) => !d);
+        if (fallback < 0) {
+          await finishWhenAllChunksDismissed();
+          return;
+        }
+        chunkId = fallback;
+      }
       actionInFlight = true;
       try {
         decisions[chunkId] = false;
