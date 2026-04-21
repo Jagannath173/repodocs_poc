@@ -20,6 +20,7 @@ import { log, sanitizeForLog } from "../utils/logger";
 import { hashDocumentText } from "../utils/documentHash";
 import { cancelFixPreviewForDocumentUri, previewFixInEditorAndWait } from "../preview/fixInEditorPreview";
 import { revealAndHighlightAppliedFix, revealApproximateFindingLocation } from "./postApplyHighlight";
+import { isFindingAlreadySatisfiedByFile } from "../utils/reviewFilter";
 
 export const LAST_REVIEW_STATE_KEY = "codeReview.lastReview";
 const REVIEW_STATE_BY_URI_KEY = "codeReview.reviewByUri";
@@ -37,6 +38,7 @@ Rules:
 - "fileContent" must be the full file text after the edit, not a diff and not a fragment.
 - Preserve the file's style, imports, and formatting unless the suggestion requires changing them.
 - Prefer the smallest localized edit that fixes the reported issue; avoid unrelated refactors.
+- Keep unchanged lines byte-for-byte identical whenever possible; do not rewrite surrounding code that is not required for the fix.
 - The edit MUST directly implement the given finding's title, detail, and suggestion — do not fix a different issue or change unrelated code.
 - Change the code near the described issue location/detail whenever possible.
 - If the finding is already satisfied by the current file, return the file unchanged.
@@ -868,6 +870,9 @@ export async function applyFixesFromReview(
       return;
     }
     if (stored.appliedIndices?.includes(index)) {
+      // Keep webview in sync when user clicks an already-applied row.
+      // Without this refresh, UI can still show an actionable button for that row.
+      notifyReviewUpdated(stored);
       void vscode.window.showWarningMessage("This finding was already applied.");
       return;
     }
@@ -1000,6 +1005,14 @@ export async function applyFixesFromReview(
 
         doc = await vscode.workspace.openTextDocument(uri);
         const baseText = doc.getText();
+        if (isFindingAlreadySatisfiedByFile(baseText, finding)) {
+          panel.addFixLog(`Step ${step + 1}/${total} skipped — finding already satisfied by current code.`, "info");
+          panel.setApplyingFixIndex(null);
+          const fixRec = buildAppliedFixRecord(originalIndex, finding, baseText, baseText);
+          await markFindingApplied(originalIndex, fixRec, live.documentUri);
+          appliedCount += 1;
+          continue;
+        }
 
         const markApplyingEarly = !extra?.trim();
         if (markApplyingEarly) {
@@ -1287,19 +1300,12 @@ export function toStoredReview(
   payload: ReviewPayload,
   documentText: string
 ): StoredReview {
-  const prior = getStoredReview();
-  const sameDoc = prior?.documentUri === uri.toString();
   const n = payload.findings?.length ?? 0;
   const keyApplied = payload.appliedFindingKeys?.length ?? 0;
   const keyRejected = payload.rejectedFindingKeys?.length ?? 0;
   const floorFromKeys = keyApplied + keyRejected;
-  const reviewFindingCount = sameDoc
-    ? Math.max(prior?.reviewFindingCount ?? 0, n, floorFromKeys)
-    : Math.max(n, floorFromKeys);
-  const rejectedFindingKeys =
-    payload.rejectedFindingKeys ??
-    (sameDoc ? prior?.rejectedFindingKeys : undefined) ??
-    [];
+  const reviewFindingCount = Math.max(n, floorFromKeys);
+  const rejectedFindingKeys = payload.rejectedFindingKeys ?? [];
   return {
     documentUri: uri.toString(),
     fileName,
@@ -1311,6 +1317,6 @@ export function toStoredReview(
     rejectedFindingKeys,
     reviewedDocumentHash: hashDocumentText(documentText),
     reviewFindingCount,
-    appliedFixRecords: payload.appliedFixRecords ?? (sameDoc ? prior?.appliedFixRecords : undefined),
+    appliedFixRecords: payload.appliedFixRecords ?? [],
   };
 }

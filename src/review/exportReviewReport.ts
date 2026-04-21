@@ -2,28 +2,25 @@ import * as vscode from "vscode";
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 import ExcelJS from "exceljs";
 import type { ReviewTableState } from "../commands/webview/review_Webview/reviewPanel";
-import { getEffectiveRecordsForExport } from "./reviewReportDemo";
 
 function asciiSafe(s: string): string {
   return s.replace(/[^\t\n\r\x20-\x7e]/g, "?");
 }
 
 function buildPlainReportBody(stored: ReviewTableState): string {
-  const { records, usingDemo } = getEffectiveRecordsForExport(stored);
+  const appliedSet = new Set(stored.appliedIndices ?? []);
+  const records = (stored.appliedFixRecords ?? []).filter(
+    (r) => !r?.isDemo && appliedSet.has(r.findingIndex)
+  );
   const lines: string[] = [];
   lines.push(`Code review report — ${stored.fileName}`);
   lines.push(`Summary: ${stored.summary || "—"}`);
-  if (usingDemo) {
-    lines.push(
-      "Note: Sample fix rows and diffs are included because no recorded fixes are stored yet. After you accept fixes from the preview, exports use real data."
-    );
-  }
   lines.push("");
   lines.push("Accepted fixes (unified diff per row):");
   lines.push("");
   for (const r of records) {
-    const tag = r.isDemo ? " [sample]" : "";
-    lines.push(`--- #${r.findingIndex + 1} ${r.title || "Finding"}${tag} ---`);
+    const title = String(r.title || "Finding").replace(/\[sample\]\s*/gi, "").trim();
+    lines.push(`--- ${title || "Finding"} (${r.findingIndex + 1}) ---`);
     lines.push(`Severity: ${r.severity || "—"}  Category: ${r.category || "—"}`);
     lines.push("Description:");
     lines.push(r.detail || "—");
@@ -282,22 +279,13 @@ export async function exportReviewReportToPdf(stored: ReviewTableState): Promise
   );
 
   // Accepted fix details
-  const { records, usingDemo } = getEffectiveRecordsForExport(stored);
+  const appliedSetForDetails = new Set(stored.appliedIndices ?? []);
+  const records = (stored.appliedFixRecords ?? []).filter(
+    (r) => !r?.isDemo && appliedSetForDetails.has(r.findingIndex)
+  );
   ensureSpace(26);
   page.drawText("Accepted Fix Details", { x: margin, y, size: 10, font: fontBold, color: blue });
   y -= 14;
-  if (usingDemo) {
-    drawLines(
-      wrap("Note: Sample fix rows are shown because recorded fixes are not available yet.", contentW, 8.5),
-      margin,
-      contentW,
-      8.5,
-      11,
-      textMuted,
-      font
-    );
-    y -= 2;
-  }
   if (!records.length) {
     drawLines(["No accepted fixes recorded."], margin, contentW, 9, 12, textMuted, font);
   } else {
@@ -314,7 +302,8 @@ export async function exportReviewReportToPdf(stored: ReviewTableState): Promise
         borderWidth: 0.8,
         color: rgb(0.985, 0.99, 1),
       });
-      page.drawText(clip(`#${r.findingIndex + 1} ${r.title || "Finding"}${r.isDemo ? " [sample]" : ""}`, 180), {
+      const title = String(r.title || "Finding").replace(/\[sample\]\s*/gi, "").trim();
+      page.drawText(clip(`${title || "Finding"} (${r.findingIndex + 1})`, 180), {
         x: margin + 10,
         y: y - 14,
         size: 9.5,
@@ -378,18 +367,15 @@ export async function exportReviewReportToXlsx(stored: ReviewTableState): Promis
   sheet.getRow(rowNum).font = { bold: true };
   rowNum++;
 
-  const { records, usingDemo } = getEffectiveRecordsForExport(stored);
-  if (usingDemo) {
-    sheet.mergeCells(rowNum, 1, rowNum, 7);
-    sheet.getCell(rowNum, 1).value =
-      "NOTE: Sample fix rows — no recorded fixes in workspace yet. Accept fixes from the preview to export real diffs.";
-    sheet.getRow(rowNum).font = { italic: true, color: { argb: "FF666666" } };
-    rowNum++;
-  }
+  const appliedSet = new Set(stored.appliedIndices ?? []);
+  const records = (stored.appliedFixRecords ?? []).filter(
+    (r) => !r?.isDemo && appliedSet.has(r.findingIndex)
+  );
   for (const r of records) {
+    const title = String(r.title || "").replace(/\[sample\]\s*/gi, "").trim();
     sheet.getRow(rowNum).values = [
       r.findingIndex + 1,
-      `${r.title || ""}${r.isDemo ? " [sample]" : ""}`,
+      title,
       r.severity,
       r.detail,
       r.suggestion,

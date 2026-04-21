@@ -1,7 +1,7 @@
 import * as vscode from "vscode";
 import { registerReviewPanel, unregisterReviewPanel } from "../../../review/reviewBridge";
 import { AssistantResultPanel } from "../../../assistant";
-import { basenameFromUriString, resolveAppliedFixRecordsForUi } from "../../../review/reviewReportDemo";
+import { basenameFromUriString } from "../../../review/reviewReportDemo";
 
 export interface ReviewFinding {
   severity: string;
@@ -151,6 +151,11 @@ export class ReviewWebviewSession {
     this.panel.setStreamLive(true);
   }
 
+  endReviewStreamStage(): void {
+    if (this.disposed) return;
+    this.panel.setStreamLive(false);
+  }
+
   setReview(payload: ReviewPayload): void {
     if (this.disposed) return;
     this.latestSections = payload.sections ?? [];
@@ -169,7 +174,6 @@ export class ReviewWebviewSession {
     /** Keep totals truthful when `findings` is empty but fingerprint fix state persists (re-review, cleared table). */
     const totalFindingsCount = Math.max(declaredCount, findingsLen, appliedKeyCount + rejectedKeyCount);
     const reportLabel = basenameFromUriString(this.documentUri);
-    const resolved = resolveAppliedFixRecordsForUi(payload.appliedFixRecords, reportLabel);
     const structuredData = {
       summary: payload.summary,
       findings: payload.findings,
@@ -180,8 +184,10 @@ export class ReviewWebviewSession {
       rejectedIndices: payload.rejectedIndices ?? [],
       totalFindingsCount,
       reviewFindingCount: totalFindingsCount,
-      appliedFixRecords: resolved.records,
-      usingDemoFixRecords: resolved.usingDemo,
+      appliedFixRecords: Array.isArray(payload.appliedFixRecords)
+        ? payload.appliedFixRecords.filter((r) => !r?.isDemo)
+        : [],
+      usingDemoFixRecords: false,
       reportFileLabel: reportLabel,
     } as unknown as Record<string, unknown>;
     this.lastReviewStructuredData = structuredData;

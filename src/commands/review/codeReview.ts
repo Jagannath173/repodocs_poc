@@ -12,12 +12,9 @@ import {
   ReviewWebviewSession,
 } from "../webview/review_Webview/reviewPanel";
 import { ensureCopilotSession } from "../../utils/session";
-import type { StoredReview } from "../../review/applyFixes";
 import {
   findAppliedIndicesByKeys,
   findingMatchesStoredKey,
-  getAppliedFindingKeysForDocumentUri,
-  getRejectedFindingKeysForDocumentUri,
   getStoredReviewForDocumentUri,
   remapPriorAppliedIndicesToCombined,
   requestStopForDocumentUri,
@@ -152,14 +149,11 @@ export async function runCodeReview(): Promise<void> {
   runningReviewUris.add(documentUri);
   disposeReviewPanelsForDocument(documentUri);
   const panel = new ReviewWebviewSession(extensionContext, `Review: ${fileName}`, documentUri);
-  /** Snapshot before this run — used to re-inject dismissed rows when the model repeats the same finding keys. */
-  const priorStoredBeforeRun = getStoredReviewForDocumentUri(editor.document.uri);
-  /** Applied keys are hidden from actionable review rows across runs. */
-  const priorAppliedKeys = getAppliedFindingKeysForDocumentUri(editor.document.uri);
-  const priorAppliedKeySet = new Set(priorAppliedKeys);
-  /** Keep rejected carry-over only as actionable rows. */
-  const priorRejectedKeys = getRejectedFindingKeysForDocumentUri(editor.document.uri);
-  const priorRejectedKeySet = new Set(priorRejectedKeys);
+  /** Keep this run isolated so findings/report reflect current file state only. */
+  const priorStoredBeforeRun = undefined;
+  const priorAppliedKeys: string[] = [];
+  const priorAppliedKeySet = new Set<string>();
+  const priorRejectedKeySet = new Set<string>();
 
   panel.setLoading("Running review suite…");
   let reviewRunDone = false;
@@ -199,6 +193,7 @@ export async function runCodeReview(): Promise<void> {
       requestStopForDocumentUri(documentUri);
       panel.addReviewLog("Stop requested. Finishing current stage and halting further review steps.", "warn");
       panel.setStatus("Stopping…");
+      panel.endReviewStreamStage();
       panel.setApplyingFixIndex(null);
       panel.setApplyingFixAll(false);
       panel.reveal();
@@ -216,6 +211,7 @@ export async function runCodeReview(): Promise<void> {
       if (stopRequested) {
         panel.addReviewLog("Review stopped by user.", "warn");
         panel.setStatus("Review stopped.");
+        panel.endReviewStreamStage();
         panel.setBusy(false);
         reviewRunDone = true;
         return;
@@ -227,9 +223,10 @@ export async function runCodeReview(): Promise<void> {
       log.debug("codeReview", "Prompt template rendered", { endpoint, promptChars: prompt.length });
       panel.addReviewLog(`Running ${label} review (${i + 1}/${REVIEW_SEQUENCE.length})…`, "info");
       panel.addReviewLog(`[${label}] Started`, "info");
-      let assistantText = "";
+      let assistantText = `### ${label} review\nAnalyzing current code...\n`;
       let authError = false;
       panel.beginReviewStreamStage();
+      panel.setReviewStream(assistantText);
 
       activeReviewAbort = new AbortController();
       try {
@@ -280,6 +277,7 @@ export async function runCodeReview(): Promise<void> {
         if (isAbort || stopRequested) {
           panel.addReviewLog("Review stopped by user.", "warn");
           panel.setStatus("Review stopped.");
+          panel.endReviewStreamStage();
           panel.setBusy(false);
           reviewRunDone = true;
           return;
@@ -292,6 +290,7 @@ export async function runCodeReview(): Promise<void> {
       if (stopRequested) {
         panel.addReviewLog("Review stopped by user.", "warn");
         panel.setStatus("Review stopped.");
+        panel.endReviewStreamStage();
         panel.setBusy(false);
         reviewRunDone = true;
         return;
@@ -317,13 +316,6 @@ export async function runCodeReview(): Promise<void> {
       }
       let skippedApplied = 0;
       let skippedRejectedOnly = 0;
-      for (const f of filtered) {
-        if ([...priorAppliedKeySet].some((sk) => findingMatchesStoredKey(f, sk))) {
-          skippedApplied += 1;
-        } else if ([...priorRejectedKeySet].some((sk) => findingMatchesStoredKey(f, sk))) {
-          skippedRejectedOnly += 1;
-        }
-      }
       const unseen = filtered.filter((f) => {
         const applied = [...priorAppliedKeySet].some((sk) => findingMatchesStoredKey(f, sk));
         return !applied;
@@ -332,7 +324,7 @@ export async function runCodeReview(): Promise<void> {
         panel.addReviewLog(`[${label}] Hidden ${skippedApplied} already-accepted finding(s).`, "info");
       }
       if (skippedRejectedOnly > 0) {
-        panel.addReviewLog(`[${label}] Restored ${skippedRejectedOnly} previously rejected finding(s) as actionable Fix rows.`, "info");
+        panel.addReviewLog(`[${label}] Skipped ${skippedRejectedOnly} rejected carry-over finding(s).`, "info");
       }
       if (unseen.length === 0) {
         if (review.findings.length > 0 || skippedApplied > 0 || skippedRejectedOnly > 0) {
@@ -354,21 +346,11 @@ export async function runCodeReview(): Promise<void> {
         panel.addReviewLog(`[${label}] Added ${sectionFindings.length} findings`, "success");
       }
 
-      appendMissingRejectedFindings(combinedFindings, priorStoredBeforeRun, priorRejectedKeys);
-
       const stagePayload: ReviewPayload = {
         summary: `Completed ${i + 1}/${REVIEW_SEQUENCE.length} review stages.`,
         findings: combinedFindings,
         sections,
-        appliedIndices: findAppliedIndicesByKeys(
-          combinedFindings,
-          priorAppliedKeys,
-          remapPriorAppliedIndicesToCombined(
-            priorStoredBeforeRun?.findings,
-            priorStoredBeforeRun?.appliedIndices,
-            combinedFindings
-          )
-        ),
+        appliedIndices: [],
         appliedFindingKeys: priorAppliedKeys,
         rejectedIndices: [],
         rejectedFindingKeys: [],
@@ -389,15 +371,7 @@ export async function runCodeReview(): Promise<void> {
       summary: "Combined review completed across all review endpoints.",
       findings: combinedFindings,
       sections,
-      appliedIndices: findAppliedIndicesByKeys(
-        combinedFindings,
-        priorAppliedKeys,
-        remapPriorAppliedIndicesToCombined(
-          priorStoredBeforeRun?.findings,
-          priorStoredBeforeRun?.appliedIndices,
-          combinedFindings
-        )
-      ),
+      appliedIndices: [],
       appliedFindingKeys: priorAppliedKeys,
       rejectedIndices: [],
       rejectedFindingKeys: [],
@@ -449,24 +423,6 @@ function mergeLiveAppliedIntoPayload(
     ),
     appliedFindingKeys: Array.from(new Set([...(payload.appliedFindingKeys ?? []), ...liveAppliedKeys])).sort(),
   };
-}
-
-/** Carry forward dismissed rows when the model would otherwise repeat the same fingerprint. */
-function appendMissingRejectedFindings(
-  combinedFindings: ReviewFinding[],
-  priorStored: StoredReview | undefined,
-  rejectedKeys: string[]
-): void {
-  for (const key of rejectedKeys) {
-    if (combinedFindings.some((f) => findingMatchesStoredKey(f, key))) {
-      continue;
-    }
-    const oldF = priorStored?.findings?.find((f) => findingMatchesStoredKey(f, key));
-    if (!oldF) {
-      continue;
-    }
-    combinedFindings.push(oldF);
-  }
 }
 
 function normalizeSeverity(raw: unknown): string {

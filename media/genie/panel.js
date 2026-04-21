@@ -630,14 +630,18 @@
         }
         records.forEach(function (rec) {
           var r = rec && typeof rec === "object" ? rec : {};
+          if (r.isDemo) {
+            return;
+          }
           var block = document.createElement("div");
           block.className = "review-fix-detail-block";
           var h2 = document.createElement("div");
           h2.className = "review-fix-detail-title";
           var fi = typeof r.findingIndex === "number" ? r.findingIndex : 0;
-          h2.textContent = "#" + (fi + 1) + " · " + (r.title || "Finding");
+          var cleanTitle = String(r.title || "Finding").replace(/\[sample\]\s*/gi, "").trim();
+          h2.textContent = (cleanTitle || "Finding") + " (" + (fi + 1) + ")";
           block.appendChild(h2);
-          [["Description", r.detail || "—"], ["Suggested fix", r.suggestion || "—"], ["Unified diff", r.unifiedDiff || "—"]].forEach(function (pair) {
+          [["Description", r.detail || "—"], ["Suggested fix", r.suggestion || "—"]].forEach(function (pair) {
             var sub = document.createElement("div");
             sub.className = "review-fix-detail-label";
             sub.textContent = pair[0];
@@ -647,11 +651,34 @@
             pre.textContent = String(pair[1]);
             block.appendChild(pre);
           });
+          var subDiff = document.createElement("div");
+          subDiff.className = "review-fix-detail-label";
+          subDiff.textContent = "Unified diff";
+          block.appendChild(subDiff);
+          var diffWrap = document.createElement("div");
+          diffWrap.className = "review-fix-detail-diff";
+          var diffLines = String(r.unifiedDiff || "—").split(/\r?\n/);
+          diffLines.forEach(function (line) {
+            var ln = document.createElement("div");
+            ln.className = "review-fix-detail-diff-line";
+            if (line.indexOf("+++") === 0 || line.indexOf("+") === 0) {
+              ln.className += " add";
+            } else if (line.indexOf("---") === 0 || line.indexOf("-") === 0) {
+              ln.className += " del";
+            } else if (line.indexOf("@@") === 0) {
+              ln.className += " meta";
+            } else {
+              ln.className += " same";
+            }
+            ln.textContent = line || " ";
+            diffWrap.appendChild(ln);
+          });
+          block.appendChild(diffWrap);
           details.appendChild(block);
         });
         return details;
       }
-      if (isReviewCaughtUpOnly(view)) {
+      if (!reviewStillRunning && isReviewCaughtUpOnly(view)) {
         clearEl(root);
         var m = computeReviewMetrics(view);
 
@@ -1017,7 +1044,7 @@
         }
       }
 
-      if (!root.querySelector(".review-findings-table")) {
+      if (!reviewStillRunning && !root.querySelector(".review-findings-table")) {
         var mm = computeReviewMetrics(view);
         var totalFindings = mm.total;
 
@@ -1665,6 +1692,8 @@
         s.streamLive = false;
         s.streamText = "";
         s.applyingCurrent = false;
+        s.fixApplyingIndex = null;
+        s.fixApplyingAll = false;
       }
       if (m.type === "authData") {
         s.endpoint = "authenticate";
