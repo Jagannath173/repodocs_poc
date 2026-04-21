@@ -34,7 +34,10 @@ const REVIEW_SYSTEM_ROLE =
   "Respond with only a valid JSON object and no extra text. " +
   "Include only findings that still need a real code change in the submitted source: " +
   "omit issues that are already resolved by the current code, and do not suggest fixes that merely restate code already present. " +
-  "Each suggestion must be concrete, minimal, and directly change the codebase to address the issue.";
+  "Each suggestion must be concrete, minimal, and directly change the codebase to address the issue. " +
+  "Only report highly relevant findings that can be fixed in this exact file and current scope. " +
+  "Do not report speculative issues, style-only nits without a concrete code edit, or findings that require unrelated refactors. " +
+  "Each suggestion must describe an exact code-level change, not a generic recommendation.";
 
 const REVIEW_PROMPT_FILES = {
   quality: "review/quality_review.jinja",

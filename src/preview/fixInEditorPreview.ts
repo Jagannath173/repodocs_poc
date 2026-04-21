@@ -297,6 +297,8 @@ function computeCharDiffDecorations(
             before: {
               contentText: truncateBefore(pendingRemoved),
               color: "var(--vscode-charts-red, #f14c4c)",
+              backgroundColor: "rgba(241, 76, 76, 0.20)",
+              border: "1px solid rgba(241, 76, 76, 0.45)",
               textDecoration: "line-through",
               fontWeight: "normal",
             },
@@ -361,7 +363,8 @@ function computeFixChunks(baseText: string, afterText: string, baseDoc: vscode.T
     }
   }
 
-  // Build regions: maximal ranges starting at a non-same part and ending before trailing "same" context.
+  // Build regions: contiguous changed ranges only.
+  // Splitting at every "same" part keeps Accept/Reject controls near each changed block.
   const spans: Array<{ start: number; end: number }> = [];
   let i = 0;
   while (i < diffParts.length) {
@@ -370,12 +373,7 @@ function computeFixChunks(baseText: string, afterText: string, baseDoc: vscode.T
 
     const start = i;
     let j = i;
-    while (j < diffParts.length) {
-      const k = kinds[j];
-      const nextIsSame = j === diffParts.length - 1 ? true : kinds[j + 1] === "same";
-      if (k === "same" && nextIsSame) break;
-      j++;
-    }
+    while (j < diffParts.length && kinds[j] !== "same") j++;
     const end = j; // exclusive
     if (end > start) spans.push({ start, end });
     i = end;
@@ -459,8 +457,8 @@ async function revealEditorForUri(docUri: vscode.Uri): Promise<void> {
 }
 
 /**
- * Preferred line for a chunk's Accept/Reject: last line of the chunk in the merged document
- * (avoids stacking multiple chunks on the same start line).
+ * Preferred line for a chunk's Accept/Reject: first line of the changed block.
+ * This avoids controls appearing far below the actual changed code.
  */
 function preferredChunkLensLine(
   r: { startLine: number; endLineExclusive: number } | undefined,
@@ -468,7 +466,7 @@ function preferredChunkLensLine(
   lineCount: number
 ): number {
   if (r && r.endLineExclusive > r.startLine) {
-    return Math.max(r.startLine, Math.min(r.endLineExclusive - 1, lineCount - 1));
+    return Math.max(0, Math.min(r.startLine, lineCount - 1));
   }
   return Math.min(Math.max(0, anchorLine), Math.max(0, lineCount - 1));
 }
@@ -628,8 +626,8 @@ export async function previewFixInEditorAndWait(
 
   // Green = inserted characters (diffChars). Red = removed text shown as strikethrough before replaced spans.
   const decorationDiffAdded = vscode.window.createTextEditorDecorationType({
-    backgroundColor: "rgba(63, 185, 80, 0.28)",
-    border: "1px solid rgba(63, 185, 80, 0.5)",
+    backgroundColor: "rgba(63, 185, 80, 0.36)",
+    border: "1px solid rgba(63, 185, 80, 0.62)",
     rangeBehavior: vscode.DecorationRangeBehavior.ClosedClosed,
   });
   const decorationDiffRemovedBefore = vscode.window.createTextEditorDecorationType({

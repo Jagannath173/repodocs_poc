@@ -39,7 +39,11 @@ Rules:
 - Preserve the file's style, imports, and formatting unless the suggestion requires changing them.
 - Prefer the smallest localized edit that fixes the reported issue; avoid unrelated refactors.
 - Keep unchanged lines byte-for-byte identical whenever possible; do not rewrite surrounding code that is not required for the fix.
+- Never add UI text or labels into source code (for example: "Accept", "Reject", "Apply", "Review fix details", emoji button labels, or toolbar text).
+- Never reorder imports, functions, or top-level blocks unless the specific finding requires it for correctness.
 - The edit MUST directly implement the given finding's title, detail, and suggestion — do not fix a different issue or change unrelated code.
+- Apply only when the finding is truly relevant to this file content and this exact code context.
+- Make the exact fix requested by the finding (target the concrete issue), not an alternative improvement.
 - Change the code near the described issue location/detail whenever possible.
 - If the finding is already satisfied by the current file, return the file unchanged.
 - Follow "Additional instructions from the developer" when present (they were already verified as related to this task).
@@ -167,6 +171,32 @@ function parseFixFileContent(raw: string): string {
   return fc;
 }
 
+function sanitizeAppliedFileContent(baseText: string, nextText: string): { text: string; removedUiArtifactLines: number } {
+  const base = baseText.replace(/\r\n/g, "\n");
+  const next = nextText.replace(/\r\n/g, "\n");
+  const lines = next.split("\n");
+  let removed = 0;
+  const filtered = lines.filter((line) => {
+    const compact = line.replace(/\uFE0F/g, "").trim();
+    if (!compact) return true;
+    if (/^(?:✅\s*)?accept(?:\s*\|\s*❌\s*reject)?$/i.test(compact)) {
+      removed += 1;
+      return false;
+    }
+    if (/^(?:❌\s*)?reject(?:\s*\|\s*✅\s*accept)?$/i.test(compact)) {
+      removed += 1;
+      return false;
+    }
+    return true;
+  });
+  const sanitized = filtered.join("\n");
+  if (sanitized === next) {
+    return { text: nextText, removedUiArtifactLines: 0 };
+  }
+  const normalized = sanitized === base ? baseText : sanitized;
+  return { text: normalized, removedUiArtifactLines: removed };
+}
+
 function buildFixPrompt(
   fileName: string,
   fileContent: string,
@@ -196,6 +226,8 @@ Implementation constraints:
 - Keep edits minimal and localized to code related to this finding only.
 - Do not change unrelated functions/blocks.
 - Your changes must match this finding — do not substitute a different fix than described above.
+- Apply this only if relevant to the current file content and shown code path; do not invent unrelated edits.
+- If the finding is already fixed in this file, return the file unchanged.
 - Preserve naming and existing behavior outside the target fix.
 ${extra}
 
@@ -767,8 +799,17 @@ async function runHolisticApplyWithExtra(params: {
   }
 
   let afterText: string;
+  const latestBase = (await vscode.workspace.openTextDocument(uri)).getText();
   try {
     afterText = parseFixFileContent(state.text);
+    const cleaned = sanitizeAppliedFileContent(latestBase, afterText);
+    afterText = cleaned.text;
+    if (cleaned.removedUiArtifactLines > 0) {
+      panel.addFixLog(
+        `Removed ${cleaned.removedUiArtifactLines} stray UI artifact line(s) from model output.`,
+        "warn"
+      );
+    }
     panel.addFixLog("Parsed model JSON.", "success");
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e);
@@ -777,7 +818,6 @@ async function runHolisticApplyWithExtra(params: {
     return;
   }
 
-  const latestBase = (await vscode.workspace.openTextDocument(uri)).getText();
   const normalizedBase = latestBase.replace(/\r\n/g, "\n");
   const normalizedAfter = afterText.replace(/\r\n/g, "\n");
   if (normalizedBase === normalizedAfter) {
@@ -1146,6 +1186,14 @@ export async function applyFixesFromReview(
         let afterText: string;
         try {
           afterText = parseFixFileContent(state.text);
+          const cleaned = sanitizeAppliedFileContent(baseText, afterText);
+          afterText = cleaned.text;
+          if (cleaned.removedUiArtifactLines > 0) {
+            panel.addFixLog(
+              `Step ${step + 1}/${total}: removed ${cleaned.removedUiArtifactLines} stray UI artifact line(s) from model output.`,
+              "warn"
+            );
+          }
           panel.addFixLog("Parsed model JSON successfully.", "success");
         } catch (e: unknown) {
           const msg = e instanceof Error ? e.message : "Could not parse JSON.";
@@ -1171,11 +1219,12 @@ export async function applyFixesFromReview(
         const normalizedAfter = afterText.replace(/\r\n/g, "\n");
         if (normalizedBase === normalizedAfter) {
           panel.setApplyingFixIndex(null);
-          const fixRec = buildAppliedFixRecord(originalIndex, finding, baseText, afterText);
-          await markFindingApplied(originalIndex, fixRec, live.documentUri);
-          appliedCount += 1;
-          doc = await vscode.workspace.openTextDocument(uri);
-          await revealAndHighlightAppliedFix(uri, baseText, afterText);
+          panel.addFixLog(
+            `Step ${step + 1}/${total}: skipped — model returned no effective code change (already fixed or not relevant).`,
+            "warn"
+          );
+          await markFindingRejected(originalIndex, live.documentUri);
+          rejectedCount += 1;
           continue;
         }
 

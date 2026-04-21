@@ -293,6 +293,14 @@ details.collapse-panel > summary::-webkit-details-marker { display: none; }
   background: var(--vscode-editor-background);
 }
 .hidden { display: none !important; }
+
+/* Authenticate view must never show action controls/table shell. */
+[data-endpoint="authenticate"] #actions-shell,
+[data-endpoint="authenticate"] #actions,
+[data-endpoint="authenticate"] #panel-actions-anchor,
+[data-endpoint="authenticate"] #rendered-panel {
+  display: none !important;
+}
 .err { color: var(--vscode-errorForeground); margin-top: 8px; white-space: pre-wrap; }
 .hint.muted { font-size: 0.85em; color: var(--vscode-descriptionForeground); margin: 0 0 10px; line-height: 1.4; }
 .review-complete-card {

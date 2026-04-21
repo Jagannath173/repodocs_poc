@@ -455,25 +455,6 @@
     }
     function renderCodeReview(root, view, fallbackText, session) {
       if (!view || typeof view !== "object") {
-        var earlyToolbar = document.createElement("div");
-        earlyToolbar.className = "review-fix-toolbar";
-        var earlyBtnPdf = document.createElement("button");
-        earlyBtnPdf.type = "button";
-        earlyBtnPdf.className = "secondary";
-        earlyBtnPdf.textContent = "Download PDF";
-        earlyBtnPdf.onclick = function () {
-          vscode.postMessage({ command: "exportReviewReport", format: "pdf" });
-        };
-        var earlyBtnXlsx = document.createElement("button");
-        earlyBtnXlsx.type = "button";
-        earlyBtnXlsx.className = "secondary";
-        earlyBtnXlsx.textContent = "Download Excel";
-        earlyBtnXlsx.onclick = function () {
-          vscode.postMessage({ command: "exportReviewReport", format: "xlsx" });
-        };
-        earlyToolbar.appendChild(earlyBtnPdf);
-        earlyToolbar.appendChild(earlyBtnXlsx);
-        root.appendChild(earlyToolbar);
         return;
       }
       var applied = Array.isArray(view.appliedIndices) ? view.appliedIndices : [];
