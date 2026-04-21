@@ -65,7 +65,7 @@ Respond in concise markdown with:
 Do not return JSON. Do not apply changes.`;
 
 // Keep gate prompts lightweight so "apply fix" feedback arrives quickly.
-const GATE_CODE_EXCERPT_MAX_CHARS = 8_000;
+const GATE_CODE_EXCERPT_MAX_CHARS = 4_000;
 
 function buildCodeExcerptForGate(fileContent: string, maxChars: number): string {
   if (fileContent.length <= maxChars) {
@@ -1238,11 +1238,19 @@ export async function applyFixesFromReview(
         const choice = await previewFixInEditorAndWait(doc, baseText, afterText, previewTitle);
         if (choice === "cancelled") {
           panel.setApplyingFixIndex(null);
-          panel.addFixLog(`Step ${step + 1}/${total} stopped by user.`, "warn");
-          panel.setStatus?.("Fix run stopped.");
-          panel.reveal?.();
-          void vscode.window.showInformationMessage("Fix run stopped.");
-          return;
+          if (isStopRequestedForDocumentUri(stored.documentUri)) {
+            panel.addFixLog(`Step ${step + 1}/${total} stopped by user.`, "warn");
+            panel.setStatus?.("Fix run stopped.");
+            panel.reveal?.();
+            void vscode.window.showInformationMessage("Fix run stopped.");
+            return;
+          }
+          failedCount += 1;
+          panel.addFixLog(
+            `Step ${step + 1}/${total} preview was cancelled unexpectedly; continuing to next finding.`,
+            "warn"
+          );
+          continue;
         }
         if (choice === "reject") {
           panel.setApplyingFixIndex(null);

@@ -579,11 +579,44 @@
           return "Open";
         }
 
+        function isActionedStatus(status) {
+          return status === "Accepted" || status === "Rejected";
+        }
+
+        function compactTextForHeading(text) {
+          return String(text || "")
+            .replace(/```[\s\S]*?```/g, " ")
+            .replace(/\s+/g, " ")
+            .replace(/^[\s:;,\-]+|[\s:;,\-]+$/g, "")
+            .trim();
+        }
+
+        function shortHeadingFromRecord(r) {
+          var source =
+            compactTextForHeading(r && r.suggestion) ||
+            compactTextForHeading(r && r.detail) ||
+            compactTextForHeading(r && r.title) ||
+            "Accepted fix";
+          var words = source.split(" ").filter(function (w) { return !!w; });
+          if (words.length <= 15) {
+            return source;
+          }
+          return words.slice(0, 15).join(" ") + "…";
+        }
+
         function pushSectionTable(title, findings, summaryText) {
           if (!Array.isArray(findings) || !findings.length) return;
+          var actionedRows = findings.filter(function (f, i) {
+            var item = f && typeof f === "object" ? f : {};
+            var idx = typeof item.globalIndex === "number" ? item.globalIndex : i;
+            return isActionedStatus(statusForIndex(idx));
+          });
+          if (!actionedRows.length) {
+            return;
+          }
           var h = document.createElement("h4");
           h.className = "review-report-section-title";
-          h.textContent = title;
+          h.textContent = title + " (actioned)";
           details.appendChild(h);
           if (summaryText && String(summaryText).trim()) {
             var secSum = document.createElement("p");
@@ -606,7 +639,7 @@
           thead.appendChild(headRow);
           table.appendChild(thead);
           var tbody = document.createElement("tbody");
-          findings.forEach(function (f, i) {
+          actionedRows.forEach(function (f, i) {
             var item = f && typeof f === "object" ? f : {};
             var idx = typeof item.globalIndex === "number" ? item.globalIndex : i;
             var tr = document.createElement("tr");
@@ -643,6 +676,12 @@
             pushSectionTable("Findings", flat);
           }
         }
+        if (!renderedSection) {
+          var emptyActioned = document.createElement("p");
+          emptyActioned.className = "review-report-summary";
+          emptyActioned.textContent = "No actioned findings yet. Accepted/Rejected rows will appear here.";
+          details.appendChild(emptyActioned);
+        }
 
         var records = Array.isArray(view.appliedFixRecords) ? view.appliedFixRecords : [];
         if (records.length) {
@@ -660,9 +699,7 @@
           block.className = "review-fix-detail-block";
           var h2 = document.createElement("div");
           h2.className = "review-fix-detail-title";
-          var fi = typeof r.findingIndex === "number" ? r.findingIndex : 0;
-          var cleanTitle = String(r.title || "Finding").replace(/\[sample\]\s*/gi, "").trim();
-          h2.textContent = (cleanTitle || "Finding") + " (" + (fi + 1) + ")";
+          h2.textContent = shortHeadingFromRecord(r);
           block.appendChild(h2);
           [["Description", r.detail || "—"], ["Suggested fix", r.suggestion || "—"]].forEach(function (pair) {
             var sub = document.createElement("div");
@@ -764,7 +801,16 @@
         btnAll.textContent = "Fix All One by One";
       } else {
         btnAll.textContent = "Fix All One by One";
-        btnAll.onclick = function () { vscode.postMessage({ command: "applyFixes", mode: "all", sessionId: activeSessionId }); };
+        btnAll.onclick = function () {
+          var sess = sessions[activeSessionId];
+          if (sess) {
+            // Optimistic UI: mark all open rows as applying immediately for bulk run.
+            sess.fixApplyingAll = true;
+            sess.fixApplyingIndex = null;
+            renderSession();
+          }
+          vscode.postMessage({ command: "applyFixes", mode: "all", sessionId: activeSessionId });
+        };
       }
       var btnExtra = document.createElement("button");
       btnExtra.type = "button";

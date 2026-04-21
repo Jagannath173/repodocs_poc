@@ -87,15 +87,15 @@ async function collectRepositoryContext(activeUri: vscode.Uri): Promise<string> 
   const files = await vscode.workspace.findFiles(
     "**/*",
     "**/{node_modules,out,.git,python/venv,__pycache__,.cursor}/**",
-    140
+    70
   );
   const relPaths = files
     .map((f) => vscode.workspace.asRelativePath(f, false))
     .filter((p) => p.length > 0)
-    .slice(0, 90);
+    .slice(0, 36);
   const activeRel = vscode.workspace.asRelativePath(activeUri, false);
   const activeDir = path.dirname(activeRel).replace(/\\/g, "/");
-  const nearby = relPaths.filter((p) => p.startsWith(activeDir + "/")).slice(0, 25);
+  const nearby = relPaths.filter((p) => p.startsWith(activeDir + "/")).slice(0, 12);
   return [
     `Workspace root: ${folder.uri.fsPath}`,
     `Active file: ${activeRel}`,
@@ -533,13 +533,8 @@ async function renderReviewPrompt(
   language: string,
   repositoryContext: string
 ): Promise<string> {
-  const codeWithRepoContext = `${code}
-
-<repository_context>
-${repositoryContext}
-</repository_context>`;
   return renderPromptTemplate(extensionContext.extensionPath, REVIEW_PROMPT_FILES[endpoint], {
-    code: codeWithRepoContext,
+    code,
     git_diff: gitDiff,
     language,
     repository_context: repositoryContext,

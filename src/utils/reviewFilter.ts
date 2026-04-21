@@ -113,17 +113,71 @@ function codeBlocksFromDetail(detail: string): string[] {
 
 export type ReviewFindingLike = { suggestion?: string; detail?: string };
 
+function looksLikeCodeLine(line: string): boolean {
+  const t = line.trim();
+  if (t.length < 6) {
+    return false;
+  }
+  // Heuristic: likely code-bearing tokens/operators.
+  return /[=(){}[\].,:;]|=>|\b(import|from|return|const|let|var|def|class|if|for|while|with|await|async)\b/i.test(t);
+}
+
+function plainCodeLikeLinesFromDetail(detail: string): string[] {
+  const out: string[] = [];
+  const lines = (detail || "").replace(/\r\n/g, "\n").split("\n");
+  let inCodeRegion = false;
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (!inCodeRegion) {
+      if (/^code\s*:/i.test(line)) {
+        inCodeRegion = true;
+      }
+      continue;
+    }
+    if (!line) {
+      // keep scanning; some model outputs include blank separators in code snippets
+      continue;
+    }
+    if (/^(suggestion|fix|explanation|impact)\s*:/i.test(line)) {
+      break;
+    }
+    if (looksLikeCodeLine(line)) {
+      out.push(normalizeLineForCompare(line));
+    }
+  }
+  return out;
+}
+
 /**
  * True if this finding does not need a code change relative to the current file
  * (suggestion already present, or fenced code in detail already present).
  */
 export function isFindingAlreadySatisfiedByFile(fileText: string, finding: ReviewFindingLike): boolean {
+  const normalizedFileLines = new Set(
+    fileText
+      .replace(/\r\n/g, "\n")
+      .split("\n")
+      .map(normalizeLineForCompare)
+      .filter((line) => line.length > 0)
+  );
+
   if (isSuggestionAlreadyInFile(fileText, finding.suggestion || "")) {
     return true;
   }
   const detail = finding.detail || "";
   for (const block of codeBlocksFromDetail(detail)) {
     if (isSuggestionAlreadyInFile(fileText, block)) {
+      return true;
+    }
+  }
+  const plainCodeLines = plainCodeLikeLinesFromDetail(detail);
+  if (plainCodeLines.length > 0) {
+    const presentCount = plainCodeLines.filter((line) => normalizedFileLines.has(line)).length;
+    if (presentCount === plainCodeLines.length) {
+      return true;
+    }
+    // Allow robust match even when one line differs by formatting/context.
+    if (plainCodeLines.length >= 3 && presentCount >= plainCodeLines.length - 1) {
       return true;
     }
   }
