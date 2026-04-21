@@ -340,7 +340,10 @@ def getDeviceCode():
         'editor-version': 'vscode/1.93.1',
         'user-agent': 'GitHubCopilot/1.155.0'
     }
-    data = {"client_id": os.environ.get("GITHUB_COPILOT_CLIENT_ID"), "scope": "read:user"}
+    data = {
+        "client_id": os.environ.get("GITHUB_COPILOT_CLIENT_ID"),
+        "scope": "read:user user:email",
+    }
     url = os.environ.get('GITHUB_COPILOT_DEVICE_CODE_URL')
     
     current_proxies = getproxies()
@@ -365,6 +368,78 @@ def getDeviceCode():
         return None, None
         
     return resp_json.get('device_code'), resp_json.get('user_code')
+
+def print_github_user_profile_for_vscode(access_token):
+    """
+    After OAuth succeeds, fetch GitHub profile and emit GITHUB_USER|{json} for the VS Code extension.
+    JSON keys: id, login, name, email (email may be empty if not visible with current scopes).
+    """
+    if not access_token:
+        return
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "GitHubCopilot/1.155.0",
+    }
+    current_proxies = getproxies()
+    profile = {"id": None, "login": "", "name": "", "email": ""}
+    try:
+        try:
+            resp = requests.get(
+                "https://api.github.com/user",
+                headers=headers,
+                proxies=current_proxies,
+                verify=ssl_cert_file,
+                timeout=30,
+            )
+        except (requests.exceptions.ProxyError, requests.exceptions.ConnectionError) as e:
+            logger.info(f"GitHub /user proxy issue ({e}); retrying direct...")
+            resp = requests.get(
+                "https://api.github.com/user",
+                headers=headers,
+                proxies={"http": None, "https": None},
+                verify=ssl_cert_file,
+                timeout=30,
+            )
+        if resp.status_code != 200:
+            logger.warning(f"GitHub /user failed: {resp.status_code} {resp.text[:200]}")
+            print(f"GITHUB_USER_ERROR|HTTP_{resp.status_code}", flush=True)
+            return
+        u = resp.json()
+        profile["id"] = u.get("id")
+        profile["login"] = u.get("login") or ""
+        profile["name"] = u.get("name") or ""
+        profile["email"] = u.get("email") or ""
+        if not profile["email"]:
+            try:
+                try:
+                    r2 = requests.get(
+                        "https://api.github.com/user/emails",
+                        headers=headers,
+                        proxies=current_proxies,
+                        verify=ssl_cert_file,
+                        timeout=30,
+                    )
+                except (requests.exceptions.ProxyError, requests.exceptions.ConnectionError):
+                    r2 = requests.get(
+                        "https://api.github.com/user/emails",
+                        headers=headers,
+                        proxies={"http": None, "https": None},
+                        verify=ssl_cert_file,
+                        timeout=30,
+                    )
+                if r2.status_code == 200:
+                    for em in r2.json():
+                        if isinstance(em, dict) and em.get("primary") and em.get("verified"):
+                            profile["email"] = em.get("email") or ""
+                            break
+            except Exception as e2:
+                logger.info(f"GitHub /user/emails skipped: {e2}")
+        print(f"GITHUB_USER|{json.dumps(profile)}", flush=True)
+    except Exception as e:
+        logger.error(f"GitHub user profile fetch failed: {e}")
+        print(f"GITHUB_USER_ERROR|{str(e)[:300]}", flush=True)
+
 
 def getGithubCopilotToken(device_code, cache=None):
     headers = {
@@ -441,6 +516,8 @@ def getGithubCopilotToken(device_code, cache=None):
         cache['access_token'] = access_token
         save_token_cache(cache)
         logger.info(f"Access token cached to {TOKEN_CACHE_FILE}")
+
+    print_github_user_profile_for_vscode(access_token)
 
     # Logging for user visibility to be sure it worked
     logger.info(">>> Authentication Successful!")

@@ -10,6 +10,7 @@ import { CodeReviewSidebarProvider } from "./sidebarCommandRegister/CodeReviewSi
 import { registerReviewStaleWatcher } from "../review/reviewStaleWatcher";
 import { exportReviewReportToPdf, exportReviewReportToXlsx } from "../review/exportReviewReport";
 import { getStoredReview } from "../review/applyFixes";
+import { getGithubUserProfile } from "../utils/githubUserState";
 
 /**
  * Registers all extension commands, sidebar, and fix-preview handlers.
@@ -73,6 +74,24 @@ export function registerCommands(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand("codeReview.showLogs", () => {
       log.info("command", "Command invoked", { commandId: "codeReview.showLogs" });
       showExtensionLogs();
+    }),
+    vscode.commands.registerCommand("codeReview.showGithubUser", () => {
+      log.info("command", "Command invoked", { commandId: "codeReview.showGithubUser" });
+      const p = getGithubUserProfile(context);
+      if (!p?.login && !p?.id) {
+        void vscode.window.showInformationMessage(
+          "No GitHub profile is saved yet. Run “Code Review: Authenticate Copilot”, finish browser sign-in, then run this command again."
+        );
+        return;
+      }
+      const bits = [
+        p.login ? `@${p.login}` : "",
+        p.id ? `id ${p.id}` : "",
+        p.name ? p.name : "",
+        p.email ? p.email : "",
+      ].filter(Boolean);
+      void vscode.window.showInformationMessage(`Saved GitHub user: ${bits.join(" · ")}`);
+      log.info("command", "showGithubUser profile", { id: p.id, login: p.login, hasName: !!p.name, hasEmail: !!p.email });
     }),
     vscode.commands.registerCommand("codeReview.sidebar.refresh", () => {
       log.info("command", "Command invoked", { commandId: "codeReview.sidebar.refresh" });

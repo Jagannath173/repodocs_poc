@@ -15,7 +15,8 @@
     "onCommand:codeReview.runReview",
     "onCommand:codeReview.applyFixes",
     "onCommand:codeReview.authenticate",
-    "onCommand:codeReview.showLogs"
+    "onCommand:codeReview.showLogs",
+    "onCommand:codeReview.showGithubUser"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -100,6 +101,10 @@
         "command": "codeReview.showLogs",
         "title": "Code Review: Show extension logs",
         "icon": "$(output)"
+      },
+      {
+        "command": "codeReview.showGithubUser",
+        "title": "Code Review: Show saved GitHub user (Copilot sign-in)"
       },
       {
         "command": "codeReview.exportReviewReport",

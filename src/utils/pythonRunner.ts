@@ -3,6 +3,7 @@ import { spawn } from "child_process";
 import * as path from "path";
 import * as fs from "fs";
 import { runMockCopilotInference, useMockCopilotEnabled } from "./mockCopilot";
+import { clearGithubUserProfile, setGithubUserProfile, type GithubUserProfile } from "./githubUserState";
 
 const pythonRelDir = "python";
 const venvBin = (root: string, isWin: boolean) =>
@@ -219,6 +220,7 @@ export async function runCopilotInference(
       if (authFailureDetected) {
         await context.globalState.update("copilot_session_id", undefined);
         await context.globalState.update("copilot_access_token_override", undefined);
+        await clearGithubUserProfile(context);
         reject(
           new Error(
             `Copilot authentication failed (${authFailureMessage || "session expired"}). Please run "Code Review: Authenticate Copilot" and try again.`
@@ -342,6 +344,20 @@ export async function authenticateCopilot(
         } else if (line.startsWith("POLLING_STATUS|")) {
           const status = line.slice("POLLING_STATUS|".length);
           callbacks.onPollingStatus?.(status);
+        } else if (line.startsWith("GITHUB_USER|")) {
+          const payload = line.slice("GITHUB_USER|".length);
+          try {
+            const data = JSON.parse(payload) as Record<string, unknown>;
+            const profile: GithubUserProfile = {
+              id: data.id != null ? String(data.id) : "",
+              login: typeof data.login === "string" ? data.login : "",
+              name: typeof data.name === "string" ? data.name : "",
+              email: typeof data.email === "string" ? data.email : "",
+            };
+            void setGithubUserProfile(context, profile);
+          } catch {
+            /* ignore malformed profile JSON */
+          }
         } else if (line.startsWith("SESSION_ID|")) {
           const sessionId = line.substring("SESSION_ID|".length);
           void context.globalState.update("copilot_session_id", sessionId);
