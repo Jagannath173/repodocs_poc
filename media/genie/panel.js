@@ -332,17 +332,59 @@
         cell.textContent = raw;
         return;
       }
+      var pendingDelete = null;
       lines.forEach(function (line) {
-        var ln = document.createElement("div");
-        ln.className = "suggestion-line";
         var t = String(line || "");
         var trimmed = t.trimStart();
-        if (trimmed.startsWith("+")) ln.classList.add("add");
-        else if (trimmed.startsWith("-")) ln.classList.add("del");
+        var isAdd = trimmed.startsWith("+");
+        var isDel = trimmed.startsWith("-");
+        if (isDel) {
+          pendingDelete = t;
+          return;
+        }
+        if (isAdd && pendingDelete != null) {
+          var lnDel = document.createElement("div");
+          lnDel.className = "suggestion-line del";
+          lnDel.textContent = pendingDelete || " ";
+          cell.appendChild(lnDel);
+          var lnAdd = document.createElement("div");
+          lnAdd.className = "suggestion-line add";
+          lnAdd.textContent = t || " ";
+          cell.appendChild(lnAdd);
+          pendingDelete = null;
+          return;
+        }
+        if (pendingDelete != null) {
+          var loneDel = document.createElement("div");
+          loneDel.className = "suggestion-line del";
+          loneDel.textContent = pendingDelete || " ";
+          cell.appendChild(loneDel);
+          pendingDelete = null;
+        }
+        var ln = document.createElement("div");
+        ln.className = "suggestion-line";
+        if (isAdd) ln.classList.add("add");
         else ln.classList.add("same");
         ln.textContent = t || " ";
         cell.appendChild(ln);
       });
+      if (pendingDelete != null) {
+        var tailDel = document.createElement("div");
+        tailDel.className = "suggestion-line del";
+        tailDel.textContent = pendingDelete || " ";
+        cell.appendChild(tailDel);
+      }
+    }
+    function hasRenderableReviewContent(data) {
+      if (!data || typeof data !== "object") return false;
+      var findings = Array.isArray(data.findings) ? data.findings.length : 0;
+      var sections = Array.isArray(data.sections) ? data.sections : [];
+      var sectionFindings = 0;
+      for (var i = 0; i < sections.length; i++) {
+        var f = sections[i] && Array.isArray(sections[i].findings) ? sections[i].findings.length : 0;
+        sectionFindings += f;
+      }
+      return findings > 0 || sectionFindings > 0;
     }
     function sevClass(sev) {
       var x = String(sev || "").toLowerCase();
@@ -1404,7 +1446,9 @@
       }
       var out = document.getElementById("out");
       var renderedPanel = document.getElementById("rendered-panel");
+      var reviewHasRows = s.endpoint === "codeReview" ? hasRenderableReviewContent(s.structuredData) : true;
       var hasExplanationContent =
+        reviewHasRows &&
         !!((s.streamText && String(s.streamText).trim()) ||
           (s.displayText && String(s.displayText).trim()) ||
           (s.structuredData && typeof s.structuredData === "object" && Object.keys(s.structuredData).length));

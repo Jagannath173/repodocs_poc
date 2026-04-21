@@ -276,8 +276,8 @@ function computeCharDiffDecorations(
   };
 
   const truncateBefore = (s: string): string => {
-    const t = s.replace(/\r\n/g, " ↵ ");
-    return t.length > 240 ? t.slice(0, 237) + "…" : t;
+    const t = s.replace(/\r\n/g, "\n");
+    return t.length > 320 ? t.slice(0, 317) + "…" : t;
   };
 
   for (const part of parts) {
@@ -295,7 +295,7 @@ function computeCharDiffDecorations(
           range: r,
           renderOptions: {
             before: {
-              contentText: truncateBefore(pendingRemoved),
+              contentText: "- " + truncateBefore(pendingRemoved).replace(/\n/g, "\n- ") + "\n",
               color: "var(--vscode-charts-red, #f14c4c)",
               backgroundColor: "rgba(241, 76, 76, 0.20)",
               border: "1px solid rgba(241, 76, 76, 0.45)",
