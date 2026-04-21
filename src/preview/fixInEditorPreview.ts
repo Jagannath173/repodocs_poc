@@ -1,8 +1,8 @@
 import * as vscode from "vscode";
-import { diffChars, diffLines } from "diff";
+import { diffLines, diffWordsWithSpace } from "diff";
 import { revealAndHighlightAppliedFix } from "../review/postApplyHighlight";
 
-export type FixInEditorChoice = "accept" | "reject";
+export type FixInEditorChoice = "accept" | "reject" | "cancelled";
 
 /** CodeLens uses these ids (declared in package.json) with `arguments: [chunkIndex]`. */
 const CMD_ACCEPT_CHUNK = "codeReview.fixPreview.acceptChunk";
@@ -242,11 +242,43 @@ function normalizeReviewText(s: string): string {
   return s.replace(/\r\n/g, "\n");
 }
 
-type DiffCharsPart = { value: string; added?: boolean; removed?: boolean };
+function normalizeForMeaningfulCompare(s: string): string {
+  return s
+    .replace(/\r\n/g, "\n")
+    .split("\n")
+    .map((line) => line.replace(/[ \t]+$/g, ""))
+    .join("\n")
+    .trim();
+}
+
+function trimCommonAffixes(before: string, after: string): { before: string; after: string } {
+  let prefix = 0;
+  const maxPrefix = Math.min(before.length, after.length);
+  while (prefix < maxPrefix && before[prefix] === after[prefix]) {
+    prefix += 1;
+  }
+
+  let suffix = 0;
+  const maxSuffix = Math.min(before.length - prefix, after.length - prefix);
+  while (
+    suffix < maxSuffix &&
+    before[before.length - 1 - suffix] === after[after.length - 1 - suffix]
+  ) {
+    suffix += 1;
+  }
+
+  return {
+    before: before.slice(prefix, before.length - suffix),
+    after: after.slice(prefix, after.length - suffix),
+  };
+}
+
+type DiffWordPart = { value: string; added?: boolean; removed?: boolean };
 
 /**
- * Character-level diff (red/green): green = inserted text in merged; red = removed text shown as
- * strikethrough "before" attachment when it is immediately replaced by added text (classic replace).
+ * Word-level diff (red/green): green = inserted text in merged; red = removed text shown as
+ * strikethrough "before" attachment when it is immediately replaced by added text.
+ * Using word chunks avoids noisy repeated token-level highlights from char-level diffs.
  */
 function computeCharDiffDecorations(
   base: string,
@@ -254,7 +286,7 @@ function computeCharDiffDecorations(
   doc: vscode.TextDocument,
   lineBelongsToActiveChunk: (line: number) => boolean
 ): { addedRanges: vscode.Range[]; removedBeforeOptions: vscode.DecorationOptions[] } {
-  const parts = diffChars(base, merged) as DiffCharsPart[];
+  const parts = diffWordsWithSpace(base, merged) as DiffWordPart[];
   let mergedOffset = 0;
   let pendingRemoved = "";
   const addedRanges: vscode.Range[] = [];
@@ -286,8 +318,11 @@ function computeCharDiffDecorations(
       continue;
     }
     if (pendingRemoved.length > 0 && part.added) {
+      const focused = trimCommonAffixes(pendingRemoved, part.value);
+      const focusedRemoved = focused.before || pendingRemoved;
+      const focusedAdded = focused.after || part.value;
       const start = mergedOffset;
-      const end = mergedOffset + part.value.length;
+      const end = mergedOffset + focusedAdded.length;
       const r = new vscode.Range(doc.positionAt(start), doc.positionAt(end));
       if (rangeTouchesChunk(r)) {
         addedRanges.push(r);
@@ -295,7 +330,7 @@ function computeCharDiffDecorations(
           range: r,
           renderOptions: {
             before: {
-              contentText: "- " + truncateBefore(pendingRemoved).replace(/\n/g, "\n- ") + "\n",
+              contentText: "- " + truncateBefore(focusedRemoved).replace(/\n/g, "\n- ") + "\n",
               color: "var(--vscode-charts-red, #f14c4c)",
               backgroundColor: "rgba(241, 76, 76, 0.20)",
               border: "1px solid rgba(241, 76, 76, 0.45)",
@@ -306,7 +341,7 @@ function computeCharDiffDecorations(
         });
       }
       pendingRemoved = "";
-      mergedOffset = end;
+      mergedOffset += part.value.length;
       continue;
     }
     pendingRemoved = "";
@@ -348,6 +383,11 @@ function buildMergedText(parts: DiffPart[], chunks: FixChunk[], decisions: boole
 }
 
 function computeFixChunks(baseText: string, afterText: string, baseDoc: vscode.TextDocument): FixChunk[] {
+  // Ignore no-op diffs caused by trailing spaces/newline noise.
+  if (normalizeForMeaningfulCompare(baseText) === normalizeForMeaningfulCompare(afterText)) {
+    return [];
+  }
+
   const diffParts = diffLines(baseText, afterText) as unknown as DiffPart[];
 
   const kinds = diffParts.map((p) => kindOf(p));
@@ -408,6 +448,9 @@ function computeFixChunks(baseText: string, afterText: string, baseDoc: vscode.T
 
     const beforeRegionText = extractRegionText(diffParts, start, end, { add: false, remove: true });
     const afterRegionText = extractRegionText(diffParts, start, end, { add: true, remove: false });
+    if (normalizeForMeaningfulCompare(beforeRegionText) === normalizeForMeaningfulCompare(afterRegionText)) {
+      continue;
+    }
 
     const removedPreview = normalizePreview(
       diffParts
@@ -726,7 +769,7 @@ export async function previewFixInEditorAndWait(
       void vscode.window.showWarningMessage(
         "Could not write the file after reviewing all blocks. Check if the document is read-only or locked."
       );
-      finalChoiceResolver("reject");
+      finalChoiceResolver("cancelled");
       cleanup();
       return;
     }
@@ -811,7 +854,7 @@ export async function previewFixInEditorAndWait(
           await revealAndHighlightAppliedFix(docUri, baseText, mergedText);
         }
         if (!ok) {
-          finalChoiceResolver("reject");
+          finalChoiceResolver("cancelled");
         } else {
           finalChoiceResolver("accept");
         }
@@ -827,7 +870,7 @@ export async function previewFixInEditorAndWait(
           await revealEditorForUri(docUri);
         }
         if (!ok) {
-          finalChoiceResolver("reject");
+          finalChoiceResolver("cancelled");
         } else {
           finalChoiceResolver("reject");
         }
@@ -845,7 +888,7 @@ export async function previewFixInEditorAndWait(
       try {
         await applyWholeDocumentReplace(docUri, baseText);
       } finally {
-        finalChoiceResolver("reject");
+        finalChoiceResolver("cancelled");
         cleanup();
       }
     },
@@ -886,7 +929,7 @@ export async function previewFixInEditorAndWait(
     void vscode.window.showWarningMessage(
       "Could not open fix preview in the editor. Check if the document is read-only or locked."
     );
-    finalChoiceResolver("reject");
+    finalChoiceResolver("cancelled");
     cleanup();
     return finalChoicePromise;
   }

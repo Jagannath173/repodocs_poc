@@ -10,6 +10,19 @@ Include this template later in review prompts using: {% include 'review/common_i
 - Every issue must describe a **remaining** problem and a **suggestion** that is a **minimal, concrete code change** to the current file (or files in scope), not generic advice unless the prompt explicitly allows it.
 - If nothing needs to change, return an empty `issues` / `findings` list for that review.
 
+### Codebase Relevance (REQUIRED)
+{% if repository_context %}
+- Repository context is provided below. Use it to understand project intent and neighboring files.
+- Suggest only fixes that are relevant to this repository and this file's role in it.
+- Do not suggest framework/library patterns that conflict with the existing project stack inferred from repository context.
+- Do not suggest edits that move logic to unrelated files unless the issue explicitly requires cross-file changes.
+- If repository context shows an existing utility/helper for the same purpose, prefer that pattern in the fix.
+
+<repository_context>
+{{ repository_context }}
+</repository_context>
+{% endif %}
+
 ### 🚨 MANDATORY SEVERITY RULE - READ FIRST 🚨
 **IF CODE WORKS AND DOES NOT BREAK THE WORKFLOW, IT CANNOT BE "critical" OR "major".**
 **ONLY mark issues as "critical" or "major" if they COMPLETELY BREAK functionality or cause IMMEDIATE failures.**

@@ -34,6 +34,20 @@ function extractBacktickSpans(text: string): string[] {
  */
 export function isSuggestionAlreadyInFile(fileText: string, suggestion: string): boolean {
   const raw = (suggestion || "").trim();
+  const fileLines = new Set(
+    fileText
+      .replace(/\r\n/g, "\n")
+      .split("\n")
+      .map(normalizeLineForCompare)
+      .filter((line) => line.length > 0)
+  );
+  const suggestionLines = raw
+    .split(/\r?\n/)
+    .map(normalizeLineForCompare)
+    .filter((line) => line.length >= 5);
+  if (suggestionLines.length > 0 && suggestionLines.every((line) => fileLines.has(line))) {
+    return true;
+  }
   if (raw.length < 10) {
     return false;
   }

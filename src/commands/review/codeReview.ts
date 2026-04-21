@@ -79,6 +79,31 @@ const REVIEW_SEQUENCE: ReviewEndpoint[] = [
   "bigquery",
 ];
 
+async function collectRepositoryContext(activeUri: vscode.Uri): Promise<string> {
+  const folder = vscode.workspace.workspaceFolders?.[0];
+  if (!folder) {
+    return "No workspace folder detected.";
+  }
+  const files = await vscode.workspace.findFiles(
+    "**/*",
+    "**/{node_modules,out,.git,python/venv,__pycache__,.cursor}/**",
+    140
+  );
+  const relPaths = files
+    .map((f) => vscode.workspace.asRelativePath(f, false))
+    .filter((p) => p.length > 0)
+    .slice(0, 90);
+  const activeRel = vscode.workspace.asRelativePath(activeUri, false);
+  const activeDir = path.dirname(activeRel).replace(/\\/g, "/");
+  const nearby = relPaths.filter((p) => p.startsWith(activeDir + "/")).slice(0, 25);
+  return [
+    `Workspace root: ${folder.uri.fsPath}`,
+    `Active file: ${activeRel}`,
+    nearby.length ? `Nearby files:\n- ${nearby.join("\n- ")}` : "Nearby files: (none indexed)",
+    relPaths.length ? `Repository sample:\n- ${relPaths.join("\n- ")}` : "Repository sample: (none indexed)",
+  ].join("\n\n");
+}
+
 export async function runCodeReview(): Promise<void> {
   log.info("codeReview", "runCodeReview started");
   if (useMockCopilotEnabled()) {
@@ -210,6 +235,7 @@ export async function runCodeReview(): Promise<void> {
 
   try {
     resetMockReviewStage();
+    const repositoryContext = await collectRepositoryContext(editor.document.uri);
     for (let i = 0; i < REVIEW_SEQUENCE.length; i++) {
       if (stopRequested) {
         panel.addReviewLog("Review stopped by user.", "warn");
@@ -222,7 +248,7 @@ export async function runCodeReview(): Promise<void> {
       const endpoint = REVIEW_SEQUENCE[i];
       const label = REVIEW_ENDPOINT_LABELS[endpoint];
       log.info("codeReview", "Review stage", { stage: `${i + 1}/${REVIEW_SEQUENCE.length}`, endpoint, label });
-      const prompt = await renderReviewPrompt(endpoint, promptCode, promptGitDiff, language);
+      const prompt = await renderReviewPrompt(endpoint, promptCode, promptGitDiff, language, repositoryContext);
       log.debug("codeReview", "Prompt template rendered", { endpoint, promptChars: prompt.length });
       panel.addReviewLog(`Running ${label} review (${i + 1}/${REVIEW_SEQUENCE.length})…`, "info");
       panel.addReviewLog(`[${label}] Started`, "info");
@@ -504,11 +530,18 @@ async function renderReviewPrompt(
   endpoint: ReviewEndpoint,
   code: string,
   gitDiff: string,
-  language: string
+  language: string,
+  repositoryContext: string
 ): Promise<string> {
+  const codeWithRepoContext = `${code}
+
+<repository_context>
+${repositoryContext}
+</repository_context>`;
   return renderPromptTemplate(extensionContext.extensionPath, REVIEW_PROMPT_FILES[endpoint], {
-    code,
+    code: codeWithRepoContext,
     git_diff: gitDiff,
     language,
+    repository_context: repositoryContext,
   });
 }

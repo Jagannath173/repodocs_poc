@@ -833,6 +833,8 @@ async function applyRefactorWithEditorPreview(
     }
     if (choice === "accept") {
       panel.setStatus("Accepted and applied.");
+    } else if (choice === "cancelled") {
+      panel.setStatus("Stopped — no changes applied.");
     } else {
       panel.setStatus("Rejected — no changes applied.");
     }

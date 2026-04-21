@@ -64,7 +64,8 @@ Respond in concise markdown with:
 - Risks / checks before apply (bullets)
 Do not return JSON. Do not apply changes.`;
 
-const GATE_CODE_EXCERPT_MAX_CHARS = 28_000;
+// Keep gate prompts lightweight so "apply fix" feedback arrives quickly.
+const GATE_CODE_EXCERPT_MAX_CHARS = 8_000;
 
 function buildCodeExcerptForGate(fileContent: string, maxChars: number): string {
   if (fileContent.length <= maxChars) {
@@ -828,6 +829,11 @@ async function runHolisticApplyWithExtra(params: {
 
   const freshDoc = await vscode.workspace.openTextDocument(uri);
   const choice = await previewFixInEditorAndWait(freshDoc, latestBase, afterText, "Apply with extra instructions");
+  if (choice === "cancelled") {
+    panel.addFixLog("Guided edit stopped by user — no finding status changed.", "warn");
+    void vscode.window.showInformationMessage("Guided edit stopped.");
+    return;
+  }
   if (choice === "reject") {
     panel.addFixLog("Preview rejected — file unchanged.", "warn");
     void vscode.window.showInformationMessage("Guided edit rejected — no changes saved.");
@@ -1230,6 +1236,14 @@ export async function applyFixesFromReview(
 
         const previewTitle = finding.title || `Fix (${step + 1}/${total})`;
         const choice = await previewFixInEditorAndWait(doc, baseText, afterText, previewTitle);
+        if (choice === "cancelled") {
+          panel.setApplyingFixIndex(null);
+          panel.addFixLog(`Step ${step + 1}/${total} stopped by user.`, "warn");
+          panel.setStatus?.("Fix run stopped.");
+          panel.reveal?.();
+          void vscode.window.showInformationMessage("Fix run stopped.");
+          return;
+        }
         if (choice === "reject") {
           panel.setApplyingFixIndex(null);
           await markFindingRejected(originalIndex, live.documentUri);
