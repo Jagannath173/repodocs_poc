@@ -6,6 +6,8 @@ export type GenieCommand =
   | "closeSession"
   | "copyText"
   | "applyFixes"
+  | "analyzeExtraInstruction"
+  | "rejectFinding"
   | "authenticate"
   | "submitPrompt"
   | "exportReviewReport";

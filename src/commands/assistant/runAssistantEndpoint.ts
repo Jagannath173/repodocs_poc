@@ -242,7 +242,8 @@ async function runInferenceWithStreaming(panelPrompt: string, panel: AssistantRe
       }
     },
     {
-      systemRole: "Respond with valid JSON only.",
+      systemRole:
+        "Answer directly in clear plain text/markdown. Use code fences for code when needed. Do not force JSON.",
       stream: true,
     }
   );
@@ -395,68 +396,66 @@ function buildAssistantRenderPayload(
   endpoint: AssistantEndpoint,
   opts?: { userPrompt?: string }
 ): AssistantRenderPayload {
-  try {
-    const obj = JSON.parse(extractFirstJsonObject(raw)) as Record<string, unknown>;
-    const remarks =
-      (typeof obj.remarks === "string" && obj.remarks.trim()) ||
-      (typeof obj.details === "string" && obj.details.trim()) ||
-      defaultRemarksForEndpoint(endpoint);
+  const text = raw.trim();
+  const parsed = tryParseAssistantJson(text);
+  const fromJson = parsed ?? undefined;
+  const remarks =
+    (fromJson && typeof fromJson.remarks === "string" && fromJson.remarks.trim()) ||
+    (fromJson && typeof fromJson.details === "string" && fromJson.details.trim()) ||
+    defaultRemarksForEndpoint(endpoint);
+  const displayText = fromJson ? buildDisplayText(fromJson) : text;
+  const generatedFiles = fromJson ? extractGeneratedFiles(fromJson, endpoint) : undefined;
+  const fallbackCode = extractFirstCodeBlock(text);
+  const applyCode = (fromJson ? extractApplyCode(fromJson, endpoint) : undefined) ?? fallbackCode;
 
-    const applyCode = extractApplyCode(obj, endpoint);
-    const generatedFiles = extractGeneratedFiles(obj, endpoint);
-    const displayText = buildDisplayText(obj);
-    const jsonText = JSON.stringify(obj, null, 2);
-
-    let codeGenDelivery: "modifyCurrent" | "newFile" | undefined;
-    let newFileRelativePath: string | undefined;
-
-    const primaryCode = applyCode ?? generatedFiles?.[0]?.code ?? "";
-    if (endpoint === "codeGeneration" && primaryCode.trim()) {
-      const parsed = parseCodeGenDelivery(obj);
-      const resolved = resolveCodeGenDelivery(opts?.userPrompt ?? "", beforeText, primaryCode, parsed);
-      codeGenDelivery = resolved.mode;
-      newFileRelativePath = resolved.newFilePath;
-    }
-
-    const isCodegen = endpoint === "codeGeneration" && Boolean(primaryCode.trim()) && codeGenDelivery;
-
-    const reviewMode = Boolean(isCodegen);
-
-    let diffParts: Array<{ kind: "add" | "remove" | "same"; text: string }> | undefined;
-    if (endpoint === "codeRefactor" && applyCode?.trim()) {
-      diffParts = buildDiffParts(beforeText, applyCode);
-    } else if (isCodegen && codeGenDelivery === "modifyCurrent" && primaryCode) {
-      diffParts = buildDiffParts(beforeText, primaryCode);
-    } else if (isCodegen && codeGenDelivery === "newFile" && primaryCode) {
-      diffParts = buildNewFileOnlyDiff(primaryCode);
-    }
-
-    return {
-      remarks,
-      displayText,
-      applyCode: primaryCode,
-      jsonText,
-      structuredData: obj,
-      reviewMode,
-      diffParts,
-      endpoint,
-      codeGenDelivery,
-      newFileRelativePath,
-      generatedFiles,
-    };
-  } catch {
-    return {
-      remarks: defaultRemarksForEndpoint(endpoint),
-      displayText: raw.trim(),
-      jsonText: raw.trim(),
-      structuredData: undefined,
-      reviewMode: false,
-      diffParts: undefined,
-      endpoint,
-      applyCode: undefined,
-      generatedFiles: undefined,
-    };
+  let codeGenDelivery: "modifyCurrent" | "newFile" | undefined;
+  let newFileRelativePath: string | undefined;
+  const primaryCode = applyCode ?? generatedFiles?.[0]?.code ?? "";
+  if (endpoint === "codeGeneration" && primaryCode.trim()) {
+    const parsedDelivery = fromJson ? parseCodeGenDelivery(fromJson) : undefined;
+    const resolved = resolveCodeGenDelivery(opts?.userPrompt ?? "", beforeText, primaryCode, parsedDelivery);
+    codeGenDelivery = resolved.mode;
+    newFileRelativePath = resolved.newFilePath;
   }
+
+  const isCodegen = endpoint === "codeGeneration" && Boolean(primaryCode.trim()) && codeGenDelivery;
+  const reviewMode = Boolean(isCodegen);
+  let diffParts: Array<{ kind: "add" | "remove" | "same"; text: string }> | undefined;
+  if (endpoint === "codeRefactor" && primaryCode.trim()) {
+    diffParts = buildDiffParts(beforeText, primaryCode);
+  } else if (isCodegen && codeGenDelivery === "modifyCurrent" && primaryCode) {
+    diffParts = buildDiffParts(beforeText, primaryCode);
+  } else if (isCodegen && codeGenDelivery === "newFile" && primaryCode) {
+    diffParts = buildNewFileOnlyDiff(primaryCode);
+  }
+
+  return {
+    remarks,
+    displayText,
+    applyCode: primaryCode,
+    jsonText: text,
+    structuredData: fromJson,
+    reviewMode,
+    diffParts,
+    endpoint,
+    codeGenDelivery,
+    newFileRelativePath,
+    generatedFiles,
+  };
+}
+
+function tryParseAssistantJson(raw: string): Record<string, unknown> | undefined {
+  try {
+    return JSON.parse(extractFirstJsonObject(raw)) as Record<string, unknown>;
+  } catch {
+    return undefined;
+  }
+}
+
+function extractFirstCodeBlock(raw: string): string | undefined {
+  const m = /```[a-zA-Z0-9_-]*\s*\n([\s\S]*?)```/m.exec(raw);
+  const code = m?.[1]?.trim();
+  return code ? code : undefined;
 }
 
 function parseCodeGenDelivery(obj: Record<string, unknown>): { mode: "modifyCurrent" | "newFile"; newFilePath?: string } | undefined {

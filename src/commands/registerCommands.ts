@@ -9,7 +9,7 @@ import { initExtensionLogger, log, showExtensionLogs } from "../utils/logger";
 import { CodeReviewSidebarProvider } from "./sidebarCommandRegister/CodeReviewSidebarProvider";
 import { registerReviewStaleWatcher } from "../review/reviewStaleWatcher";
 import { exportReviewReportToPdf, exportReviewReportToXlsx } from "../review/exportReviewReport";
-import { getStoredReview } from "../review/applyFixes";
+import { analyzeExtraInstructionForReview, getStoredReview, rejectFindingFromReview } from "../review/applyFixes";
 import { getGithubUserProfile } from "../utils/githubUserState";
 
 /**
@@ -67,9 +67,24 @@ export function registerCommands(context: vscode.ExtensionContext): void {
         void applyFixesFromReview(mode ?? "all", index, extra, indices);
       }
     ),
+    vscode.commands.registerCommand("codeReview.analyzeExtraInstruction", (extra?: string) => {
+      const text = typeof extra === "string" ? extra : "";
+      log.info("command", "Command invoked", {
+        commandId: "codeReview.analyzeExtraInstruction",
+        extraChars: text.length,
+      });
+      void analyzeExtraInstructionForReview(text);
+    }),
     vscode.commands.registerCommand("codeReview.authenticate", () => {
       log.info("command", "Command invoked", { commandId: "codeReview.authenticate" });
       void openAuthWebviewAndAuthenticate(context);
+    }),
+    vscode.commands.registerCommand("codeReview.rejectFinding", (index?: number) => {
+      if (typeof index !== "number" || index < 0) {
+        return;
+      }
+      log.info("command", "Command invoked", { commandId: "codeReview.rejectFinding", index });
+      void rejectFindingFromReview(index);
     }),
     vscode.commands.registerCommand("codeReview.showLogs", () => {
       log.info("command", "Command invoked", { commandId: "codeReview.showLogs" });

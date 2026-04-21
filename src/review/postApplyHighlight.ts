@@ -1,6 +1,115 @@
 import * as vscode from "vscode";
 import { diffLines } from "diff";
 
+/** Minimal finding shape for scrolling to an approximate code location. */
+export type FindingLocationHint = {
+  title?: string;
+  detail?: string;
+  suggestion?: string;
+};
+
+/**
+ * Focus the editor and scroll to the best-effort line for this finding (line numbers in detail,
+ * first line of fenced code, or first line of suggestion) so "fix all one by one" shows where work applies.
+ */
+export async function revealApproximateFindingLocation(
+  uri: vscode.Uri,
+  finding: FindingLocationHint,
+  fileText: string
+): Promise<void> {
+  const doc = await vscode.workspace.openTextDocument(uri);
+  const text = fileText.replace(/\r\n/g, "\n");
+  const detail = (finding.detail || "").replace(/\r\n/g, "\n");
+  const suggestion = (finding.suggestion || "").replace(/\r\n/g, "\n");
+
+  let line = 0;
+
+  const lineMatch =
+    detail.match(/(?:^|\n)\s*(?:line|Line)\s*[#:]?\s*(\d+)/i) ||
+    detail.match(/\b(?:line|at)\s+(\d+)\b/i) ||
+    detail.match(/(?:^|\s):(\d+)(?::\d+)?/);
+  if (lineMatch) {
+    const n = parseInt(lineMatch[1], 10);
+    if (!Number.isNaN(n) && n >= 1) {
+      line = Math.min(n - 1, Math.max(0, doc.lineCount - 1));
+      await showEditorAtLine(uri, doc, line);
+      return;
+    }
+  }
+
+  const fence = /```(?:[\w-]+)?\s*([\s\S]*?)```/;
+  const fm = detail.match(fence);
+  if (fm && fm[1]) {
+    const firstLine = fm[1]
+      .split("\n")
+      .map((l) => l.trim())
+      .find((l) => l.length >= 4);
+    if (firstLine) {
+      const pos = text.indexOf(firstLine);
+      if (pos >= 0) {
+        line = doc.positionAt(pos).line;
+        await showEditorAtLine(uri, doc, line);
+        return;
+      }
+    }
+  }
+
+  if (suggestion.trim()) {
+    const lineStr = suggestion.split("\n")[0].trim();
+    if (lineStr.length >= 6) {
+      const pos = text.indexOf(lineStr);
+      if (pos >= 0) {
+        line = doc.positionAt(pos).line;
+        await showEditorAtLine(uri, doc, line);
+        return;
+      }
+    }
+  }
+
+  const title = (finding.title || "").trim();
+  if (title.length >= 8) {
+    const pos = text.indexOf(title.slice(0, Math.min(40, title.length)));
+    if (pos >= 0) {
+      line = doc.positionAt(pos).line;
+      await showEditorAtLine(uri, doc, line);
+      return;
+    }
+  }
+
+  await showEditorAtLine(uri, doc, 0);
+}
+
+async function showEditorAtLine(uri: vscode.Uri, doc: vscode.TextDocument, line: number): Promise<void> {
+  const preferredColumn =
+    vscode.window.visibleTextEditors.find((e) => e.document.uri.toString() === uri.toString())?.viewColumn ??
+    vscode.window.activeTextEditor?.viewColumn ??
+    vscode.ViewColumn.One;
+
+  const editor = await vscode.window.showTextDocument(doc, {
+    viewColumn: preferredColumn,
+    preview: false,
+    preserveFocus: false,
+  });
+
+  const safeLine = Math.max(0, Math.min(line, editor.document.lineCount - 1));
+  const endChar = editor.document.lineAt(safeLine).text.length;
+  const range = new vscode.Range(safeLine, 0, safeLine, endChar);
+  editor.selection = new vscode.Selection(safeLine, 0, safeLine, 0);
+  editor.revealRange(range, vscode.TextEditorRevealType.InCenter);
+
+  await new Promise<void>((resolve) => setTimeout(resolve, 32));
+  const ed2 =
+    vscode.window.visibleTextEditors.find((e) => e.document.uri.toString() === uri.toString()) ?? editor;
+  ed2.selection = new vscode.Selection(safeLine, 0, safeLine, 0);
+  ed2.revealRange(range, vscode.TextEditorRevealType.InCenter);
+
+  try {
+    await vscode.commands.executeCommand("workbench.action.focusActiveEditorGroup");
+  } catch {
+    /* ignore */
+  }
+}
+
 type DiffPart = { value: string; added?: boolean; removed?: boolean };
 
 function countVisualLines(s: string): number {

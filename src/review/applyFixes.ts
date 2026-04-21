@@ -19,7 +19,7 @@ import { suppressReviewStaleFlushForUri } from "./reviewStaleSuppress";
 import { log, sanitizeForLog } from "../utils/logger";
 import { hashDocumentText } from "../utils/documentHash";
 import { cancelFixPreviewForDocumentUri, previewFixInEditorAndWait } from "../preview/fixInEditorPreview";
-import { revealAndHighlightAppliedFix } from "./postApplyHighlight";
+import { revealAndHighlightAppliedFix, revealApproximateFindingLocation } from "./postApplyHighlight";
 
 export const LAST_REVIEW_STATE_KEY = "codeReview.lastReview";
 const REVIEW_STATE_BY_URI_KEY = "codeReview.reviewByUri";
@@ -37,6 +37,7 @@ Rules:
 - "fileContent" must be the full file text after the edit, not a diff and not a fragment.
 - Preserve the file's style, imports, and formatting unless the suggestion requires changing them.
 - Prefer the smallest localized edit that fixes the reported issue; avoid unrelated refactors.
+- The edit MUST directly implement the given finding's title, detail, and suggestion — do not fix a different issue or change unrelated code.
 - Change the code near the described issue location/detail whenever possible.
 - If the finding is already satisfied by the current file, return the file unchanged.
 - Follow "Additional instructions from the developer" when present (they were already verified as related to this task).
@@ -48,6 +49,14 @@ You decide whether the user's "Developer additional instruction" is meaningfully
 Set relevant to false only when the instruction is clearly unrelated (wrong domain, nonsense, unrelated product, jokes, personal topics, or asks for changes that cannot apply to this file/finding).
 If the connection is weak but still about code, tests, style, or this finding, set relevant to true.
 Output shape: {"relevant": true} or {"relevant": false, "briefReason": "<one short sentence>"}`;
+
+const EXTRA_INSTRUCTION_ANALYSIS_SYSTEM_ROLE = `You are a senior code reviewer assistant.
+Analyze the developer's extra instruction against the reviewed file and findings.
+Respond in concise markdown with:
+- What you will change (bullets)
+- What you will not change (bullets)
+- Risks / checks before apply (bullets)
+Do not return JSON. Do not apply changes.`;
 
 const GATE_CODE_EXCERPT_MAX_CHARS = 28_000;
 
@@ -92,6 +101,36 @@ Developer additional instruction:
 ${extraInstruction}
 
 Return only JSON: {"relevant": true} or {"relevant": false, "briefReason": "..."}`;
+}
+
+function buildExtraInstructionAnalysisPrompt(
+  fileName: string,
+  reviewSummary: string,
+  findings: ReviewFinding[],
+  codeExcerpt: string,
+  extraInstruction: string
+): string {
+  const topFindings = findings
+    .slice(0, 8)
+    .map((f, i) => `${i + 1}. [${f.severity}] ${f.title}\n   - ${f.suggestion}`)
+    .join("\n");
+  return `File: ${fileName}
+
+Review summary:
+${reviewSummary}
+
+Top review findings:
+${topFindings || "(none)"}
+
+Source excerpt:
+\`\`\`
+${codeExcerpt}
+\`\`\`
+
+Developer extra instruction:
+${extraInstruction}
+
+Analyze this instruction against the code + findings and return a concise markdown plan.`;
 }
 
 function parseRelevanceGateResponse(raw: string): { relevant: boolean; briefReason?: string } {
@@ -152,8 +191,9 @@ Apply ONLY the following single finding next (do not address other issues unless
 - Suggestion: ${finding.suggestion}
 
 Implementation constraints:
-- Keep edits minimal and localized to code related to this finding.
+- Keep edits minimal and localized to code related to this finding only.
 - Do not change unrelated functions/blocks.
+- Your changes must match this finding — do not substitute a different fix than described above.
 - Preserve naming and existing behavior outside the target fix.
 ${extra}
 
@@ -196,6 +236,21 @@ function readReviewStateByUri(): ReviewStateByUri {
     lastDocumentUri: typeof state.lastDocumentUri === "string" ? state.lastDocumentUri : undefined,
     byDocumentUri,
   };
+}
+
+/** Reject a finding from the review table without running the model (same as rejecting the in-editor preview). */
+export async function rejectFindingFromReview(index: number): Promise<void> {
+  const stored = getStoredReview();
+  if (!stored?.findings?.length || index < 0 || index >= stored.findings.length) {
+    void vscode.window.showWarningMessage("Invalid finding to reject.");
+    return;
+  }
+  if (stored.appliedIndices?.includes(index)) {
+    void vscode.window.showInformationMessage("This finding is already applied.");
+    return;
+  }
+  await markFindingRejected(index, stored.documentUri);
+  void vscode.window.showInformationMessage(`Finding ${index + 1} marked as rejected.`);
 }
 
 export async function saveLastReview(payload: StoredReview): Promise<void> {
@@ -675,7 +730,7 @@ async function runHolisticApplyWithExtra(params: {
         log.proxyLine("applyFixesGateHolistic", line);
         appendAssistantFromSseLine(line, gateState);
       },
-      { systemRole: EXTRA_INSTRUCTION_GATE_SYSTEM_ROLE, stream: false }
+      { systemRole: EXTRA_INSTRUCTION_GATE_SYSTEM_ROLE, stream: true }
     );
     const gate = parseRelevanceGateResponse(gateState.text);
     if (!gate.relevant) {
@@ -877,8 +932,11 @@ export async function applyFixesFromReview(
   }
 
   const isBulkRun = mode !== "one";
-  if (isBulkRun) {
+  const delayBulkApplyingUntilStream = isBulkRun && !!extra?.trim();
+  let bulkApplyingVisible = false;
+  if (isBulkRun && !delayBulkApplyingUntilStream) {
     panel.setApplyingFixAll(true);
+    bulkApplyingVisible = true;
   }
   if (mode === "one" && typeof targetIndices[0] === "number") {
     panel.setApplyingFixIndex(targetIndices[0]);
@@ -943,6 +1001,14 @@ export async function applyFixesFromReview(
         doc = await vscode.workspace.openTextDocument(uri);
         const baseText = doc.getText();
 
+        const markApplyingEarly = !extra?.trim();
+        if (markApplyingEarly) {
+          panel.setApplyingFixIndex(originalIndex);
+        }
+        if (!isBulkRun) {
+          await revealApproximateFindingLocation(uri, finding, baseText);
+        }
+
         if (extra?.trim()) {
           panel.addFixLog("Analyzing your extra instruction against this finding and code…", "info");
           const gateState = { text: "" };
@@ -964,7 +1030,7 @@ export async function applyFixesFromReview(
                 log.proxyLine("applyFixesGate", line);
                 appendAssistantFromSseLine(line, gateState);
               },
-              { systemRole: EXTRA_INSTRUCTION_GATE_SYSTEM_ROLE, stream: false, signal: gateAbort.signal }
+              { systemRole: EXTRA_INSTRUCTION_GATE_SYSTEM_ROLE, stream: true, signal: gateAbort.signal }
             );
             activeFixAbortByDocumentUri.delete(stored.documentUri);
             const gate = parseRelevanceGateResponse(gateState.text);
@@ -1009,8 +1075,12 @@ export async function applyFixesFromReview(
 
         const prompt = buildFixPrompt(live.fileName, baseText, live.summary, finding, extra);
         const state = { text: "" };
+        const streamThisStep = !!extra?.trim();
+        if (streamThisStep) {
+          panel.beginGuidedApplyStream();
+          panel.setGuidedApplyStream("");
+        }
 
-        panel.setApplyingFixIndex(originalIndex);
         try {
           const fixAbort = new AbortController();
           activeFixAbortByDocumentUri.set(stored.documentUri, fixAbort);
@@ -1021,6 +1091,13 @@ export async function applyFixesFromReview(
             (line) => {
               log.proxyLine("applyFixes", line);
               appendAssistantFromSseLine(line, state);
+              if (streamThisStep && state.text) {
+                panel.setGuidedApplyStream(state.text);
+                if (isBulkRun && !bulkApplyingVisible) {
+                  panel.setApplyingFixAll(true);
+                  bulkApplyingVisible = true;
+                }
+              }
             },
             { systemRole: FIX_SYSTEM_ROLE, stream: true, signal: fixAbort.signal }
           );
@@ -1047,6 +1124,10 @@ export async function applyFixesFromReview(
             return;
           }
           continue;
+        } finally {
+          if (streamThisStep) {
+            panel.endGuidedApplyStream();
+          }
         }
 
         let afterText: string;
@@ -1065,6 +1146,12 @@ export async function applyFixesFromReview(
             return;
           }
           continue;
+        }
+
+        // For "Apply with extra instructions", move row "Applying..." to just before apply/preview,
+        // so users can first read streamed analysis/output instead of seeing immediate apply state.
+        if (!markApplyingEarly) {
+          panel.setApplyingFixIndex(originalIndex);
         }
 
         const normalizedBase = baseText.replace(/\r\n/g, "\n");
@@ -1126,11 +1213,71 @@ export async function applyFixesFromReview(
         staleSuppress.dispose();
       }, 550);
       panel.setApplyingFixIndex(null);
-      if (isBulkRun) {
+      if (isBulkRun && (bulkApplyingVisible || !delayBulkApplyingUntilStream)) {
         panel.setApplyingFixAll(false);
       }
     }
   });
+}
+
+/** Analyze extra instructions in-stream; no auto apply. User still accepts/rejects rows manually. */
+export async function analyzeExtraInstructionForReview(extraInstruction: string): Promise<void> {
+  const text = extraInstruction.trim();
+  if (!text) {
+    return;
+  }
+  let stored = getStoredReview();
+  if (!stored || !stored.findings?.length) {
+    void vscode.window.showWarningMessage("Run Code Review first, then use extra instructions.");
+    return;
+  }
+  const uri = vscode.Uri.parse(stored.documentUri);
+  const doc = await vscode.workspace.openTextDocument(uri);
+  const panel = getReviewPanelForDocument(stored.documentUri);
+  if (!panel || panel.isDisposed?.()) {
+    void vscode.window.showWarningMessage("Review tab is closed. Open review and try again.");
+    return;
+  }
+
+  if (stored.reviewedDocumentHash && hashDocumentText(doc.getText()) !== stored.reviewedDocumentHash) {
+    const refreshed: StoredReview = { ...stored, reviewedDocumentHash: hashDocumentText(doc.getText()) };
+    await saveLastReview(refreshed);
+    notifyReviewUpdated(refreshed);
+    stored = refreshed;
+  }
+
+  const excerpt = buildCodeExcerptForGate(doc.getText(), GATE_CODE_EXCERPT_MAX_CHARS);
+  const prompt = buildExtraInstructionAnalysisPrompt(
+    stored.fileName,
+    stored.summary,
+    stored.findings,
+    excerpt,
+    text
+  );
+  const state = { text: "" };
+  panel.beginGuidedApplyStream();
+  panel.setGuidedApplyStream("");
+  panel.addFixLog("Analyzing your extra instruction against this file and review findings…", "info");
+  try {
+    await runCopilotInference(
+      extensionContext,
+      prompt,
+      (line) => {
+        log.proxyLine("analyzeExtraInstruction", line);
+        appendAssistantFromSseLine(line, state);
+        panel.setGuidedApplyStream(state.text);
+      },
+      { systemRole: EXTRA_INSTRUCTION_ANALYSIS_SYSTEM_ROLE, stream: true }
+    );
+    panel.addFixLog("Analysis ready. Use row Accept/Reject to apply manually.", "success");
+    panel.setStatus?.("Analysis complete. Choose Accept or Reject per row.");
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    panel.addFixLog(`Could not analyze extra instruction: ${msg}`, "error");
+    panel.showFixError(`Analysis failed: ${msg}`);
+  } finally {
+    panel.endGuidedApplyStream();
+  }
 }
 
 /** Map ReviewPayload + editor uri to stored shape (used from codeReview). */

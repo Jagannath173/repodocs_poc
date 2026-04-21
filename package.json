@@ -16,7 +16,8 @@
     "onCommand:codeReview.applyFixes",
     "onCommand:codeReview.authenticate",
     "onCommand:codeReview.showLogs",
-    "onCommand:codeReview.showGithubUser"
+    "onCommand:codeReview.showGithubUser",
+    "onCommand:codeReview.rejectFinding"
   ],
   "main": "./out/extension.js",
   "contributes": {

@@ -144,7 +144,7 @@ export class ReviewWebviewSession {
     }
   }
 
-  /** Clear buffer and show “waiting for tokens” before each review stage streams. */
+  /** Clear buffer before each review stage; stream panel shows live streaming (no placeholder text). */
   beginReviewStreamStage(): void {
     if (this.disposed) return;
     this.panel.setStreamText("");

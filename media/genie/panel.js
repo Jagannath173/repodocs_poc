@@ -19,6 +19,28 @@
     document.body.innerHTML = '<p style="padding:16px;font-family:system-ui;color:#f14c4c;">Genie UI failed to load (missing DOM). Reload the window.</p>';
     return;
   }
+  function resetReviewFixMenu(el) {
+    if (!el) return;
+    el.classList.remove("is-open");
+    el.hidden = true;
+    el.removeAttribute("style");
+    var c = el.parentElement && el.parentElement.querySelector(".review-fix-pill-caret");
+    if (c) c.setAttribute("aria-expanded", "false");
+  }
+  document.addEventListener("click", function (e) {
+    var t = e.target;
+    if (t && t.closest && t.closest(".review-fix-unified-pill")) return;
+    document.querySelectorAll(".review-fix-pill-menu.is-open").forEach(function (el) {
+      resetReviewFixMenu(el);
+    });
+  });
+  function closeAllReviewFixMenus() {
+    document.querySelectorAll(".review-fix-pill-menu.is-open").forEach(function (el) {
+      resetReviewFixMenu(el);
+    });
+  }
+  window.addEventListener("scroll", closeAllReviewFixMenus, true);
+  window.addEventListener("resize", closeAllReviewFixMenus);
   function persistUiState() {
     if (restoringState) return;
     try {
@@ -77,6 +99,7 @@
         streamText: "",
         refinePromptMode: false,
         applyFixesExtraMode: false,
+        extraFixInstructions: "",
         authUrl: "",
         authCode: "",
         fixApplyingIndex: null,
@@ -432,6 +455,25 @@
     }
     function renderCodeReview(root, view, fallbackText, session) {
       if (!view || typeof view !== "object") {
+        var earlyToolbar = document.createElement("div");
+        earlyToolbar.className = "review-fix-toolbar";
+        var earlyBtnPdf = document.createElement("button");
+        earlyBtnPdf.type = "button";
+        earlyBtnPdf.className = "secondary";
+        earlyBtnPdf.textContent = "Download PDF";
+        earlyBtnPdf.onclick = function () {
+          vscode.postMessage({ command: "exportReviewReport", format: "pdf" });
+        };
+        var earlyBtnXlsx = document.createElement("button");
+        earlyBtnXlsx.type = "button";
+        earlyBtnXlsx.className = "secondary";
+        earlyBtnXlsx.textContent = "Download Excel";
+        earlyBtnXlsx.onclick = function () {
+          vscode.postMessage({ command: "exportReviewReport", format: "xlsx" });
+        };
+        earlyToolbar.appendChild(earlyBtnPdf);
+        earlyToolbar.appendChild(earlyBtnXlsx);
+        root.appendChild(earlyToolbar);
         return;
       }
       var applied = Array.isArray(view.appliedIndices) ? view.appliedIndices : [];
@@ -448,10 +490,15 @@
         btnDetails.className = "secondary";
         btnDetails.textContent = "Review fix details";
         btnDetails.onclick = function () {
+          var docEl = document.scrollingElement || document.documentElement || document.body;
+          var prevTop = docEl ? docEl.scrollTop : 0;
           var s = sessions[activeSessionId];
           if (!s) return;
           s.reviewFixDetailsOpen = !s.reviewFixDetailsOpen;
           renderSession();
+          requestAnimationFrame(function () {
+            if (docEl) docEl.scrollTop = prevTop;
+          });
         };
         var btnPdf = document.createElement("button");
         btnPdf.type = "button";
@@ -724,7 +771,7 @@
         table.className = "review-findings-table";
         var thead = document.createElement("thead");
         var hr = document.createElement("tr");
-        [["#", "col-num-h"], ["Severity", ""], ["Description", ""], ["Suggested fix", ""], ["Fix", ""]].forEach(function (pair) {
+        [["#", "col-num-h"], ["Severity", ""], ["Description", ""], ["Suggested fix", ""], ["Action", ""]].forEach(function (pair) {
           var th = document.createElement("th");
           th.textContent = pair[0];
           if (pair[1]) th.className = pair[1];
@@ -742,6 +789,7 @@
           var isRejected = !isApplied && rejected.indexOf(globalIndex) >= 0;
           rowNum += 1;
           var tr = document.createElement("tr");
+          tr.setAttribute("data-global-index", String(globalIndex));
           if (isApplied) {
             tr.className = "row-applied";
           } else if (isRejected) {
@@ -786,6 +834,7 @@
               applyingIndex !== globalIndex;
             var primaryClasses = "primary review-fix-btn";
             if (showApplying) {
+              tr.setAttribute("data-applying-row", "1");
               var fixBtn = document.createElement("button");
               fixBtn.type = "button";
               fixBtn.className = primaryClasses + " is-applying";
@@ -797,25 +846,130 @@
               fixBtn.appendChild(document.createTextNode(" Applying..."));
               tdFix.appendChild(fixBtn);
             } else {
-              var fixBtn2 = document.createElement("button");
-              fixBtn2.type = "button";
-              fixBtn2.className = primaryClasses;
-              fixBtn2.textContent = "Fix";
               var disableRowFix = !!fixRowLocked;
-              fixBtn2.disabled = disableRowFix;
+              var wrap = document.createElement("div");
+              wrap.className = "review-fix-unified-pill";
+              wrap.setAttribute("role", "group");
+              wrap.setAttribute("aria-label", "Accept or reject this finding");
+              var btnMain = document.createElement("button");
+              btnMain.type = "button";
+              btnMain.className = "review-fix-pill-main";
+              btnMain.textContent = "Accept";
+              btnMain.title = "Apply this fix to the file";
+              var btnCaret = document.createElement("button");
+              btnCaret.type = "button";
+              btnCaret.className = "review-fix-pill-caret";
+              btnCaret.setAttribute("aria-label", "Open Accept or Reject menu");
+              btnCaret.setAttribute("aria-haspopup", "menu");
+              btnCaret.setAttribute("aria-expanded", "false");
+              btnCaret.innerHTML =
+                '<svg class="review-fix-pill-caret-svg" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path fill="currentColor" d="M4.25 6.5 8 10.25 11.75 6.5z"/></svg>';
+              var menu = document.createElement("div");
+              menu.className = "review-fix-pill-menu";
+              menu.setAttribute("role", "menu");
+              menu.hidden = true;
+              var menuItemAcc = document.createElement("button");
+              menuItemAcc.type = "button";
+              menuItemAcc.className = "review-fix-pill-menu-item";
+              menuItemAcc.setAttribute("role", "menuitem");
+              menuItemAcc.textContent = "Accept";
+              var menuItemRej = document.createElement("button");
+              menuItemRej.type = "button";
+              menuItemRej.className = "review-fix-pill-menu-item review-fix-pill-menu-item-reject";
+              menuItemRej.setAttribute("role", "menuitem");
+              menuItemRej.textContent = "Reject";
+              menu.appendChild(menuItemAcc);
+              menu.appendChild(menuItemRej);
+              wrap.appendChild(btnMain);
+              wrap.appendChild(btnCaret);
+              wrap.appendChild(menu);
+              if (disableRowFix) {
+                btnMain.disabled = true;
+                btnCaret.disabled = true;
+                menuItemAcc.disabled = true;
+                menuItemRej.disabled = true;
+              }
               if (!disableRowFix) {
-                (function (idx) {
-                  fixBtn2.onclick = function () {
+                (function (idx, menuEl, caretEl, wrapEl) {
+                  function closeMenu() {
+                    resetReviewFixMenu(menuEl);
+                  }
+                  function openMenu() {
+                    document.querySelectorAll(".review-fix-pill-menu.is-open").forEach(function (el) {
+                      if (el !== menuEl) {
+                        resetReviewFixMenu(el);
+                      }
+                    });
+                    menuEl.hidden = false;
+                    menuEl.classList.add("is-open");
+                    caretEl.setAttribute("aria-expanded", "true");
+                    function place() {
+                      var r = wrapEl.getBoundingClientRect();
+                      var w = Math.max(r.width, 128);
+                      menuEl.style.position = "fixed";
+                      menuEl.style.left = r.left + "px";
+                      menuEl.style.top = r.bottom + 4 + "px";
+                      menuEl.style.width = w + "px";
+                      menuEl.style.zIndex = "100000";
+                      menuEl.style.boxSizing = "border-box";
+                    }
+                    place();
+                    requestAnimationFrame(place);
+                  }
+                  function fireAccept() {
+                    var docEl = document.scrollingElement || document.documentElement || document.body;
+                    var prevTop = docEl ? docEl.scrollTop : 0;
+                    var sess = sessions[activeSessionId];
+                    if (sess) {
+                      sess.fixApplyingIndex = idx;
+                      sess.fixApplyingAll = false;
+                    }
+                    renderSession();
+                    requestAnimationFrame(function () {
+                      if (docEl) docEl.scrollTop = prevTop;
+                    });
                     vscode.postMessage({
                       command: "applyFixes",
                       mode: "one",
                       index: idx,
+                      sessionId: activeSessionId,
+                      extraInstructions: sess && sess.extraFixInstructions ? String(sess.extraFixInstructions) : ""
+                    });
+                  }
+                  function fireReject() {
+                    vscode.postMessage({
+                      command: "rejectFinding",
+                      index: idx,
                       sessionId: activeSessionId
                     });
+                  }
+                  btnMain.onclick = function (e) {
+                    e.stopPropagation();
+                    closeMenu();
+                    fireAccept();
                   };
-                })(globalIndex);
+                  caretEl.onclick = function (e) {
+                    e.stopPropagation();
+                    e.preventDefault();
+                    if (menuEl.classList.contains("is-open")) {
+                      closeMenu();
+                    } else {
+                      openMenu();
+                    }
+                  };
+                  menuItemAcc.onclick = function (e) {
+                    e.stopPropagation();
+                    closeMenu();
+                    fireAccept();
+                  };
+                  menuItemRej.onclick = function (e) {
+                    e.stopPropagation();
+                    closeMenu();
+                    fireReject();
+                  };
+                })(globalIndex, menu, btnCaret, wrap);
               }
-              tdFix.appendChild(fixBtn2);
+              tdFix.appendChild(wrap);
             }
           }
           tr.appendChild(tdFix);
@@ -909,6 +1063,39 @@
           }
         }
         root.appendChild(doneCard);
+      }
+      if (root.querySelector(".review-findings-table")) {
+        var reportCorner = document.createElement("div");
+        reportCorner.className = "review-report-actions-corner";
+        reportCorner.appendChild(buildCaughtUpActions());
+        root.appendChild(reportCorner);
+        var liveDetails = buildCaughtUpDetails();
+        if (liveDetails) {
+          root.appendChild(liveDetails);
+        }
+      }
+      if (applyingIndex !== null && applyingIndex !== undefined) {
+        var scrollToApplyingRow = function () {
+          var domApplyingRow = root.querySelector('.review-findings-table tbody tr[data-applying-row="1"]');
+          var activeRow = domApplyingRow || root.querySelector(
+            '.review-findings-table tbody tr[data-global-index="' + String(applyingIndex) + '"]'
+          );
+          if (!activeRow) {
+            return;
+          }
+          var docEl = document.scrollingElement || document.documentElement || document.body;
+          var rr = activeRow.getBoundingClientRect();
+          var viewH = window.innerHeight || document.documentElement.clientHeight || 0;
+          var targetTop = (docEl ? docEl.scrollTop : 0) + rr.top - Math.max(120, Math.floor(viewH * 0.3));
+          if (docEl) {
+            docEl.scrollTo({ top: Math.max(0, targetTop), behavior: "smooth" });
+          }
+          if (activeRow.scrollIntoView) {
+            activeRow.scrollIntoView({ block: "center", inline: "nearest", behavior: "smooth" });
+          }
+        };
+        requestAnimationFrame(scrollToApplyingRow);
+        setTimeout(scrollToApplyingRow, 120);
       }
     }
     function renderDiff(parts) {
@@ -1090,16 +1277,17 @@
       }
       var sw = document.getElementById("stream-wrap");
       var st = document.getElementById("stream");
+      var streamHasText = s.streamText != null && String(s.streamText).length > 0;
       var streamStatusEl = sw ? sw.querySelector(".stream-status") : null;
       if (streamStatusEl) {
         streamStatusEl.textContent =
           s.endpoint === "codeReview" ? "Live review response" : "Live response stream";
       }
-      var streamHasText = s.streamText != null && String(s.streamText).length > 0;
       var showStream = !reviewCaughtUpOnly && (streamHasText || !!s.streamLive);
       if (showStream) {
         sw.classList.remove("hidden");
-        st.textContent = streamHasText ? String(s.streamText) : (s.streamLive ? "Waiting for first tokens…" : "");
+        // While the model is streaming, show an empty live area (caret in CSS) — not "waiting for tokens".
+        st.textContent = streamHasText ? String(s.streamText) : "";
         if (s.busy || s.streamLive) sw.classList.add("streaming"); else sw.classList.remove("streaming");
         sw.open = s.endpoint === "codeReview" || !!s.streamLive || !!s.streamOpen;
       } else {
@@ -1360,12 +1548,12 @@
       var q = text.trim();
       if (s.endpoint === "codeReview" && s.applyFixesExtraMode) {
         if (!q) return;
+        s.extraFixInstructions = q;
         s.applyFixesExtraMode = false;
         if (input) input.value = "";
         renderSession();
         vscode.postMessage({
-          command: "applyFixes",
-          mode: "all",
+          command: "analyzeExtraInstruction",
           sessionId: activeSessionId,
           extraInstructions: q,
         });
@@ -1419,6 +1607,12 @@
         var prev = sessions[m.sessionId] || null;
         var next = Object.assign(newSession(m.title || "Assistant result"), prev || {});
         next.title = m.title || next.title;
+        // Do not keep previous review payload; it causes a "caught up" flash before the new run starts streaming.
+        next.structuredData = null;
+        next.displayText = "";
+        next.remarks = "";
+        next.reviewFixDetailsOpen = false;
+        next.extraFixInstructions = "";
         next.busy = false;
         next.step = "";
         next.streamLive = false;

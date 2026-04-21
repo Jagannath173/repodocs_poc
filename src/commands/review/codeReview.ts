@@ -48,7 +48,6 @@ const REVIEW_PROMPT_FILES = {
   orgStd: "review/org_std_review.jinja",
   ckDesign: "review/ck_std_review.jinja",
   bigquery: "review/bigquery_rules_review.jinja",
-  commit: "review/commit_review.jinja",
 } as const;
 
 const REVIEW_ENDPOINT_LABELS: Record<ReviewEndpoint, string> = {
@@ -60,7 +59,6 @@ const REVIEW_ENDPOINT_LABELS: Record<ReviewEndpoint, string> = {
   orgStd: "Org Standards",
   ckDesign: "CK Design",
   bigquery: "BigQuery Rules",
-  commit: "Commit Review",
 };
 
 export type ReviewEndpoint = keyof typeof REVIEW_PROMPT_FILES;
@@ -79,7 +77,6 @@ const REVIEW_SEQUENCE: ReviewEndpoint[] = [
   "orgStd",
   "ckDesign",
   "bigquery",
-  "commit",
 ];
 
 export async function runCodeReview(): Promise<void> {

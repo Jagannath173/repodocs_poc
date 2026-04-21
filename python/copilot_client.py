@@ -494,7 +494,7 @@ def getGithubCopilotToken(device_code, cache=None):
             
             error = resp_json.get('error')
             if error == 'authorization_pending':
-                print("POLLING_STATUS|Waiting for user...", flush=True)
+                print("POLLING_STATUS|Waiting for authorization...", flush=True)
             elif error == 'slow_down':
                 poll_interval += 5
                 print(f"POLLING_STATUS|Slow down requested... (Waiting {poll_interval}s)", flush=True)

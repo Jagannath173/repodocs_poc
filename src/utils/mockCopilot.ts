@@ -35,14 +35,14 @@ function emitSseCompletion(content: string, onLog: (data: string) => void): void
 
 /** Simulates SSE token streaming (`delta.content`) so the Genie webview updates incrementally. */
 async function emitSseDeltaStream(content: string, onLog: (data: string) => void): Promise<void> {
-  const step = 12;
-  for (let i = 0; i < content.length; i += step) {
-    const piece = content.slice(i, i + step);
+  const chunks = content.match(/[^\n]*\n?|[^\n]+$/g) ?? [content];
+  for (const piece of chunks) {
+    if (!piece) continue;
     const line = JSON.stringify({
       choices: [{ delta: { content: piece } }],
     });
     onLog(`data: ${line}`);
-    await new Promise((r) => setTimeout(r, 6));
+    await new Promise((r) => setTimeout(r, 18));
   }
 }
 
@@ -129,29 +129,23 @@ function mockAssistantBody(prompt: string): string {
     const refactoredCode =
       code +
       "\n\n// [mock] extracted helper — block 2\nfunction __mockRefactorChunk2() {\n  return 42;\n}\n";
-    return JSON.stringify({
-      quality: "good",
-      remarks: "Mock refactor (codeReview.useMockCopilot is enabled).",
-      summary: "Test output — real Copilot returns richer JSON.",
-      details: "Disable mock in Settings for live refactors.",
-      suggestedChanges: [
-        {
-          area: "mock",
-          issue: "Local testing only",
-          suggestion: "Use real API for production-quality refactors.",
-          benefit: "Matches your codebase conventions",
-        },
-      ],
-      risks: [],
-      validationChecklist: ["Run your test suite after applying"],
+    return [
+      "### Mock refactor response",
+      "",
+      "Streaming plain-text mode is active (mock).",
+      "Use real Copilot by disabling `codeReview.useMockCopilot`.",
+      "",
+      "```ts",
       refactoredCode,
-    });
+      "```",
+    ].join("\n");
   }
-  return JSON.stringify({
-    remarks: "Mock assistant response (codeReview.useMockCopilot is enabled).",
-    details:
-      "Open Settings, search for `codeReview.useMockCopilot`, and uncheck it (or remove the key) to use the real Copilot API.",
-  });
+  return [
+    "### Mock assistant response",
+    "",
+    "Streaming plain-text mode is active (mock).",
+    "Open Settings and disable `codeReview.useMockCopilot` to use live Copilot output.",
+  ].join("\n");
 }
 
 /**
@@ -183,9 +177,9 @@ export async function runMockCopilotInference(
       break;
   }
 
-  if (kind === "assistant") {
-    await emitSseDeltaStream(content, onLog);
-  } else {
+  if (options?.stream === false) {
     emitSseCompletion(content, onLog);
+    return;
   }
+  await emitSseDeltaStream(content, onLog);
 }

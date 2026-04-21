@@ -1,5 +1,5 @@
 import * as vscode from "vscode";
-import { diffLines } from "diff";
+import { diffChars, diffLines } from "diff";
 import { revealAndHighlightAppliedFix } from "../review/postApplyHighlight";
 
 export type FixInEditorChoice = "accept" | "reject";
@@ -238,29 +238,88 @@ function getChunkMergedLineRanges(
   return map;
 }
 
-function lineNumbersForAddedInMerged(baseText: string, mergedText: string): number[] {
-  const parts = diffLines(baseText, mergedText) as unknown as DiffPart[];
-  const nums: number[] = [];
-  let line = 0;
-  for (const p of parts) {
-    if (p.removed) {
-      continue;
-    }
-    if (p.added) {
-      const n = countVisualLines(p.value);
-      for (let k = 0; k < n; k++) {
-        nums.push(line + k);
-      }
-      line += n;
-      continue;
-    }
-    line += countVisualLines(p.value);
-  }
-  return nums;
-}
-
 function normalizeReviewText(s: string): string {
   return s.replace(/\r\n/g, "\n");
+}
+
+type DiffCharsPart = { value: string; added?: boolean; removed?: boolean };
+
+/**
+ * Character-level diff (red/green): green = inserted text in merged; red = removed text shown as
+ * strikethrough "before" attachment when it is immediately replaced by added text (classic replace).
+ */
+function computeCharDiffDecorations(
+  base: string,
+  merged: string,
+  doc: vscode.TextDocument,
+  lineBelongsToActiveChunk: (line: number) => boolean
+): { addedRanges: vscode.Range[]; removedBeforeOptions: vscode.DecorationOptions[] } {
+  const parts = diffChars(base, merged) as DiffCharsPart[];
+  let mergedOffset = 0;
+  let pendingRemoved = "";
+  const addedRanges: vscode.Range[] = [];
+  const removedBeforeOptions: vscode.DecorationOptions[] = [];
+
+  const rangeTouchesChunk = (r: vscode.Range): boolean => {
+    for (let ln = r.start.line; ln <= r.end.line; ln++) {
+      if (lineBelongsToActiveChunk(ln)) {
+        return true;
+      }
+    }
+    return false;
+  };
+
+  const pushGreen = (r: vscode.Range) => {
+    if (rangeTouchesChunk(r)) {
+      addedRanges.push(r);
+    }
+  };
+
+  const truncateBefore = (s: string): string => {
+    const t = s.replace(/\r\n/g, " ↵ ");
+    return t.length > 240 ? t.slice(0, 237) + "…" : t;
+  };
+
+  for (const part of parts) {
+    if (part.removed) {
+      pendingRemoved += part.value;
+      continue;
+    }
+    if (pendingRemoved.length > 0 && part.added) {
+      const start = mergedOffset;
+      const end = mergedOffset + part.value.length;
+      const r = new vscode.Range(doc.positionAt(start), doc.positionAt(end));
+      if (rangeTouchesChunk(r)) {
+        addedRanges.push(r);
+        removedBeforeOptions.push({
+          range: r,
+          renderOptions: {
+            before: {
+              contentText: truncateBefore(pendingRemoved),
+              color: "var(--vscode-charts-red, #f14c4c)",
+              textDecoration: "line-through",
+              fontWeight: "normal",
+            },
+          },
+        });
+      }
+      pendingRemoved = "";
+      mergedOffset = end;
+      continue;
+    }
+    pendingRemoved = "";
+    if (!part.added && !part.removed) {
+      mergedOffset += part.value.length;
+    } else if (part.added) {
+      const start = mergedOffset;
+      const end = mergedOffset + part.value.length;
+      const r = new vscode.Range(doc.positionAt(start), doc.positionAt(end));
+      pushGreen(r);
+      mergedOffset = end;
+    }
+  }
+
+  return { addedRanges, removedBeforeOptions };
 }
 
 function buildMergedText(parts: DiffPart[], chunks: FixChunk[], decisions: boolean[]): string {
@@ -567,21 +626,15 @@ export async function previewFixInEditorAndWait(
   const docUri = baseDoc.uri;
   const baseNorm = normalizeReviewText(baseText);
 
-  // Green = pending diff vs original snapshot (dismissed per chunk after that block is accepted/rejected).
+  // Green = inserted characters (diffChars). Red = removed text shown as strikethrough before replaced spans.
   const decorationDiffAdded = vscode.window.createTextEditorDecorationType({
-    isWholeLine: true,
-    backgroundColor: "rgba(63, 185, 80, 0.2)",
-    border: "1px solid rgba(63, 185, 80, 0.45)",
+    backgroundColor: "rgba(63, 185, 80, 0.28)",
+    border: "1px solid rgba(63, 185, 80, 0.5)",
+    rangeBehavior: vscode.DecorationRangeBehavior.ClosedClosed,
   });
-  // Red = chunk includes removed/changed content from the original snapshot.
-  const decorationDiffRemoved = vscode.window.createTextEditorDecorationType({
-    isWholeLine: true,
-    backgroundColor: "rgba(248, 81, 73, 0.16)",
-    border: "1px solid rgba(248, 81, 73, 0.4)",
+  const decorationDiffRemovedBefore = vscode.window.createTextEditorDecorationType({
+    rangeBehavior: vscode.DecorationRangeBehavior.ClosedClosed,
   });
-
-  const buildRangesForLines = (lines: number[]): vscode.Range[] =>
-    lines.map((l) => new vscode.Range(new vscode.Position(l, 0), new vscode.Position(l, 0)));
 
   const buildCurrentMergedText = (): string => {
     return buildMergedText(mergeParts, chunks, decisions);
@@ -606,34 +659,22 @@ export async function previewFixInEditorAndWait(
       }
     }
 
-    const addedLines = lineNumbersForAddedInMerged(baseNorm, current);
-    const toHighlight = addedLines.filter((line) => {
+    const lineBelongsToActiveChunk = (line: number): boolean => {
       const cid = lineToChunk.get(line);
       if (cid === undefined) {
         return false;
       }
       return !chunkDiffDismissed[cid];
-    });
-    const removedLikeLines: number[] = [];
-    for (const c of chunks) {
-      if (chunkDiffDismissed[c.id]) {
-        continue;
-      }
-      if (!c.removedLineNumbers.length) {
-        continue;
-      }
-      const r = rangeMap.get(c.id);
-      if (!r) {
-        continue;
-      }
-      for (let li = r.startLine; li < r.endLineExclusive; li++) {
-        removedLikeLines.push(li);
-      }
-    }
-    const addedSet = new Set(toHighlight);
-    const removedLikeUnique = Array.from(new Set(removedLikeLines)).filter((line) => !addedSet.has(line));
-    currentEditor.setDecorations(decorationDiffAdded, buildRangesForLines(toHighlight));
-    currentEditor.setDecorations(decorationDiffRemoved, buildRangesForLines(removedLikeUnique));
+    };
+
+    const { addedRanges, removedBeforeOptions } = computeCharDiffDecorations(
+      baseNorm,
+      current,
+      currentEditor.document,
+      lineBelongsToActiveChunk
+    );
+    currentEditor.setDecorations(decorationDiffAdded, addedRanges);
+    currentEditor.setDecorations(decorationDiffRemovedBefore, removedBeforeOptions);
   };
 
   const applyCurrentPreviewToEditor = async (): Promise<boolean> => {
@@ -669,7 +710,7 @@ export async function previewFixInEditorAndWait(
       }
     }
     decorationDiffAdded.dispose();
-    decorationDiffRemoved.dispose();
+    decorationDiffRemovedBefore.dispose();
   };
 
   const finishWhenAllChunksDismissed = async (): Promise<void> => {
@@ -804,10 +845,7 @@ export async function previewFixInEditorAndWait(
         return;
       }
       try {
-        const ok = await applyWholeDocumentReplace(docUri, baseText);
-        if (ok) {
-          await revealEditorForUri(docUri);
-        }
+        await applyWholeDocumentReplace(docUri, baseText);
       } finally {
         finalChoiceResolver("reject");
         cleanup();

@@ -37,6 +37,7 @@ export class GeniePanelHost {
             mode?: string;
             index?: number;
             indices?: number[];
+            sessionId?: string;
             /** Set by the in-panel composer when applying with extra developer instructions (skips VS Code input box). */
             extraInstructions?: string;
           };
@@ -45,7 +46,30 @@ export class GeniePanelHost {
           const selectedIndices = Array.isArray(m.indices) ? m.indices.filter((n) => typeof n === "number") : undefined;
           const extraPassThrough =
             typeof m.extraInstructions === "string" ? m.extraInstructions : "";
-          void vscode.commands.executeCommand("codeReview.applyFixes", mode, idx, extraPassThrough, selectedIndices);
+          const sid = typeof m.sessionId === "string" ? m.sessionId : undefined;
+          const clearRowSpinner = () => {
+            if (sid) {
+              void this.panel.webview.postMessage({ type: "fixApplying", sessionId: sid, index: null });
+            }
+          };
+          void vscode.commands
+            .executeCommand("codeReview.applyFixes", mode, idx, extraPassThrough, selectedIndices)
+            .then(clearRowSpinner, clearRowSpinner);
+          return;
+        }
+        if (msg?.command === "analyzeExtraInstruction") {
+          const text =
+            typeof (msg as { extraInstructions?: string }).extraInstructions === "string"
+              ? (msg as { extraInstructions: string }).extraInstructions
+              : "";
+          void vscode.commands.executeCommand("codeReview.analyzeExtraInstruction", text);
+          return;
+        }
+        if (msg?.command === "rejectFinding") {
+          const idx = typeof (msg as { index?: number }).index === "number" ? (msg as { index: number }).index : undefined;
+          if (idx !== undefined) {
+            void vscode.commands.executeCommand("codeReview.rejectFinding", idx);
+          }
           return;
         }
         if (msg?.command === "authenticate") {
