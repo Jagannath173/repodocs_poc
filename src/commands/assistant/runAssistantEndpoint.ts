@@ -95,24 +95,102 @@ export async function runAssistantEndpoint(endpoint: AssistantEndpoint): Promise
   let lastCodeGenDelivery: "modifyCurrent" | "newFile" | undefined;
   let lastNewFileRelativePath = "";
   let lastGeneratedFiles: GeneratedFile[] = [];
+  let fixDecisionDocWatcher: vscode.Disposable | undefined;
+
+  const clearFixDecisionDocWatcher = (): void => {
+    fixDecisionDocWatcher?.dispose();
+    fixDecisionDocWatcher = undefined;
+  };
 
   panel.onFixDecisionRequested((value) => {
+    void handleFixDecision(value);
+  });
+
+  async function handleFixDecision(value: "accept" | "reject"): Promise<void> {
     if (!waitingForDecision) {
       return;
     }
-    if (value === "accept") {
-      if (endpoint === "codeGeneration" && lastCodeGenDelivery === "newFile") {
-        void createGeneratedFilesInWorkspace(lastGeneratedFiles, lastNewFileRelativePath, applyCode);
-        panel.setStatus("File(s) created.");
-      } else {
-        void applyAssistantOutput(applyCode, sourceUri, targetRange);
-        panel.setStatus("Accepted and applied.");
-      }
-    } else {
-      panel.setStatus("Suggestion rejected — no changes applied.");
-    }
     waitingForDecision = false;
-  });
+    clearFixDecisionDocWatcher();
+
+    if (value === "reject") {
+      panel.setStatus("Suggestion rejected — no changes applied.");
+      panel.setFixDecisionPhase("rejected");
+      return;
+    }
+
+    if (endpoint === "codeGeneration" && lastCodeGenDelivery === "newFile") {
+      await createGeneratedFilesInWorkspace(lastGeneratedFiles, lastNewFileRelativePath, applyCode);
+      panel.setStatus("File(s) created.");
+      panel.setFixDecisionPhase("accepted");
+      return;
+    }
+
+    const uri = sourceUri;
+    if (!uri) {
+      panel.setFixDecisionPhase("pending");
+      waitingForDecision = true;
+      panel.setStatus("No file context — cannot apply.");
+      return;
+    }
+
+    let preText: string;
+    try {
+      const preDoc = await vscode.workspace.openTextDocument(uri);
+      preText = normalizeDocText(preDoc.getText());
+    } catch {
+      panel.setFixDecisionPhase("pending");
+      waitingForDecision = true;
+      panel.setStatus("Could not read the file to apply.");
+      return;
+    }
+
+    const applied = await applyAssistantOutput(applyCode, sourceUri, targetRange);
+    if (!applied) {
+      panel.setFixDecisionPhase("pending");
+      waitingForDecision = true;
+      return;
+    }
+
+    let postText: string;
+    try {
+      const postDoc = await vscode.workspace.openTextDocument(uri);
+      postText = normalizeDocText(postDoc.getText());
+    } catch {
+      panel.setFixDecisionPhase("pending");
+      waitingForDecision = true;
+      panel.setStatus("Applied, but could not re-read the file.");
+      return;
+    }
+
+    panel.setStatus("Accepted and applied.");
+    panel.setFixDecisionPhase("accepted");
+
+    if (
+      endpoint === "codeGeneration" &&
+      lastCodeGenDelivery === "modifyCurrent" &&
+      preText !== postText
+    ) {
+      fixDecisionDocWatcher = watchFixDecisionDocument(uri, preText, postText, (phase) => {
+        panel.setFixDecisionPhase(phase);
+        waitingForDecision = phase === "pending";
+        panel.setStatus(
+          phase === "pending"
+            ? "Review the diff below, then use Accept or Reject here."
+            : "Accepted and applied."
+        );
+      });
+    }
+  }
+
+  extensionContext.subscriptions.push(
+    panel.onMessage((msg) => {
+      const m = msg as { command?: string };
+      if (m?.command === "closeSession") {
+        clearFixDecisionDocWatcher();
+      }
+    })
+  );
 
   panel.onRefineRequested(() => {
     void requestRefinementAndRegenerate();
@@ -146,6 +224,7 @@ export async function runAssistantEndpoint(endpoint: AssistantEndpoint): Promise
       }
       running = true;
       try {
+        clearFixDecisionDocWatcher();
         lastCodeGenDelivery = undefined;
         lastNewFileRelativePath = "";
         lastGeneratedFiles = [];
@@ -768,16 +847,16 @@ async function applyAssistantOutput(
   applyCode: string,
   sourceUri: vscode.Uri | undefined,
   targetRange?: vscode.Range
-): Promise<void> {
+): Promise<boolean> {
   if (!applyCode.trim()) {
     void vscode.window.showWarningMessage("No generated code available to apply.");
-    return;
+    return false;
   }
   const editor = vscode.window.activeTextEditor;
   const targetUri = sourceUri ?? editor?.document.uri;
   if (!targetUri) {
     void vscode.window.showWarningMessage("Open a file to apply assistant output.");
-    return;
+    return false;
   }
   const doc = await vscode.workspace.openTextDocument(targetUri);
   const edit = new vscode.WorkspaceEdit();
@@ -787,9 +866,56 @@ async function applyAssistantOutput(
   if (ok) {
     await revealDocumentInEditor(targetUri);
     void vscode.window.showInformationMessage("Code applied in the editor.");
-  } else {
-    void vscode.window.showErrorMessage("Could not apply assistant output to current file.");
+    return true;
   }
+  void vscode.window.showErrorMessage("Could not apply assistant output to current file.");
+  return false;
+}
+
+function normalizeDocText(text: string): string {
+  return text.replace(/\r\n/g, "\n");
+}
+
+/**
+ * When the user undoes/redoes after Accept, move the Genie row between pending (pre-accept text) and accepted (post-accept text).
+ */
+function watchFixDecisionDocument(
+  uri: vscode.Uri,
+  preAcceptText: string,
+  postAcceptText: string,
+  onPhase: (phase: "pending" | "accepted") => void
+): vscode.Disposable {
+  const preN = normalizeDocText(preAcceptText);
+  const postN = normalizeDocText(postAcceptText);
+  let debounce: ReturnType<typeof setTimeout> | undefined;
+  const flush = (doc: vscode.TextDocument): void => {
+    const cur = normalizeDocText(doc.getText());
+    if (cur === preN) {
+      onPhase("pending");
+    } else if (cur === postN) {
+      onPhase("accepted");
+    }
+  };
+  const sub = vscode.workspace.onDidChangeTextDocument((e) => {
+    if (e.document.uri.toString() !== uri.toString()) {
+      return;
+    }
+    if (debounce) {
+      clearTimeout(debounce);
+    }
+    debounce = setTimeout(() => {
+      debounce = undefined;
+      flush(e.document);
+    }, 80);
+  });
+  return vscode.Disposable.from(
+    sub,
+    new vscode.Disposable(() => {
+      if (debounce) {
+        clearTimeout(debounce);
+      }
+    })
+  );
 }
 
 async function applyRefactorWithEditorPreview(

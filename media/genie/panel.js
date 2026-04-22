@@ -87,6 +87,7 @@
         endpoint: "",
         hasCode: false,
         reviewMode: false,
+        fixDecisionPhase: "pending",
         remarks: "",
         structuredData: null,
         displayText: "",
@@ -1441,15 +1442,27 @@
         btnApply.classList.add("hidden");
         if (s.endpoint === "codeGeneration" || s.endpoint === "codeRefactor") {
           btnRefine.classList.remove("hidden");
-          btnAccept.textContent = "✓ Accept";
         } else {
           btnRefine.classList.add("hidden");
-          btnAccept.textContent = "✓ Accept";
         }
         btnAccept.classList.remove("hidden");
         btnReject.classList.remove("hidden");
-        btnReject.textContent = "✕ Reject";
-        setDecisionButtons(!!s.hasCode);
+        var fixPhase = s.fixDecisionPhase || "pending";
+        if (fixPhase === "accepted") {
+          btnAccept.textContent = "✓ Accepted";
+          btnReject.textContent = "✕ Reject";
+          btnAccept.disabled = true;
+          btnReject.disabled = true;
+        } else if (fixPhase === "rejected") {
+          btnAccept.textContent = "✓ Accept";
+          btnReject.textContent = "✕ Rejected";
+          btnAccept.disabled = true;
+          btnReject.disabled = true;
+        } else {
+          btnAccept.textContent = "✓ Accept";
+          btnReject.textContent = "✕ Reject";
+          setDecisionButtons(!!s.hasCode);
+        }
       } else {
         var showApply = !!s.hasCode && !(s.endpoint === "codeRefactor" && (s.step || "").toLowerCase().indexOf("waiting for your prompt") >= 0);
         if (showApply) btnApply.classList.remove("hidden"); else btnApply.classList.add("hidden");
@@ -1621,13 +1634,13 @@
     document.getElementById("btn-accept").addEventListener("click", function () {
       var s = sessions[activeSessionId];
       if (!s || !s.reviewMode) return;
-      setDecisionButtons(false);
+      if ((s.fixDecisionPhase || "pending") !== "pending") return;
       vscode.postMessage({ command: "fixDecision", value: "accept", sessionId: activeSessionId });
     });
     document.getElementById("btn-reject").addEventListener("click", function () {
       var s = sessions[activeSessionId];
       if (!s || !s.reviewMode) return;
-      setDecisionButtons(false);
+      if ((s.fixDecisionPhase || "pending") !== "pending") return;
       vscode.postMessage({ command: "fixDecision", value: "reject", sessionId: activeSessionId });
     });
     document.getElementById("btn-copy-auth-url").addEventListener("click", function () {
@@ -1721,6 +1734,7 @@
         next.fixApplyingIndex = null;
         next.fixApplyingAll = false;
         next.applyingCurrent = false;
+        next.fixDecisionPhase = "pending";
         sessions[m.sessionId] = next;
         activeSessionId = m.sessionId;
         renderTabs();
@@ -1768,6 +1782,13 @@
         s.applyingCurrent = false;
         s.fixApplyingIndex = null;
         s.fixApplyingAll = false;
+        s.fixDecisionPhase = "pending";
+      }
+      if (m.type === "fixDecisionPhase") {
+        var ph = m.phase;
+        if (ph === "pending" || ph === "accepted" || ph === "rejected") {
+          s.fixDecisionPhase = ph;
+        }
       }
       if (m.type === "authData") {
         s.endpoint = "authenticate";

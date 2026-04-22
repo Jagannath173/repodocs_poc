@@ -16,6 +16,7 @@ import {
   findAppliedIndicesByKeys,
   findingMatchesStoredKey,
   getStoredReviewForDocumentUri,
+  makeFindingKey,
   remapPriorAppliedIndicesToCombined,
   requestStopForDocumentUri,
   saveLastReview,
@@ -177,11 +178,27 @@ export async function runCodeReview(): Promise<void> {
   runningReviewUris.add(documentUri);
   disposeReviewPanelsForDocument(documentUri);
   const panel = new ReviewWebviewSession(extensionContext, `Review: ${fileName}`, documentUri);
-  /** Keep this run isolated so findings/report reflect current file state only. */
-  const priorStoredBeforeRun = undefined;
-  const priorAppliedKeys: string[] = [];
-  const priorAppliedKeySet = new Set<string>();
-  const priorRejectedKeySet = new Set<string>();
+  /** Carry forward applied/rejected fingerprints so a new review run does not re-list completed rows. */
+  const liveBeforeRun = getStoredReviewForDocumentUri(editor.document.uri);
+  const priorAppliedKeySet = new Set<string>(liveBeforeRun?.appliedFindingKeys ?? []);
+  if (liveBeforeRun?.findings?.length && liveBeforeRun.appliedIndices?.length) {
+    for (const idx of liveBeforeRun.appliedIndices) {
+      const f = liveBeforeRun.findings[idx];
+      if (f) {
+        priorAppliedKeySet.add(makeFindingKey(f));
+      }
+    }
+  }
+  const priorRejectedKeySet = new Set<string>(liveBeforeRun?.rejectedFindingKeys ?? []);
+  if (liveBeforeRun?.findings?.length && liveBeforeRun.rejectedIndices?.length) {
+    for (const idx of liveBeforeRun.rejectedIndices) {
+      const f = liveBeforeRun.findings[idx];
+      if (f) {
+        priorRejectedKeySet.add(makeFindingKey(f));
+      }
+    }
+  }
+  const priorAppliedKeys = Array.from(priorAppliedKeySet).sort();
 
   panel.setLoading("Running review suite…");
   let reviewRunDone = false;
@@ -345,10 +362,18 @@ export async function runCodeReview(): Promise<void> {
       }
       let skippedApplied = 0;
       let skippedRejectedOnly = 0;
-      const unseen = filtered.filter((f) => {
-        const applied = [...priorAppliedKeySet].some((sk) => findingMatchesStoredKey(f, sk));
-        return !applied;
-      });
+      const unseen: ReviewFinding[] = [];
+      for (const f of filtered) {
+        if ([...priorAppliedKeySet].some((sk) => findingMatchesStoredKey(f, sk))) {
+          skippedApplied += 1;
+          continue;
+        }
+        if ([...priorRejectedKeySet].some((sk) => findingMatchesStoredKey(f, sk))) {
+          skippedRejectedOnly += 1;
+          continue;
+        }
+        unseen.push(f);
+      }
       if (skippedApplied > 0) {
         panel.addReviewLog(`[${label}] Hidden ${skippedApplied} already-accepted finding(s).`, "info");
       }

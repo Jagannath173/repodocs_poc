@@ -9,7 +9,7 @@ type MockKind = "review" | "fix" | "gate" | "assistant";
 
 function inferMockKind(systemRole?: string): MockKind {
   const s = systemRole ?? "";
-  if (s.includes("strict relevance gate")) {
+  if (s.includes("relevance gate")) {
     return "gate";
   }
   if (s.includes("You apply a single code-review suggestion")) {

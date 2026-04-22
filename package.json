@@ -161,6 +161,11 @@
           "type": "boolean",
           "default": true,
           "markdownDescription": "When **enabled**, the extension uses built-in mock responses (no Python proxy, no Copilot API). When **disabled** or removed, requests go to the real Copilot client. For HSBC/production, leave this **off**."
+        },
+        "codeReview.envFile": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Absolute path to a `.env` file **outside** the extension (VSIX packages cannot ship secrets). Example: `C:\\\\Users\\\\me\\\\.code-review.env` or `~/.code-review.env`. If set and the file exists, Copilot Python loads it. Leave empty to use only `python/.env` next to the bundled script (dev) or your OS environment variables."
         }
       }
     }
@@ -169,7 +174,8 @@
     "vscode:prepublish": "npm run compile",
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
-    "lint": "eslint \"src/**/*.ts\""
+    "lint": "eslint \"src/**/*.ts\"",
+    "vsix": "npm run compile && vsce package"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.0",
@@ -180,7 +186,8 @@
     "@typescript-eslint/parser": "^8.5.0",
     "eslint": "^9.9.0",
     "typescript": "^5.5.4",
-    "typescript-eslint": "^8.58.2"
+    "typescript-eslint": "^8.58.2",
+    "@vscode/vsce": "^3.5.0"
   },
   "repository": {
     "type": "git",

@@ -13,6 +13,62 @@ const pipBin = (root: string, isWin: boolean) =>
 
 let ensurePythonPromise: Promise<void> | null = null;
 
+/** User-configured `.env` path (outside VSIX). `~` expands to home. Relative paths resolve from first workspace folder. */
+function resolveOptionalEnvFilePath(raw: string | undefined): string | undefined {
+  if (!raw?.trim()) {
+    return undefined;
+  }
+  let p = raw.trim();
+  if (p.startsWith("~")) {
+    const home = process.env.HOME || process.env.USERPROFILE;
+    if (!home) {
+      return undefined;
+    }
+    p = path.join(home, p.slice(1).replace(/^[\\/]/, ""));
+  }
+  if (!path.isAbsolute(p)) {
+    const wf = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    if (!wf) {
+      return undefined;
+    }
+    p = path.resolve(wf, p);
+  }
+  try {
+    const st = fs.statSync(p);
+    return st.isFile() ? p : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function buildCopilotProcessEnv(context: vscode.ExtensionContext, options?: CopilotInferenceOptions): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    PYTHONUNBUFFERED: "1",
+  };
+  const envFile = resolveOptionalEnvFilePath(vscode.workspace.getConfiguration("codeReview").get<string>("envFile"));
+  if (envFile) {
+    env.CODE_REVIEW_DOTENV_PATH = envFile;
+  }
+  const storedSessionId = context.globalState.get<string>("copilot_session_id");
+  const storedTokenOverride = context.globalState.get<string>("copilot_access_token_override");
+  if (storedSessionId) {
+    env.GITHUB_COPILOT_SESSION_ID = storedSessionId;
+  }
+  if (storedTokenOverride) {
+    env.GITHUB_COPILOT_ACCESS_TOKEN_OVERRIDE = storedTokenOverride;
+  }
+  if (options?.systemRole) {
+    env.COPILOT_SYSTEM_ROLE = options.systemRole;
+  }
+  if (options?.stream === false) {
+    env.COPILOT_STREAM = "0";
+  } else if (options?.stream === true) {
+    env.COPILOT_STREAM = "1";
+  }
+  return env;
+}
+
 /** Create venv (if needed) and install requirements. Idempotent; concurrent callers share one run. */
 export async function ensurePythonEnvironment(
   context: vscode.ExtensionContext,
@@ -96,26 +152,7 @@ export async function runCopilotInference(
   return new Promise<void>((resolve, reject) => {
     onLog(">>> Calling local Copilot proxy…");
 
-    const storedSessionId = context.globalState.get<string>("copilot_session_id");
-    const storedTokenOverride = context.globalState.get<string>("copilot_access_token_override");
-    const env: NodeJS.ProcessEnv = {
-      ...process.env,
-      PYTHONUNBUFFERED: "1",
-    };
-    if (storedSessionId) {
-      env.GITHUB_COPILOT_SESSION_ID = storedSessionId;
-    }
-    if (storedTokenOverride) {
-      env.GITHUB_COPILOT_ACCESS_TOKEN_OVERRIDE = storedTokenOverride;
-    }
-    if (options?.systemRole) {
-      env.COPILOT_SYSTEM_ROLE = options.systemRole;
-    }
-    if (options?.stream === false) {
-      env.COPILOT_STREAM = "0";
-    } else if (options?.stream === true) {
-      env.COPILOT_STREAM = "1";
-    }
+    const env = buildCopilotProcessEnv(context, options);
 
     const child = spawn(pythonPath, [scriptPath], { cwd: pythonDir, env });
     let aborted = false;
@@ -302,7 +339,8 @@ export async function authenticateCopilot(
 
   return new Promise<void>((resolve, reject) => {
     onLog(">>> Starting device sign-in…");
-    const child = spawn(pythonPath, [scriptPath, "--authenticate"], { cwd: pythonDir });
+    const env = buildCopilotProcessEnv(context);
+    const child = spawn(pythonPath, [scriptPath, "--authenticate"], { cwd: pythonDir, env });
 
     let authBuffer = "";
     let settled = false;

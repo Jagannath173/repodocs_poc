@@ -4,6 +4,16 @@
 src/**
 tsconfig.json
 eslint.config.js
+eslint.config.mjs
 **/*.map
-node_modules/**
-!node_modules/diff/**
+# Local Python venv is recreated on first run; bundling it makes the VSIX huge.
+python/venv/**
+python/**/__pycache__/**
+**/__MACOSX/**
+# Never ship secrets inside the VSIX (use Settings → Code Review: Env file path).
+.env
+.env.*
+**/.env
+**/.env.*
+python/.env
+python/copilot_token_cache.json

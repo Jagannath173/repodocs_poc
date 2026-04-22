@@ -25,7 +25,14 @@ logging.getLogger("requests").setLevel(logging.ERROR)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-load_dotenv()
+_script_dir = os.path.dirname(os.path.abspath(__file__))
+# VSIX cannot ship `.env`; the extension may set CODE_REVIEW_DOTENV_PATH to a file on disk.
+_env_from_setting = os.environ.get("CODE_REVIEW_DOTENV_PATH")
+if _env_from_setting and os.path.isfile(_env_from_setting):
+    load_dotenv(_env_from_setting, override=True)
+else:
+    load_dotenv(os.path.join(_script_dir, ".env"))
+    load_dotenv()
 
 TOKEN_CACHE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "copilot_token_cache.json")
 

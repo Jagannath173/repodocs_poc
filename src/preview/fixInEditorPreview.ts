@@ -1,5 +1,5 @@
 import * as vscode from "vscode";
-import { diffLines, diffWordsWithSpace } from "diff";
+import { diffLines } from "diff";
 import { revealAndHighlightAppliedFix } from "../review/postApplyHighlight";
 
 export type FixInEditorChoice = "accept" | "reject" | "cancelled";
@@ -9,14 +9,27 @@ const CMD_ACCEPT_CHUNK = "codeReview.fixPreview.acceptChunk";
 const CMD_REJECT_CHUNK = "codeReview.fixPreview.rejectChunk";
 const CMD_ACCEPT_ALL = "codeReview.fixPreview.acceptAllChanges";
 const CMD_REJECT_ALL = "codeReview.fixPreview.rejectAllChanges";
+const CMD_PREVIEW_PREV_BLOCK = "codeReview.fixPreview.prevBlock";
+const CMD_PREVIEW_NEXT_BLOCK = "codeReview.fixPreview.nextBlock";
+const CMD_PREVIEW_ACCEPT_CURRENT = "codeReview.fixPreview.acceptCurrentBlock";
+const CMD_PREVIEW_REJECT_CURRENT = "codeReview.fixPreview.rejectCurrentBlock";
+const CMD_PREVIEW_UNDO = "codeReview.fixPreview.undo";
+const CMD_PREVIEW_REDO = "codeReview.fixPreview.redo";
 
 type FixPreviewSessionHandlers = {
   acceptChunk: (id: number) => Promise<void>;
   rejectChunk: (id: number) => Promise<void>;
+  acceptCurrentChunk: () => Promise<void>;
+  rejectCurrentChunk: () => Promise<void>;
   acceptAll: () => Promise<void>;
   rejectAll: () => Promise<void>;
+  focusPrevPendingChunk: () => Promise<void>;
+  focusNextPendingChunk: () => Promise<void>;
+  undoInPreview: () => Promise<void>;
+  redoInPreview: () => Promise<void>;
   getChunkCount: () => number;
   getFirstPendingChunkId: () => number | undefined;
+  getPendingSummary: () => { current: number; total: number } | undefined;
   /** Populated on each CodeLens refresh: map editor line → chunk id when args are missing. */
   getChunkIdForLine: (line: number) => number | undefined;
 };
@@ -140,15 +153,43 @@ export function registerFixPreviewCommands(context: vscode.ExtensionContext): vo
     }),
     vscode.commands.registerCommand(CMD_REJECT_ALL, async () => {
       await activeFixPreviewSession?.rejectAll();
+    }),
+    vscode.commands.registerCommand(CMD_PREVIEW_PREV_BLOCK, async () => {
+      await activeFixPreviewSession?.focusPrevPendingChunk();
+    }),
+    vscode.commands.registerCommand(CMD_PREVIEW_NEXT_BLOCK, async () => {
+      await activeFixPreviewSession?.focusNextPendingChunk();
+    }),
+    vscode.commands.registerCommand(CMD_PREVIEW_ACCEPT_CURRENT, async () => {
+      await activeFixPreviewSession?.acceptCurrentChunk();
+    }),
+    vscode.commands.registerCommand(CMD_PREVIEW_REJECT_CURRENT, async () => {
+      await activeFixPreviewSession?.rejectCurrentChunk();
+    }),
+    vscode.commands.registerCommand(CMD_PREVIEW_UNDO, async () => {
+      await activeFixPreviewSession?.undoInPreview();
+    }),
+    vscode.commands.registerCommand(CMD_PREVIEW_REDO, async () => {
+      await activeFixPreviewSession?.redoInPreview();
     })
   );
 
   /** Single provider for all sessions — avoids stacked duplicate CodeLens when preview runs again. */
   context.subscriptions.push(
-    vscode.languages.registerCodeLensProvider([{ scheme: "file" }, { scheme: "untitled" }], {
-      onDidChangeCodeLenses: fixPreviewCodeLensChangeEmitter.event,
-      provideCodeLenses: (document) => provideFixPreviewCodeLenses(document),
-    })
+    vscode.languages.registerCodeLensProvider(
+      [
+        { scheme: "file" },
+        { scheme: "untitled" },
+        { scheme: "vscode-remote" },
+        { scheme: "vscode-vfs" },
+        /** Catch uncommon host schemes (e.g. some dev containers) while still returning [] for unrelated files. */
+        { pattern: "**/*" },
+      ],
+      {
+        onDidChangeCodeLenses: fixPreviewCodeLensChangeEmitter.event,
+        provideCodeLenses: (document) => provideFixPreviewCodeLenses(document),
+      }
+    )
   );
   context.subscriptions.push(fixPreviewCodeLensChangeEmitter);
 }
@@ -194,6 +235,72 @@ function clamp(n: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, n));
 }
 
+/** Avoid missing the editor on Windows when drive-letter casing or path normalization differs. */
+function documentUrisEqual(a: vscode.Uri, b: vscode.Uri): boolean {
+  if (a.scheme !== b.scheme) {
+    return false;
+  }
+  if (a.scheme === "file" && b.scheme === "file") {
+    return a.fsPath.replace(/\\/g, "/").toLowerCase() === b.fsPath.replace(/\\/g, "/").toLowerCase();
+  }
+  return a.toString() === b.toString();
+}
+
+function findTextEditorForUri(uri: vscode.Uri): vscode.TextEditor | undefined {
+  const fromVisible = vscode.window.visibleTextEditors.find((e) => documentUrisEqual(e.document.uri, uri));
+  if (fromVisible) {
+    return fromVisible;
+  }
+  const active = vscode.window.activeTextEditor;
+  if (active && documentUrisEqual(active.document.uri, uri)) {
+    return active;
+  }
+  return undefined;
+}
+
+/** Same file open in split editor / diff column — decorate every visible instance. */
+function findAllTextEditorsForUri(uri: vscode.Uri): vscode.TextEditor[] {
+  return vscode.window.visibleTextEditors.filter((e) => documentUrisEqual(e.document.uri, uri));
+}
+
+/** Match workspace document to stored preview URI (encoding / casing can differ from baseDoc.toString()). */
+function documentMatchesFixPreviewLensDoc(document: vscode.TextDocument, uriString: string): boolean {
+  if (!uriString) {
+    return false;
+  }
+  if (document.uri.toString() === uriString) {
+    return true;
+  }
+  try {
+    const parsed = vscode.Uri.parse(uriString);
+    if (parsed.scheme === "file") {
+      if (documentUrisEqual(document.uri, vscode.Uri.file(parsed.fsPath))) {
+        return true;
+      }
+    } else if (documentUrisEqual(document.uri, parsed)) {
+      return true;
+    }
+    if (document.uri.scheme === parsed.scheme && document.uri.authority === parsed.authority) {
+      const a = document.uri.path.replace(/\\/g, "/");
+      const b = parsed.path.replace(/\\/g, "/");
+      if (a === b) {
+        return true;
+      }
+      if (document.uri.scheme !== "file" && a.toLowerCase() === b.toLowerCase()) {
+        return true;
+      }
+    }
+    if (parsed.scheme === "file" && document.uri.scheme === "file") {
+      const a = document.uri.fsPath.replace(/\\/g, "/").toLowerCase();
+      const b = parsed.fsPath.replace(/\\/g, "/").toLowerCase();
+      return a.length > 0 && a === b;
+    }
+  } catch {
+    return false;
+  }
+  return false;
+}
+
 function normalizePreview(s: string, maxChars: number): string {
   const t = s.replace(/\r\n/g, "\n").replace(/\n/g, " \\n ");
   return t.length > maxChars ? t.slice(0, maxChars - 3) + "..." : t;
@@ -216,35 +323,6 @@ function countVisualLines(s: string): number {
   return s.split("\n").length;
 }
 
-function getChunkMergedLineRanges(
-  parts: DiffPart[],
-  chunks: FixChunk[],
-  decisions: boolean[]
-): Map<number, { startLine: number; endLineExclusive: number }> {
-  const startToChunk = new Map<number, FixChunk>();
-  for (const c of chunks) {
-    startToChunk.set(c.startPartIndex, c);
-  }
-  const map = new Map<number, { startLine: number; endLineExclusive: number }>();
-  let line = 0;
-  let i = 0;
-  while (i < parts.length) {
-    const c = startToChunk.get(i);
-    if (c) {
-      const text = decisions[c.id] ? c.afterRegionText : c.beforeRegionText;
-      const startLine = line;
-      const lineCount = countVisualLines(text);
-      map.set(c.id, { startLine, endLineExclusive: startLine + lineCount });
-      line += lineCount;
-      i = c.endPartIndex;
-      continue;
-    }
-    line += countVisualLines(parts[i].value);
-    i += 1;
-  }
-  return map;
-}
-
 function normalizeReviewText(s: string): string {
   return s.replace(/\r\n/g, "\n");
 }
@@ -258,141 +336,41 @@ function normalizeForMeaningfulCompare(s: string): string {
     .trim();
 }
 
-function trimCommonAffixes(before: string, after: string): { before: string; after: string } {
-  let prefix = 0;
-  const maxPrefix = Math.min(before.length, after.length);
-  while (prefix < maxPrefix && before[prefix] === after[prefix]) {
-    prefix += 1;
-  }
-
-  let suffix = 0;
-  const maxSuffix = Math.min(before.length - prefix, after.length - prefix);
-  while (
-    suffix < maxSuffix &&
-    before[before.length - 1 - suffix] === after[after.length - 1 - suffix]
-  ) {
-    suffix += 1;
-  }
-
-  return {
-    before: before.slice(prefix, before.length - suffix),
-    after: after.slice(prefix, after.length - suffix),
-  };
-}
-
-type DiffWordPart = { value: string; added?: boolean; removed?: boolean };
-
 /**
- * Word-level diff (red/green): green = inserted text in merged; red = removed text shown as
- * strikethrough "before" attachment when it is immediately replaced by added text.
- * Using word chunks avoids noisy repeated token-level highlights from char-level diffs.
+ * Stacked diff preview: full-line red for old text, full-line green for new text below it
+ * (same order as `buildStackedPreviewMergedText`). Pure insert = green only; pure delete = red only.
  */
-function computeCharDiffDecorations(
-  base: string,
-  merged: string,
-  doc: vscode.TextDocument,
-  lineBelongsToActiveChunk: (line: number) => boolean
-): {
-  addedRanges: vscode.Range[];
-  removedBeforeOptions: vscode.DecorationOptions[];
-  removedAnchorRanges: vscode.Range[];
-} {
-  const parts = diffWordsWithSpace(base, merged) as DiffWordPart[];
-  let mergedOffset = 0;
-  let pendingRemoved = "";
-  const addedRanges: vscode.Range[] = [];
+function computeLineBlockChunkDecorations(
+  mergeParts: DiffPart[],
+  chunks: FixChunk[],
+  decisions: boolean[],
+  chunkDiffDismissed: boolean[],
+  doc: vscode.TextDocument
+): { greenRanges: vscode.Range[]; removedBeforeOptions: vscode.DecorationOptions[]; removedAnchorLines: vscode.Range[] } {
+  const stacked = getChunkStackedVisualRanges(mergeParts, chunks, decisions, chunkDiffDismissed);
+  const greenRanges: vscode.Range[] = [];
   const removedBeforeOptions: vscode.DecorationOptions[] = [];
-  const removedAnchorRanges: vscode.Range[] = [];
-  const docTextLen = doc.getText().length;
+  const removedAnchorLines: vscode.Range[] = [];
 
-  const rangeTouchesChunk = (r: vscode.Range): boolean => {
-    for (let ln = r.start.line; ln <= r.end.line; ln++) {
-      if (lineBelongsToActiveChunk(ln)) {
-        return true;
-      }
-    }
-    return false;
-  };
-
-  const pushGreen = (r: vscode.Range) => {
-    if (rangeTouchesChunk(r)) {
-      addedRanges.push(r);
-    }
-  };
-
-  const truncateBefore = (s: string): string => {
-    const t = s.replace(/\r\n/g, "\n");
-    return t.length > 320 ? t.slice(0, 317) + "…" : t;
-  };
-
-  const lineAnchorRangeAtOffset = (offset: number): vscode.Range => {
-    const safe = Math.max(0, Math.min(offset, docTextLen));
-    const pos = doc.positionAt(safe);
-    const lineLen = doc.lineAt(pos.line).text.length;
-    return new vscode.Range(pos.line, 0, pos.line, lineLen);
-  };
-
-  const pushRemovedBlockAtOffset = (removedText: string, offset: number): void => {
-    const anchor = lineAnchorRangeAtOffset(offset);
-    if (!rangeTouchesChunk(anchor)) {
-      return;
-    }
-    removedAnchorRanges.push(anchor);
-    removedBeforeOptions.push({
-      range: anchor,
-      renderOptions: {
-        before: {
-          contentText: "- " + truncateBefore(removedText).replace(/\n/g, "\n- ") + "\n",
-          color: "var(--vscode-charts-red, #f14c4c)",
-          backgroundColor: "rgba(241, 76, 76, 0.24)",
-          border: "1px solid rgba(241, 76, 76, 0.55)",
-          textDecoration: "line-through",
-          fontWeight: "normal",
-        },
-      },
-    });
-  };
-
-  for (const part of parts) {
-    if (part.removed) {
-      pendingRemoved += part.value;
+  for (const c of chunks) {
+    if (chunkDiffDismissed[c.id]) {
       continue;
     }
-    if (pendingRemoved.length > 0 && part.added) {
-      const focused = trimCommonAffixes(pendingRemoved, part.value);
-      const focusedRemoved = focused.before || pendingRemoved;
-      const focusedAdded = focused.after || part.value;
-      const start = mergedOffset;
-      const end = mergedOffset + focusedAdded.length;
-      const r = new vscode.Range(doc.positionAt(start), doc.positionAt(end));
-      if (rangeTouchesChunk(r)) {
-        addedRanges.push(r);
-        pushRemovedBlockAtOffset(focusedRemoved, start);
-      }
-      pendingRemoved = "";
-      mergedOffset += part.value.length;
+    const vis = stacked.get(c.id);
+    if (!vis) {
       continue;
     }
-    if (pendingRemoved.length > 0) {
-      pushRemovedBlockAtOffset(pendingRemoved, mergedOffset);
-      pendingRemoved = "";
+    for (let li = vis.removedStartLine; li < vis.removedEndExclusive && li < doc.lineCount; li++) {
+      const len = doc.lineAt(li).text.length;
+      removedAnchorLines.push(new vscode.Range(li, 0, li, len));
     }
-    if (!part.added && !part.removed) {
-      mergedOffset += part.value.length;
-    } else if (part.added) {
-      const start = mergedOffset;
-      const end = mergedOffset + part.value.length;
-      const r = new vscode.Range(doc.positionAt(start), doc.positionAt(end));
-      pushGreen(r);
-      mergedOffset = end;
+    for (let li = vis.addedStartLine; li < vis.addedEndExclusive && li < doc.lineCount; li++) {
+      const len = doc.lineAt(li).text.length;
+      greenRanges.push(new vscode.Range(li, 0, li, len));
     }
   }
 
-  if (pendingRemoved.length > 0) {
-    pushRemovedBlockAtOffset(pendingRemoved, mergedOffset);
-  }
-
-  return { addedRanges, removedBeforeOptions, removedAnchorRanges };
+  return { greenRanges, removedBeforeOptions, removedAnchorLines };
 }
 
 function buildMergedText(parts: DiffPart[], chunks: FixChunk[], decisions: boolean[]): string {
@@ -416,6 +394,111 @@ function buildMergedText(parts: DiffPart[], chunks: FixChunk[], decisions: boole
     i += 1;
   }
   return out;
+}
+
+/** When old and new would glue without a newline, insert one in the preview so red sits above green (like VS Code’s stacked diff). */
+function stackChunkPreviewSegment(before: string, after: string): { segment: string; before: string; after: string } {
+  if (!before) {
+    return { segment: after, before: "", after };
+  }
+  if (!after) {
+    return { segment: before, before, after: "" };
+  }
+  let sep = "";
+  if (!before.endsWith("\n") && !after.startsWith("\n")) {
+    sep = "\n";
+  }
+  return { segment: before + sep + after, before, after };
+}
+
+/**
+ * Editor preview buffer only: for pending chunks, show removed text then added text (red/green blocks).
+ * Dismissed chunks use a single region like the real merge. On Accept All / finish, use `buildMergedText`, not this.
+ */
+function buildStackedPreviewMergedText(
+  parts: DiffPart[],
+  chunks: FixChunk[],
+  decisions: boolean[],
+  chunkDiffDismissed: boolean[]
+): string {
+  const startToChunk = new Map<number, number>();
+  for (const c of chunks) startToChunk.set(c.startPartIndex, c.id);
+  const idToChunk = new Map<number, FixChunk>();
+  for (const c of chunks) idToChunk.set(c.id, c);
+
+  let out = "";
+  let i = 0;
+  while (i < parts.length) {
+    const chunkId = startToChunk.get(i);
+    if (chunkId !== undefined) {
+      const c = idToChunk.get(chunkId);
+      if (!c) throw new Error("Internal error: chunk missing");
+      if (chunkDiffDismissed[c.id]) {
+        out += decisions[c.id] ? c.afterRegionText : c.beforeRegionText;
+      } else {
+        const { segment } = stackChunkPreviewSegment(c.beforeRegionText, c.afterRegionText);
+        out += segment;
+      }
+      i = c.endPartIndex;
+      continue;
+    }
+    out += parts[i].value;
+    i += 1;
+  }
+  return out;
+}
+
+type StackedChunkVisual = {
+  removedStartLine: number;
+  removedEndExclusive: number;
+  addedStartLine: number;
+  addedEndExclusive: number;
+};
+
+function getChunkStackedVisualRanges(
+  parts: DiffPart[],
+  chunks: FixChunk[],
+  decisions: boolean[],
+  chunkDiffDismissed: boolean[]
+): Map<number, StackedChunkVisual> {
+  const startToChunk = new Map<number, number>();
+  for (const c of chunks) startToChunk.set(c.startPartIndex, c.id);
+  const idToChunk = new Map<number, FixChunk>();
+  for (const c of chunks) idToChunk.set(c.id, c);
+
+  const map = new Map<number, StackedChunkVisual>();
+  let line = 0;
+  let i = 0;
+  while (i < parts.length) {
+    const chunkId = startToChunk.get(i);
+    if (chunkId !== undefined) {
+      const c = idToChunk.get(chunkId)!;
+      if (chunkDiffDismissed[c.id]) {
+        const text = decisions[c.id] ? c.afterRegionText : c.beforeRegionText;
+        line += countVisualLines(text);
+      } else {
+        const { segment, before } = stackChunkPreviewSegment(c.beforeRegionText, c.afterRegionText);
+        const nb = countVisualLines(before);
+        const total = countVisualLines(segment);
+        const remStart = line;
+        const remEnd = remStart + nb;
+        const addStart = remEnd;
+        const addEnd = remStart + total;
+        map.set(c.id, {
+          removedStartLine: remStart,
+          removedEndExclusive: remEnd,
+          addedStartLine: addStart,
+          addedEndExclusive: addEnd,
+        });
+        line = addEnd;
+      }
+      i = c.endPartIndex;
+      continue;
+    }
+    line += countVisualLines(parts[i].value);
+    i += 1;
+  }
+  return map;
 }
 
 function computeFixChunks(baseText: string, afterText: string, baseDoc: vscode.TextDocument): FixChunk[] {
@@ -542,17 +625,16 @@ async function revealEditorForUri(docUri: vscode.Uri): Promise<void> {
   await vscode.window.showTextDocument(doc, { preview: false, preserveFocus: false });
 }
 
-/**
- * Preferred line for a chunk's Accept/Reject: first line of the changed block.
- * This avoids controls appearing far below the actual changed code.
- */
-function preferredChunkLensLine(
-  r: { startLine: number; endLineExclusive: number } | undefined,
-  anchorLine: number,
-  lineCount: number
-): number {
-  if (r && r.endLineExclusive > r.startLine) {
-    return Math.max(0, Math.min(r.startLine, lineCount - 1));
+/** CodeLens on first “new” line when possible, else first removed line (delete-only). */
+function preferredStackedLensLine(vis: StackedChunkVisual | undefined, anchorLine: number, lineCount: number): number {
+  if (!vis) {
+    return Math.min(Math.max(0, anchorLine), Math.max(0, lineCount - 1));
+  }
+  if (vis.addedEndExclusive > vis.addedStartLine) {
+    return Math.max(0, Math.min(vis.addedStartLine, lineCount - 1));
+  }
+  if (vis.removedEndExclusive > vis.removedStartLine) {
+    return Math.max(0, Math.min(vis.removedStartLine, lineCount - 1));
   }
   return Math.min(Math.max(0, anchorLine), Math.max(0, lineCount - 1));
 }
@@ -583,7 +665,7 @@ type FixPreviewLensLayout = {
 
 function computeFixPreviewLensLayout(st: FixPreviewLensState, document: vscode.TextDocument): FixPreviewLensLayout {
   const { mergeParts, chunks, decisions, chunkDiffDismissed } = st;
-  const rangeMap = getChunkMergedLineRanges(mergeParts, chunks, decisions);
+  const stackedMap = getChunkStackedVisualRanges(mergeParts, chunks, decisions, chunkDiffDismissed);
   const lineCount = document.lineCount;
   const pendingGlobal = chunks.some((_, i) => !chunkDiffDismissed[i]);
   const maxChunkLineInclusive = pendingGlobal ? Math.max(0, lineCount - 2) : Math.max(0, lineCount - 1);
@@ -595,14 +677,17 @@ function computeFixPreviewLensLayout(st: FixPreviewLensState, document: vscode.T
     if (chunkDiffDismissed[c.id]) {
       continue;
     }
-    const r = rangeMap.get(c.id);
-    const preferred = preferredChunkLensLine(r, c.anchorLine, lineCount);
+    const vis = stackedMap.get(c.id);
+    const preferred = preferredStackedLensLine(vis, c.anchorLine, lineCount);
     const clampedPreferred = Math.min(preferred, maxChunkLineInclusive);
     const lensLine = allocateUniqueLensLine(clampedPreferred, usedLines, lineCount, maxChunkLineInclusive);
     chunkLensLines.push({ chunkId: c.id, lensLine });
     chunkLineIndex.set(lensLine, c.id);
-    if (r && r.endLineExclusive > r.startLine) {
-      for (let li = r.startLine; li < r.endLineExclusive; li++) {
+    if (vis) {
+      for (let li = vis.removedStartLine; li < vis.removedEndExclusive; li++) {
+        chunkLineIndex.set(li, c.id);
+      }
+      for (let li = vis.addedStartLine; li < vis.addedEndExclusive; li++) {
         chunkLineIndex.set(li, c.id);
       }
     }
@@ -612,9 +697,24 @@ function computeFixPreviewLensLayout(st: FixPreviewLensState, document: vscode.T
   return { chunkLineIndex, chunkLensLines, globalLine };
 }
 
+/** Keep `chunkLineIndex` in sync with the buffer so Accept/Reject fallbacks work before CodeLens refresh finishes. */
+function syncFixPreviewChunkLineIndexFromDocument(document: vscode.TextDocument): FixPreviewLensLayout | undefined {
+  const st = fixPreviewLensState;
+  if (!st || !documentMatchesFixPreviewLensDoc(document, st.docUri)) {
+    return undefined;
+  }
+  if (!st.chunks.length) {
+    return undefined;
+  }
+  st.chunkLineIndex.clear();
+  const layout = computeFixPreviewLensLayout(st, document);
+  layout.chunkLineIndex.forEach((v, k) => st.chunkLineIndex.set(k, v));
+  return layout;
+}
+
 function provideFixPreviewCodeLenses(document: vscode.TextDocument): vscode.CodeLens[] {
   const st = fixPreviewLensState;
-  if (!st || document.uri.toString() !== st.docUri) {
+  if (!st || !documentMatchesFixPreviewLensDoc(document, st.docUri)) {
     return [];
   }
   const { chunks } = st;
@@ -622,32 +722,35 @@ function provideFixPreviewCodeLenses(document: vscode.TextDocument): vscode.Code
     return [];
   }
 
-  st.chunkLineIndex.clear();
-  const layout = computeFixPreviewLensLayout(st, document);
-  layout.chunkLineIndex.forEach((v, k) => st.chunkLineIndex.set(k, v));
+  const layout = syncFixPreviewChunkLineIndexFromDocument(document);
+  if (!layout) {
+    return [];
+  }
 
   const lenses: vscode.CodeLens[] = [];
+  const totalBlocks = chunks.length;
 
   for (const { chunkId, lensLine } of layout.chunkLensLines) {
     const c = chunks[chunkId];
     if (!c) {
       continue;
     }
+    const blockLabel = `${chunkId + 1}/${totalBlocks}`;
     const range = new vscode.Range(new vscode.Position(lensLine, 0), new vscode.Position(lensLine, 0));
     lenses.push(
       new vscode.CodeLens(range, {
-        title: "✅ Accept",
+        title: `✅ Accept (${blockLabel})`,
         command: CMD_ACCEPT_CHUNK,
         arguments: [c.id],
-        tooltip: `Accept this change for this block.\nAdded: ${c.addedPreview}\nRemoved: ${c.removedPreview}`,
+        tooltip: `Accept change block ${blockLabel}.\nAdded: ${c.addedPreview}\nRemoved: ${c.removedPreview}`,
       })
     );
     lenses.push(
       new vscode.CodeLens(range, {
-        title: "❌ Reject",
+        title: `❌ Reject (${blockLabel})`,
         command: CMD_REJECT_CHUNK,
         arguments: [c.id],
-        tooltip: `Reject this block (keep original).\nKeep: ${c.removedPreview}\nDiscard: ${c.addedPreview}`,
+        tooltip: `Reject block ${blockLabel} (keep original).\nKeep: ${c.removedPreview}\nDiscard: ${c.addedPreview}`,
       })
     );
   }
@@ -691,17 +794,7 @@ export async function previewFixInEditorAndWait(
     return "accept";
   }
 
-  /** Keep document text unchanged in length; no artificial trailing blank lines. */
-  const padTailNewlines = 0;
   const appendFixPreviewPad = (merged: string): string => merged.replace(/\r\n/g, "\n");
-  const stripFixPreviewPad = (docText: string): string => {
-    const t = docText.replace(/\r\n/g, "\n");
-    if (padTailNewlines <= 0) {
-      return t;
-    }
-    const suffix = "\n".repeat(padTailNewlines);
-    return t.endsWith(suffix) ? t.slice(0, -padTailNewlines) : t;
-  };
 
   const decisions = chunks.map(() => true); // default: accept all chunks
   /** After Accept/Reject on a block, stop highlighting that block (user confirmed). */
@@ -710,99 +803,220 @@ export async function previewFixInEditorAndWait(
   const mergeParts = diffLines(baseText, afterText) as unknown as DiffPart[];
 
   const docUri = baseDoc.uri;
-  const baseNorm = normalizeReviewText(baseText);
 
-  // Green = inserted characters (diffChars). Red = removed text shown as strikethrough before replaced spans.
-  const decorationDiffAdded = vscode.window.createTextEditorDecorationType({
-    backgroundColor: "rgba(63, 185, 80, 0.36)",
-    border: "1px solid rgba(63, 185, 80, 0.62)",
-    isWholeLine: false,
-    overviewRulerColor: "rgba(63, 185, 80, 0.95)",
+  // Stacked diff: dark green = new lines, dark red = old lines (similar to VS Code inline diff).
+  const decorationAddedLine = vscode.window.createTextEditorDecorationType({
+    isWholeLine: true,
+    backgroundColor: "rgba(30, 120, 55, 0.42)",
+    border: "1px solid rgba(56, 170, 95, 0.78)",
+    overviewRulerColor: "#238636",
     overviewRulerLane: vscode.OverviewRulerLane.Right,
     rangeBehavior: vscode.DecorationRangeBehavior.ClosedClosed,
   });
-  const decorationChangedBlock = vscode.window.createTextEditorDecorationType({
+  /** Removed / old lines in stacked preview (full line above the green addition). */
+  const decorationRemovedAnchorLine = vscode.window.createTextEditorDecorationType({
     isWholeLine: true,
-    backgroundColor: "rgba(56, 139, 253, 0.10)",
-    borderWidth: "0 0 0 2px",
+    backgroundColor: "rgba(110, 22, 32, 0.52)",
+    borderWidth: "0 0 0 3px",
     borderStyle: "solid",
-    borderColor: "rgba(56, 139, 253, 0.70)",
-    overviewRulerColor: "rgba(56, 139, 253, 0.95)",
-    overviewRulerLane: vscode.OverviewRulerLane.Full,
+    borderColor: "rgba(200, 65, 75, 0.88)",
+    overviewRulerColor: "#da3633",
+    overviewRulerLane: vscode.OverviewRulerLane.Left,
     rangeBehavior: vscode.DecorationRangeBehavior.ClosedClosed,
   });
-  const decorationRemovedAnchor = vscode.window.createTextEditorDecorationType({
-    isWholeLine: true,
-    backgroundColor: "rgba(241, 76, 76, 0.10)",
-    borderWidth: "0 0 0 2px",
-    borderStyle: "solid",
-    borderColor: "rgba(241, 76, 76, 0.65)",
-    overviewRulerColor: "rgba(241, 76, 76, 0.95)",
-    overviewRulerLane: vscode.OverviewRulerLane.Full,
-    rangeBehavior: vscode.DecorationRangeBehavior.ClosedClosed,
-  });
-  const decorationDiffRemovedBefore = vscode.window.createTextEditorDecorationType({
+  /** Red strikethrough block + overview-ruler marker (left lane) for each removal anchor line. */
+  const decorationRemovedBefore = vscode.window.createTextEditorDecorationType({
+    overviewRulerColor: "#f85149",
+    overviewRulerLane: vscode.OverviewRulerLane.Left,
     rangeBehavior: vscode.DecorationRangeBehavior.ClosedClosed,
   });
 
+  /** Final on-disk / accepted file content (not the stacked preview). */
   const buildCurrentMergedText = (): string => {
     return buildMergedText(mergeParts, chunks, decisions);
   };
 
-  const updateDecorations = (): void => {
-    const currentEditor = vscode.window.visibleTextEditors.find((e) => e.document.uri.toString() === baseDoc.uri.toString());
-    if (!currentEditor) {
+  /** What the editor shows: old lines then new lines per pending chunk (red / green). */
+  const buildCurrentStackedPreviewText = (): string => {
+    return buildStackedPreviewMergedText(mergeParts, chunks, decisions, chunkDiffDismissed);
+  };
+
+  let focusedPendingChunkId: number | undefined = chunks[0]?.id;
+
+  const getPendingChunkIds = (): number[] => chunks.filter((c) => !chunkDiffDismissed[c.id]).map((c) => c.id);
+
+  const ensureFocusedPendingChunk = (): number | undefined => {
+    const pending = getPendingChunkIds();
+    if (!pending.length) {
+      focusedPendingChunkId = undefined;
+      return undefined;
+    }
+    if (focusedPendingChunkId !== undefined && pending.includes(focusedPendingChunkId)) {
+      return focusedPendingChunkId;
+    }
+    focusedPendingChunkId = pending[0];
+    return focusedPendingChunkId;
+  };
+
+  const getPendingSummary = (): { current: number; total: number } | undefined => {
+    const pending = getPendingChunkIds();
+    if (!pending.length) {
+      return undefined;
+    }
+    const focused = ensureFocusedPendingChunk();
+    if (focused === undefined) {
+      return undefined;
+    }
+    const idx = pending.indexOf(focused);
+    if (idx < 0) {
+      return undefined;
+    }
+    return { current: idx + 1, total: pending.length };
+  };
+
+  const revealPendingChunk = async (chunkId: number | undefined): Promise<void> => {
+    if (chunkId === undefined) {
       return;
     }
-
-    const current = normalizeReviewText(stripFixPreviewPad(currentEditor.document.getText()));
-    const rangeMap = getChunkMergedLineRanges(mergeParts, chunks, decisions);
-    const lineToChunk = new Map<number, number>();
-    for (const c of chunks) {
-      const r = rangeMap.get(c.id);
-      if (!r) {
-        continue;
-      }
-      for (let li = r.startLine; li < r.endLineExclusive; li++) {
-        lineToChunk.set(li, c.id);
-      }
+    const currentDoc = await vscode.workspace.openTextDocument(docUri);
+    const editor = await vscode.window.showTextDocument(currentDoc, { preview: false, preserveFocus: false });
+    const stackedMap = getChunkStackedVisualRanges(mergeParts, chunks, decisions, chunkDiffDismissed);
+    const vis = stackedMap.get(chunkId);
+    if (!vis) {
+      return;
     }
-
-    const lineBelongsToActiveChunk = (line: number): boolean => {
-      const cid = lineToChunk.get(line);
-      if (cid === undefined) {
-        return false;
-      }
-      // Keep diff coloring tied to actual content changes, not to whether a row button
-      // was already clicked. This preserves highlighting on undo/redo while preview is open.
-      return cid >= 0;
-    };
-
-    const { addedRanges, removedBeforeOptions, removedAnchorRanges } = computeCharDiffDecorations(
-      baseNorm,
-      current,
-      currentEditor.document,
-      lineBelongsToActiveChunk
+    const hasRem = vis.removedEndExclusive > vis.removedStartLine;
+    const hasAdd = vis.addedEndExclusive > vis.addedStartLine;
+    if (!hasRem && !hasAdd) {
+      return;
+    }
+    const startLine = clamp(
+      hasRem ? vis.removedStartLine : vis.addedStartLine,
+      0,
+      Math.max(0, editor.document.lineCount - 1)
     );
-    const changedBlockRanges: vscode.Range[] = [];
-    for (const c of chunks) {
-      const r = rangeMap.get(c.id);
-      if (!r || r.endLineExclusive <= r.startLine) {
-        continue;
-      }
-      const startLine = Math.max(0, Math.min(r.startLine, currentEditor.document.lineCount - 1));
-      const endLine = Math.max(0, Math.min(r.endLineExclusive - 1, currentEditor.document.lineCount - 1));
-      const endChar = currentEditor.document.lineAt(endLine).text.length;
-      changedBlockRanges.push(new vscode.Range(startLine, 0, endLine, endChar));
+    const endLine = clamp(
+      Math.max(
+        hasRem ? vis.removedEndExclusive - 1 : vis.addedStartLine,
+        hasAdd ? vis.addedEndExclusive - 1 : vis.removedStartLine
+      ),
+      startLine,
+      Math.max(0, editor.document.lineCount - 1)
+    );
+    const endChar = editor.document.lineAt(endLine).text.length;
+    const range = new vscode.Range(startLine, 0, endLine, endChar);
+    editor.selection = new vscode.Selection(startLine, 0, startLine, 0);
+    editor.revealRange(range, vscode.TextEditorRevealType.InCenter);
+  };
+
+  const statusPager = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 90);
+  statusPager.command = CMD_PREVIEW_NEXT_BLOCK;
+  const statusPrev = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 89);
+  statusPrev.text = "$(chevron-left) Fix Prev";
+  statusPrev.tooltip = "Focus previous pending fix block";
+  statusPrev.command = CMD_PREVIEW_PREV_BLOCK;
+  const statusNext = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 88);
+  statusNext.text = "$(chevron-right) Fix Next";
+  statusNext.tooltip = "Focus next pending fix block";
+  statusNext.command = CMD_PREVIEW_NEXT_BLOCK;
+  const statusAccept = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 87);
+  statusAccept.text = "$(check) Fix Accept";
+  statusAccept.tooltip = "Accept focused fix block";
+  statusAccept.command = CMD_PREVIEW_ACCEPT_CURRENT;
+  const statusReject = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 86);
+  statusReject.text = "$(close) Fix Reject";
+  statusReject.tooltip = "Reject focused fix block";
+  statusReject.command = CMD_PREVIEW_REJECT_CURRENT;
+  const statusUndo = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 85);
+  statusUndo.text = "$(discard) Fix Undo";
+  statusUndo.tooltip = "Undo inside fix preview";
+  statusUndo.command = CMD_PREVIEW_UNDO;
+  const statusRedo = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 84);
+  statusRedo.text = "$(redo) Fix Redo";
+  statusRedo.tooltip = "Redo inside fix preview";
+  statusRedo.command = CMD_PREVIEW_REDO;
+
+  const updateStatusUi = (): void => {
+    const pending = getPendingSummary();
+    if (!pending) {
+      statusPager.hide();
+      statusPrev.hide();
+      statusNext.hide();
+      statusAccept.hide();
+      statusReject.hide();
+      statusUndo.hide();
+      statusRedo.hide();
+      return;
     }
-    currentEditor.setDecorations(decorationChangedBlock, changedBlockRanges);
-    currentEditor.setDecorations(decorationDiffAdded, addedRanges);
-    currentEditor.setDecorations(decorationRemovedAnchor, removedAnchorRanges);
-    currentEditor.setDecorations(decorationDiffRemovedBefore, removedBeforeOptions);
+    statusPager.text = `$(diff) Fix ${pending.current}/${pending.total}`;
+    statusPager.tooltip = "Focused pending change block";
+    statusPager.show();
+    statusPrev.show();
+    statusNext.show();
+    statusAccept.show();
+    statusReject.show();
+    statusUndo.show();
+    statusRedo.show();
+  };
+
+  const applyDecorationsToEditor = (currentEditor: vscode.TextEditor): void => {
+    const { greenRanges, removedBeforeOptions, removedAnchorLines } = computeLineBlockChunkDecorations(
+      mergeParts,
+      chunks,
+      decisions,
+      chunkDiffDismissed,
+      currentEditor.document
+    );
+    currentEditor.setDecorations(decorationAddedLine, greenRanges);
+    currentEditor.setDecorations(decorationRemovedAnchorLine, removedAnchorLines);
+    currentEditor.setDecorations(decorationRemovedBefore, removedBeforeOptions);
+    updateStatusUi();
+  };
+
+  const updateDecorationsAsync = async (): Promise<void> => {
+    const matching = findAllTextEditorsForUri(docUri);
+    if (matching.length > 0) {
+      for (const ed of matching) {
+        applyDecorationsToEditor(ed);
+      }
+      return;
+    }
+    try {
+      const d = await vscode.workspace.openTextDocument(docUri);
+      const currentEditor = await vscode.window.showTextDocument(d, { preview: false, preserveFocus: true });
+      applyDecorationsToEditor(currentEditor);
+    } catch {
+      updateStatusUi();
+    }
+  };
+
+  let decorationRefreshTimer: ReturnType<typeof setTimeout> | undefined;
+  const scheduleUpdateDecorations = (): void => {
+    if (decorationRefreshTimer !== undefined) {
+      clearTimeout(decorationRefreshTimer);
+    }
+    decorationRefreshTimer = setTimeout(() => {
+      decorationRefreshTimer = undefined;
+      void updateDecorationsAsync();
+    }, 0);
+  };
+
+  /** First paint after preview opens can miss the editor; retry a few times so green/red + CodeLens stay in sync. */
+  const runInitialDecorationPasses = (): void => {
+    void updateDecorationsAsync();
+    refreshLenses();
+    setTimeout(() => {
+      void updateDecorationsAsync();
+      refreshLenses();
+    }, 50);
+    setTimeout(() => {
+      void updateDecorationsAsync();
+      refreshLenses();
+    }, 200);
   };
 
   const applyCurrentPreviewToEditor = async (): Promise<boolean> => {
-    const mergedText = appendFixPreviewPad(buildCurrentMergedText());
+    const mergedText = appendFixPreviewPad(buildCurrentStackedPreviewText());
     const ok = await applyWholeDocumentReplace(docUri, mergedText);
     if (ok) {
       await revealEditorForUri(docUri);
@@ -815,7 +1029,14 @@ export async function previewFixInEditorAndWait(
     finalChoiceResolver = resolve;
   });
   let resolved = false;
-  let actionInFlight = false;
+  /** Serialize preview actions so rapid CodeLens clicks queue instead of being dropped. */
+  let previewOpQueue: Promise<void> = Promise.resolve();
+
+  const enqueuePreviewOp = (fn: () => Promise<void>): Promise<void> => {
+    const task = previewOpQueue.then(() => fn());
+    previewOpQueue = task.catch(() => {});
+    return task;
+  };
 
   const cleanupCallbacks: Array<() => void> = [];
   const cleanup = () => {
@@ -834,10 +1055,16 @@ export async function previewFixInEditorAndWait(
         // ignore
       }
     }
-    decorationDiffAdded.dispose();
-    decorationChangedBlock.dispose();
-    decorationRemovedAnchor.dispose();
-    decorationDiffRemovedBefore.dispose();
+    decorationAddedLine.dispose();
+    decorationRemovedAnchorLine.dispose();
+    decorationRemovedBefore.dispose();
+    statusPager.dispose();
+    statusPrev.dispose();
+    statusNext.dispose();
+    statusAccept.dispose();
+    statusReject.dispose();
+    statusUndo.dispose();
+    statusRedo.dispose();
   };
 
   const finishWhenAllChunksDismissed = async (): Promise<void> => {
@@ -864,12 +1091,25 @@ export async function previewFixInEditorAndWait(
     cleanup();
   };
 
+  /** CodeLens providers must signal `onDidChangeCodeLenses`; the editor refresh alone is not always enough after undo/redo. */
   const refreshLenses = (): void => {
+    fixPreviewCodeLensChangeEmitter.fire();
     try {
       void vscode.commands.executeCommand("editor.action.codeLens.refresh");
     } catch {
       // ignore
     }
+  };
+
+  let lensRefreshTimer: ReturnType<typeof setTimeout> | undefined;
+  const scheduleRefreshLensesDebounced = (): void => {
+    if (lensRefreshTimer !== undefined) {
+      clearTimeout(lensRefreshTimer);
+    }
+    lensRefreshTimer = setTimeout(() => {
+      lensRefreshTimer = undefined;
+      refreshLenses();
+    }, 45);
   };
 
   const chunkLineIndex = new Map<number, number>();
@@ -892,23 +1132,125 @@ export async function previewFixInEditorAndWait(
       }
       return undefined;
     },
+    getPendingSummary: () => getPendingSummary(),
     getChunkIdForLine: (line: number) => fixPreviewLensState?.chunkLineIndex.get(line),
-    acceptChunk: async (chunkId: number) => {
-      if (resolved) return;
-      if (actionInFlight) return;
-      if (chunkId < 0 || chunkId >= decisions.length) return;
-      if (chunkDiffDismissed[chunkId]) {
-        const fallback = chunkDiffDismissed.findIndex((d) => !d);
-        if (fallback < 0) {
-          await finishWhenAllChunksDismissed();
+    focusPrevPendingChunk: async () => {
+      const pending = getPendingChunkIds();
+      if (!pending.length) {
+        return;
+      }
+      const focused = ensureFocusedPendingChunk();
+      const idx = Math.max(0, pending.indexOf(focused ?? pending[0]));
+      focusedPendingChunkId = pending[(idx - 1 + pending.length) % pending.length];
+      updateStatusUi();
+      await revealPendingChunk(focusedPendingChunkId);
+    },
+    focusNextPendingChunk: async () => {
+      const pending = getPendingChunkIds();
+      if (!pending.length) {
+        return;
+      }
+      const focused = ensureFocusedPendingChunk();
+      const idx = Math.max(0, pending.indexOf(focused ?? pending[0]));
+      focusedPendingChunkId = pending[(idx + 1) % pending.length];
+      updateStatusUi();
+      await revealPendingChunk(focusedPendingChunkId);
+    },
+    acceptCurrentChunk: async () => {
+      const id = ensureFocusedPendingChunk();
+      if (id === undefined) {
+        return;
+      }
+      await activeFixPreviewSession?.acceptChunk(id);
+    },
+    rejectCurrentChunk: async () => {
+      const id = ensureFocusedPendingChunk();
+      if (id === undefined) {
+        return;
+      }
+      await activeFixPreviewSession?.rejectChunk(id);
+    },
+    undoInPreview: async () => {
+      let ed = findTextEditorForUri(docUri);
+      if (!ed) {
+        try {
+          const d = await vscode.workspace.openTextDocument(docUri);
+          ed = await vscode.window.showTextDocument(d, { preview: false, preserveFocus: false });
+        } catch {
           return;
         }
-        chunkId = fallback;
+      } else {
+        await vscode.window.showTextDocument(ed.document, {
+          viewColumn: ed.viewColumn ?? vscode.ViewColumn.Active,
+          preview: false,
+          preserveFocus: false,
+        });
       }
-      actionInFlight = true;
-      try {
+      await vscode.commands.executeCommand("undo");
+      const docAfter = await vscode.workspace.openTextDocument(docUri);
+      if (fixPreviewLensState) {
+        fixPreviewLensState.docUri = docAfter.uri.toString();
+      }
+      syncFixPreviewChunkLineIndexFromDocument(docAfter);
+      scheduleUpdateDecorations();
+      refreshLenses();
+      setTimeout(() => {
+        void updateDecorationsAsync();
+        refreshLenses();
+      }, 50);
+      setTimeout(() => {
+        void updateDecorationsAsync();
+        refreshLenses();
+      }, 160);
+    },
+    redoInPreview: async () => {
+      let ed = findTextEditorForUri(docUri);
+      if (!ed) {
+        try {
+          const d = await vscode.workspace.openTextDocument(docUri);
+          ed = await vscode.window.showTextDocument(d, { preview: false, preserveFocus: false });
+        } catch {
+          return;
+        }
+      } else {
+        await vscode.window.showTextDocument(ed.document, {
+          viewColumn: ed.viewColumn ?? vscode.ViewColumn.Active,
+          preview: false,
+          preserveFocus: false,
+        });
+      }
+      await vscode.commands.executeCommand("redo");
+      const docAfter = await vscode.workspace.openTextDocument(docUri);
+      if (fixPreviewLensState) {
+        fixPreviewLensState.docUri = docAfter.uri.toString();
+      }
+      syncFixPreviewChunkLineIndexFromDocument(docAfter);
+      scheduleUpdateDecorations();
+      refreshLenses();
+      setTimeout(() => {
+        void updateDecorationsAsync();
+        refreshLenses();
+      }, 50);
+      setTimeout(() => {
+        void updateDecorationsAsync();
+        refreshLenses();
+      }, 160);
+    },
+    acceptChunk: async (chunkId: number) => {
+      await enqueuePreviewOp(async () => {
+        if (resolved) return;
+        if (chunkId < 0 || chunkId >= decisions.length) return;
+        if (chunkDiffDismissed[chunkId]) {
+          const fallback = chunkDiffDismissed.findIndex((d) => !d);
+          if (fallback < 0) {
+            await finishWhenAllChunksDismissed();
+            return;
+          }
+          chunkId = fallback;
+        }
         decisions[chunkId] = true;
         chunkDiffDismissed[chunkId] = true;
+        focusedPendingChunkId = ensureFocusedPendingChunk();
         const ok = await applyCurrentPreviewToEditor();
         if (!ok) {
           chunkDiffDismissed[chunkId] = false;
@@ -917,30 +1259,28 @@ export async function previewFixInEditorAndWait(
           );
           return;
         }
-        updateDecorations();
-        fixPreviewCodeLensChangeEmitter.fire();
+        const docAfter = await vscode.workspace.openTextDocument(docUri);
+        syncFixPreviewChunkLineIndexFromDocument(docAfter);
+        scheduleUpdateDecorations();
         refreshLenses();
         await finishWhenAllChunksDismissed();
-      } finally {
-        actionInFlight = false;
-      }
+      });
     },
     rejectChunk: async (chunkId: number) => {
-      if (resolved) return;
-      if (actionInFlight) return;
-      if (chunkId < 0 || chunkId >= decisions.length) return;
-      if (chunkDiffDismissed[chunkId]) {
-        const fallback = chunkDiffDismissed.findIndex((d) => !d);
-        if (fallback < 0) {
-          await finishWhenAllChunksDismissed();
-          return;
+      await enqueuePreviewOp(async () => {
+        if (resolved) return;
+        if (chunkId < 0 || chunkId >= decisions.length) return;
+        if (chunkDiffDismissed[chunkId]) {
+          const fallback = chunkDiffDismissed.findIndex((d) => !d);
+          if (fallback < 0) {
+            await finishWhenAllChunksDismissed();
+            return;
+          }
+          chunkId = fallback;
         }
-        chunkId = fallback;
-      }
-      actionInFlight = true;
-      try {
         decisions[chunkId] = false;
         chunkDiffDismissed[chunkId] = true;
+        focusedPendingChunkId = ensureFocusedPendingChunk();
         const ok = await applyCurrentPreviewToEditor();
         if (!ok) {
           chunkDiffDismissed[chunkId] = false;
@@ -949,51 +1289,54 @@ export async function previewFixInEditorAndWait(
           );
           return;
         }
-        updateDecorations();
-        fixPreviewCodeLensChangeEmitter.fire();
+        const docAfter = await vscode.workspace.openTextDocument(docUri);
+        syncFixPreviewChunkLineIndexFromDocument(docAfter);
+        scheduleUpdateDecorations();
         refreshLenses();
         await finishWhenAllChunksDismissed();
-      } finally {
-        actionInFlight = false;
-      }
+      });
     },
     acceptAll: async () => {
-      if (resolved) return;
-      try {
-        for (let i = 0; i < decisions.length; i++) {
-          decisions[i] = true;
-          chunkDiffDismissed[i] = true;
+      await enqueuePreviewOp(async () => {
+        if (resolved) return;
+        try {
+          for (let i = 0; i < decisions.length; i++) {
+            decisions[i] = true;
+            chunkDiffDismissed[i] = true;
+          }
+          const mergedText = buildCurrentMergedText();
+          const ok = await applyWholeDocumentReplace(docUri, mergedText);
+          if (ok) {
+            await revealEditorForUri(docUri);
+            await revealAndHighlightAppliedFix(docUri, baseText, mergedText);
+          }
+          if (!ok) {
+            finalChoiceResolver("cancelled");
+          } else {
+            finalChoiceResolver("accept");
+          }
+        } finally {
+          cleanup();
         }
-        const mergedText = buildCurrentMergedText();
-        const ok = await applyWholeDocumentReplace(docUri, mergedText);
-        if (ok) {
-          await revealEditorForUri(docUri);
-          await revealAndHighlightAppliedFix(docUri, baseText, mergedText);
-        }
-        if (!ok) {
-          finalChoiceResolver("cancelled");
-        } else {
-          finalChoiceResolver("accept");
-        }
-      } finally {
-        cleanup();
-      }
+      });
     },
     rejectAll: async () => {
-      if (resolved) return;
-      try {
-        const ok = await applyWholeDocumentReplace(docUri, baseText);
-        if (ok) {
-          await revealEditorForUri(docUri);
+      await enqueuePreviewOp(async () => {
+        if (resolved) return;
+        try {
+          const ok = await applyWholeDocumentReplace(docUri, baseText);
+          if (ok) {
+            await revealEditorForUri(docUri);
+          }
+          if (!ok) {
+            finalChoiceResolver("cancelled");
+          } else {
+            finalChoiceResolver("reject");
+          }
+        } finally {
+          cleanup();
         }
-        if (!ok) {
-          finalChoiceResolver("cancelled");
-        } else {
-          finalChoiceResolver("reject");
-        }
-      } finally {
-        cleanup();
-      }
+      });
     },
   };
   activeFixPreviewCancellation = {
@@ -1015,15 +1358,35 @@ export async function previewFixInEditorAndWait(
     if (resolved) {
       return;
     }
-    if (e.document.uri.toString() !== docUri.toString()) {
+    if (!documentUrisEqual(e.document.uri, docUri)) {
       return;
     }
-    updateDecorations();
+    if (fixPreviewLensState) {
+      fixPreviewLensState.docUri = e.document.uri.toString();
+    }
+    syncFixPreviewChunkLineIndexFromDocument(e.document);
+    scheduleUpdateDecorations();
+    if (e.reason === vscode.TextDocumentChangeReason.Undo || e.reason === vscode.TextDocumentChangeReason.Redo) {
+      refreshLenses();
+    } else {
+      scheduleRefreshLensesDebounced();
+    }
   });
   cleanupCallbacks.push(() => docChangeSub.dispose());
+  cleanupCallbacks.push(() => updateStatusUi());
+  cleanupCallbacks.push(() => {
+    if (decorationRefreshTimer !== undefined) {
+      clearTimeout(decorationRefreshTimer);
+      decorationRefreshTimer = undefined;
+    }
+    if (lensRefreshTimer !== undefined) {
+      clearTimeout(lensRefreshTimer);
+      lensRefreshTimer = undefined;
+    }
+  });
 
   // Reveal the target file so the lenses are visible.
-  const existingEditor = vscode.window.visibleTextEditors.find((e) => e.document.uri.toString() === baseDoc.uri.toString());
+  const existingEditor = findTextEditorForUri(docUri);
   const preferredColumn =
     existingEditor?.viewColumn ??
     vscode.window.visibleTextEditors[0]?.viewColumn ??
@@ -1035,12 +1398,16 @@ export async function previewFixInEditorAndWait(
     preserveFocus: false,
   });
 
-  const initialOk = await applyWholeDocumentReplace(docUri, appendFixPreviewPad(buildCurrentMergedText()));
+  const initialOk = await applyWholeDocumentReplace(docUri, appendFixPreviewPad(buildCurrentStackedPreviewText()));
   if (initialOk) {
     await revealEditorForUri(docUri);
     /** Scroll/center on the proposed changes as soon as the preview buffer is written (Fix / fix-all steps). */
     const snapDoc = await vscode.workspace.openTextDocument(docUri);
-    const proposedNorm = normalizeReviewText(stripFixPreviewPad(snapDoc.getText()));
+    if (fixPreviewLensState) {
+      fixPreviewLensState.docUri = snapDoc.uri.toString();
+    }
+    syncFixPreviewChunkLineIndexFromDocument(snapDoc);
+    const proposedNorm = normalizeReviewText(buildCurrentMergedText());
     await revealAndHighlightAppliedFix(docUri, baseText, proposedNorm);
   } else {
     void vscode.window.showWarningMessage(
@@ -1050,7 +1417,9 @@ export async function previewFixInEditorAndWait(
     cleanup();
     return finalChoicePromise;
   }
-  updateDecorations();
+  runInitialDecorationPasses();
+  await revealPendingChunk(ensureFocusedPendingChunk());
+  scheduleUpdateDecorations();
 
   // Ensure lenses are refreshed immediately (important when code lenses are registered dynamically).
   refreshLenses();

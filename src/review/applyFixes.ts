@@ -49,15 +49,18 @@ Rules:
 - Follow "Additional instructions from the developer" when present (they were already verified as related to this task).
 - Do not add commentary outside the JSON object.`;
 
-/** Pre-flight when the user types optional extra instructions: reject clearly off-topic prompts before spending a full fix call. */
-const EXTRA_INSTRUCTION_GATE_SYSTEM_ROLE = `strict relevance gate — reply with JSON only, no markdown fences.
-You decide whether the user's "Developer additional instruction" is meaningfully related to the review finding and the code excerpt (same task, file, language, security/style intent, or a plausible way to implement that finding).
-Set relevant to false only when the instruction is clearly unrelated (wrong domain, nonsense, unrelated product, jokes, personal topics, or asks for changes that cannot apply to this file/finding).
-If the connection is weak but still about code, tests, style, or this finding, set relevant to true.
+/** Pre-flight when the user types optional extra instructions. Biased toward allowing generation when there is any plausible link to the file or codebase. */
+const EXTRA_INSTRUCTION_GATE_SYSTEM_ROLE = `Extra-instruction relevance gate — reply with JSON only, no markdown fences.
+Decide whether the developer's additional instruction has ANY plausible link to: this source file, the review finding, the workspace/repo context, other project files, the language or stack, tests, security, performance, style, refactoring, docs, or keeping consistency with existing code.
+
+IMPORTANT — default to allowing work: use {"relevant": true} whenever the request could reasonably be answered in the context of this code or software engineering. Only use {"relevant": false} when the instruction is clearly not about building or maintaining software (for example: unrelated hobbies, unrelated business domain with no code angle, recipes, pure chat/social content) with no credible tie to the file, finding, or codebase hints provided.
+
+Vague or broad asks ("improve this", "harden", "add validation", "follow team standards", "check cross-cutting concerns") still count as relevant.
+
 Output shape: {"relevant": true} or {"relevant": false, "briefReason": "<one short sentence>"}`;
 
 const EXTRA_INSTRUCTION_ANALYSIS_SYSTEM_ROLE = `You are a senior code reviewer assistant.
-Analyze the developer's extra instruction against the reviewed file and findings.
+Analyze the developer's extra instruction against the reviewed file, the findings, and the workspace/codebase hints provided.
 Respond in concise markdown with:
 - What you will change (bullets)
 - What you will not change (bullets)
@@ -66,6 +69,60 @@ Do not return JSON. Do not apply changes.`;
 
 // Keep gate prompts lightweight so "apply fix" feedback arrives quickly.
 const GATE_CODE_EXCERPT_MAX_CHARS = 4_000;
+
+/** Gives the gate model workspace roots, path to the reviewed file, and other open tabs so “relation to codebase” can be judged. */
+function buildWorkspaceContextForGate(reviewedUri: vscode.Uri): string {
+  const lines: string[] = [
+    "Codebase / workspace context (use to judge whether the instruction relates to this project):",
+  ];
+  const folder = vscode.workspace.getWorkspaceFolder(reviewedUri);
+  if (folder) {
+    lines.push(`- Workspace folder: "${folder.name}"`);
+    lines.push(`- Root path: ${folder.uri.fsPath}`);
+    try {
+      const rel = vscode.workspace.asRelativePath(reviewedUri, false);
+      if (rel) {
+        lines.push(`- Reviewed file (relative to workspace when possible): ${rel}`);
+      }
+    } catch {
+      /* ignore */
+    }
+  } else {
+    lines.push("- No workspace folder contains this file (treat as single-file or external path).");
+  }
+
+  const otherLabels: string[] = [];
+  const seen = new Set<string>();
+  for (const d of vscode.workspace.textDocuments) {
+    if (d.uri.scheme !== "file") {
+      continue;
+    }
+    if (d.uri.toString() === reviewedUri.toString()) {
+      continue;
+    }
+    let label: string;
+    try {
+      const r = vscode.workspace.asRelativePath(d.uri, false);
+      label = r && !r.includes("..") ? r : d.uri.fsPath;
+    } catch {
+      label = d.uri.fsPath;
+    }
+    if (!seen.has(label)) {
+      seen.add(label);
+      otherLabels.push(label);
+    }
+    if (otherLabels.length >= 14) {
+      break;
+    }
+  }
+  if (otherLabels.length > 0) {
+    lines.push("- Other files open in this editor window (related-work hints):");
+    for (const o of otherLabels) {
+      lines.push(`  • ${o}`);
+    }
+  }
+  return lines.join("\n");
+}
 
 function buildCodeExcerptForGate(fileContent: string, maxChars: number): string {
   if (fileContent.length <= maxChars) {
@@ -86,7 +143,8 @@ function buildExtraInstructionGatePrompt(
   reviewSummary: string,
   finding: ReviewFinding,
   codeExcerpt: string,
-  extraInstruction: string
+  extraInstruction: string,
+  workspaceContext: string
 ): string {
   return `File name: ${fileName}
 
@@ -98,6 +156,8 @@ Finding to fix (one row from the review table):
 - Severity: ${finding.severity} | Category: ${finding.category}
 - Detail: ${finding.detail}
 - Suggestion: ${finding.suggestion}
+
+${workspaceContext}
 
 Source excerpt (truncated if long; judge fit against this code):
 \`\`\`
@@ -115,7 +175,8 @@ function buildExtraInstructionAnalysisPrompt(
   reviewSummary: string,
   findings: ReviewFinding[],
   codeExcerpt: string,
-  extraInstruction: string
+  extraInstruction: string,
+  workspaceContext: string
 ): string {
   const topFindings = findings
     .slice(0, 8)
@@ -129,6 +190,8 @@ ${reviewSummary}
 Top review findings:
 ${topFindings || "(none)"}
 
+${workspaceContext}
+
 Source excerpt:
 \`\`\`
 ${codeExcerpt}
@@ -137,7 +200,7 @@ ${codeExcerpt}
 Developer extra instruction:
 ${extraInstruction}
 
-Analyze this instruction against the code + findings and return a concise markdown plan.`;
+Analyze this instruction against the code, findings, and codebase context; return a concise markdown plan (what you would change, what you would leave, risks).`;
 }
 
 function parseRelevanceGateResponse(raw: string): { relevant: boolean; briefReason?: string } {
@@ -156,6 +219,17 @@ function parseRelevanceGateResponse(raw: string): { relevant: boolean; briefReas
     relevant: r,
     briefReason: typeof br === "string" ? br : undefined,
   };
+}
+
+/** Prefer running the fix/analysis over blocking when the model output is not valid JSON. */
+function parseRelevanceGateResponseOrAllow(raw: string): { relevant: boolean; briefReason?: string; usedFallback: boolean } {
+  try {
+    const g = parseRelevanceGateResponse(raw);
+    return { ...g, usedFallback: false };
+  } catch {
+    log.warn("applyFixes", "Relevance gate JSON parse failed; proceeding as relevant", {});
+    return { relevant: true, usedFallback: true };
+  }
 }
 
 function parseFixFileContent(raw: string): string {
@@ -392,6 +466,37 @@ export function findingMatchesStoredKey(finding: ReviewFinding, storedKey: strin
     return true;
   }
   return legacyFindingKey(finding) === storedKey;
+}
+
+function findingMatchesAnyStoredKey(finding: ReviewFinding, keys: string[] | undefined): boolean {
+  if (!keys?.length) {
+    return false;
+  }
+  return keys.some((sk) => findingMatchesStoredKey(finding, sk));
+}
+
+/** Row is applied (by index or persisted fingerprint key). */
+function rowIsApplied(stored: StoredReview, index: number): boolean {
+  if (stored.appliedIndices?.includes(index)) {
+    return true;
+  }
+  const f = stored.findings[index];
+  if (!f) {
+    return false;
+  }
+  return findingMatchesAnyStoredKey(f, stored.appliedFindingKeys);
+}
+
+/** Row is rejected (by index or persisted fingerprint key). */
+function rowIsRejected(stored: StoredReview, index: number): boolean {
+  if (stored.rejectedIndices?.includes(index)) {
+    return true;
+  }
+  const f = stored.findings[index];
+  if (!f) {
+    return false;
+  }
+  return findingMatchesAnyStoredKey(f, stored.rejectedFindingKeys);
 }
 
 /**
@@ -713,7 +818,7 @@ function holisticGateFinding(extra: string): ReviewFinding {
     category: "guided",
     title: "Whole-file guidance from developer",
     detail:
-      "The developer asked for additional edits on this file after prior review fixes. Judge whether their instruction relates to this project, language, or file.",
+      "The developer asked for additional edits on this file after prior review fixes. Judge whether their instruction relates to this project, repository, language, stack, other open files, or this file — prefer allowing when any credible software-related link exists.",
     suggestion: extra.trim(),
   };
 }
@@ -760,14 +865,24 @@ async function runHolisticApplyWithExtra(params: {
   try {
     await runCopilotInference(
       extensionContext,
-      buildExtraInstructionGatePrompt(stored.fileName, stored.summary, gateFinding, excerpt, extra.trim()),
+      buildExtraInstructionGatePrompt(
+        stored.fileName,
+        stored.summary,
+        gateFinding,
+        excerpt,
+        extra.trim(),
+        buildWorkspaceContextForGate(uri)
+      ),
       (line) => {
         log.proxyLine("applyFixesGateHolistic", line);
         appendAssistantFromSseLine(line, gateState);
       },
       { systemRole: EXTRA_INSTRUCTION_GATE_SYSTEM_ROLE, stream: true }
     );
-    const gate = parseRelevanceGateResponse(gateState.text);
+    const gate = parseRelevanceGateResponseOrAllow(gateState.text);
+    if (gate.usedFallback) {
+      panel.addFixLog("Relevance check was unclear; continuing with your instruction.", "info");
+    }
     if (!gate.relevant) {
       const why = gate.briefReason ?? "Instruction does not appear related to this file.";
       panel.addFixLog(`Not run: ${why}`, "warn");
@@ -915,11 +1030,16 @@ export async function applyFixesFromReview(
       void vscode.window.showWarningMessage("Invalid finding index for Apply fix.");
       return;
     }
-    if (stored.appliedIndices?.includes(index)) {
+    if (rowIsApplied(stored, index)) {
       // Keep webview in sync when user clicks an already-applied row.
       // Without this refresh, UI can still show an actionable button for that row.
       notifyReviewUpdated(stored);
       void vscode.window.showWarningMessage("This finding was already applied.");
+      return;
+    }
+    if (rowIsRejected(stored, index)) {
+      notifyReviewUpdated(stored);
+      void vscode.window.showWarningMessage("This finding was already rejected.");
       return;
     }
     targetIndices = [index];
@@ -929,13 +1049,17 @@ export async function applyFixesFromReview(
       void vscode.window.showWarningMessage("Select one or more findings to apply.");
       return;
     }
-    targetIndices = normalized.sort((a, b) => a - b);
+    const sorted = normalized.sort((a, b) => a - b);
+    const filtered = sorted.filter((i) => !rowIsApplied(stored, i) && !rowIsRejected(stored, i));
+    if (!filtered.length) {
+      void vscode.window.showInformationMessage("All selected findings are already applied or rejected.");
+      return;
+    }
+    targetIndices = filtered;
   } else {
-    const appliedSet = new Set(stored.appliedIndices ?? []);
-    const rejectedSet = new Set(stored.rejectedIndices ?? []);
     targetIndices = stored.findings
       .map((_, i) => i)
-      .filter((i) => !appliedSet.has(i) && !rejectedSet.has(i));
+      .filter((i) => !rowIsApplied(stored, i) && !rowIsRejected(stored, i));
   }
 
   let extra: string | undefined;
@@ -1039,8 +1163,12 @@ export async function applyFixesFromReview(
           panel.addFixLog("Review data is missing or out of date; stopping fix run. Run Code Review again if needed.", "warn");
           break;
         }
-        if (live.appliedIndices?.includes(originalIndex)) {
+        if (rowIsApplied(live, originalIndex)) {
           panel.addFixLog(`Row ${originalIndex + 1} is already applied — skipping.`, "info");
+          continue;
+        }
+        if (rowIsRejected(live, originalIndex)) {
+          panel.addFixLog(`Row ${originalIndex + 1} is already rejected — skipping.`, "info");
           continue;
         }
 
@@ -1077,7 +1205,8 @@ export async function applyFixesFromReview(
             live.summary,
             finding,
             excerpt,
-            extra.trim()
+            extra.trim(),
+            buildWorkspaceContextForGate(uri)
           );
           try {
             const gateAbort = new AbortController();
@@ -1092,7 +1221,10 @@ export async function applyFixesFromReview(
               { systemRole: EXTRA_INSTRUCTION_GATE_SYSTEM_ROLE, stream: true, signal: gateAbort.signal }
             );
             activeFixAbortByDocumentUri.delete(stored.documentUri);
-            const gate = parseRelevanceGateResponse(gateState.text);
+            const gate = parseRelevanceGateResponseOrAllow(gateState.text);
+            if (gate.usedFallback) {
+              panel.addFixLog("Relevance check was unclear; continuing with your instruction.", "info");
+            }
             if (!gate.relevant) {
               skippedIrrelevantInstructionCount += 1;
               const why = gate.briefReason ?? "Instruction does not appear related to this finding or file.";
@@ -1234,6 +1366,19 @@ export async function applyFixesFromReview(
           continue;
         }
 
+        if (isFindingAlreadySatisfiedByFile(baseText, finding)) {
+          panel.setApplyingFixIndex(null);
+          panel.addFixLog(
+            `Step ${step + 1}/${total}: fix already present in file — skipping in-editor preview.`,
+            "info"
+          );
+          const fixRec = buildAppliedFixRecord(originalIndex, finding, baseText, baseText);
+          await markFindingApplied(originalIndex, fixRec, live.documentUri);
+          appliedCount += 1;
+          doc = await vscode.workspace.openTextDocument(uri);
+          continue;
+        }
+
         const previewTitle = finding.title || `Fix (${step + 1}/${total})`;
         const choice = await previewFixInEditorAndWait(doc, baseText, afterText, previewTitle);
         if (choice === "cancelled") {
@@ -1336,7 +1481,8 @@ export async function analyzeExtraInstructionForReview(extraInstruction: string)
     stored.summary,
     stored.findings,
     excerpt,
-    text
+    text,
+    buildWorkspaceContextForGate(uri)
   );
   const state = { text: "" };
   panel.beginGuidedApplyStream();

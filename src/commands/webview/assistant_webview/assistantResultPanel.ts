@@ -107,4 +107,9 @@ export class AssistantResultPanel {
   setApplyingFixAll(value: boolean): void {
     void this.host.postMessage({ type: "fixApplyingAll", sessionId: this.sessionId, value });
   }
+
+  /** Genie Accept/Reject row: `pending` (clickable), `accepted`, or `rejected` (labels; extension may return to `pending` after editor undo). */
+  setFixDecisionPhase(phase: "pending" | "accepted" | "rejected"): void {
+    void this.host.postMessage({ type: "fixDecisionPhase", sessionId: this.sessionId, phase });
+  }
 }
