@@ -99,10 +99,15 @@ function extractChunkIdFromArgs(args: unknown[]): number | undefined {
  * Register once from extension activate. Preview sessions assign `activeFixPreviewSession` while open.
  */
 export function registerFixPreviewCommands(context: vscode.ExtensionContext): void {
+  const warnNoActivePreview = (): void => {
+    void vscode.window.showWarningMessage("Fix preview is no longer active. Start Apply again to open a fresh preview.");
+    fixPreviewCodeLensChangeEmitter.fire();
+  };
   context.subscriptions.push(
     vscode.commands.registerCommand(CMD_ACCEPT_CHUNK, async (...args: unknown[]) => {
       const s = activeFixPreviewSession;
       if (!s) {
+        warnNoActivePreview();
         return;
       }
       const n = s.getChunkCount();
@@ -132,6 +137,7 @@ export function registerFixPreviewCommands(context: vscode.ExtensionContext): vo
     vscode.commands.registerCommand(CMD_REJECT_CHUNK, async (...args: unknown[]) => {
       const s = activeFixPreviewSession;
       if (!s) {
+        warnNoActivePreview();
         return;
       }
       const n = s.getChunkCount();
@@ -171,10 +177,20 @@ export function registerFixPreviewCommands(context: vscode.ExtensionContext): vo
       await activeFixPreviewSession?.focusNextPendingChunk();
     }),
     vscode.commands.registerCommand(CMD_PREVIEW_ACCEPT_CURRENT, async () => {
-      await activeFixPreviewSession?.acceptCurrentChunk();
+      const s = activeFixPreviewSession;
+      if (!s) {
+        warnNoActivePreview();
+        return;
+      }
+      await s.acceptCurrentChunk();
     }),
     vscode.commands.registerCommand(CMD_PREVIEW_REJECT_CURRENT, async () => {
-      await activeFixPreviewSession?.rejectCurrentChunk();
+      const s = activeFixPreviewSession;
+      if (!s) {
+        warnNoActivePreview();
+        return;
+      }
+      await s.rejectCurrentChunk();
     }),
     vscode.commands.registerCommand(CMD_PREVIEW_UNDO, async () => {
       await activeFixPreviewSession?.undoInPreview();
@@ -1468,14 +1484,13 @@ export async function previewFixInEditorAndWait(
     if (fixPreviewLensState) {
       fixPreviewLensState.docUri = e.document.uri.toString();
     }
-    const historyRestored = reconcilePreviewHistoryFromDocument(e.document);
+    const isUndoRedo =
+      e.reason === vscode.TextDocumentChangeReason.Undo ||
+      e.reason === vscode.TextDocumentChangeReason.Redo;
+    const historyRestored = isUndoRedo ? reconcilePreviewHistoryFromDocument(e.document) : false;
     syncFixPreviewChunkLineIndexFromDocument(e.document);
     scheduleUpdateDecorations();
-    if (
-      historyRestored ||
-      e.reason === vscode.TextDocumentChangeReason.Undo ||
-      e.reason === vscode.TextDocumentChangeReason.Redo
-    ) {
+    if (historyRestored || isUndoRedo) {
       refreshLenses();
       void updateDecorationsAsync();
     } else {

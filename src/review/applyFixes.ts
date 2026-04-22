@@ -1103,7 +1103,9 @@ export async function applyFixesFromReview(
 
   const hasQueuedWork = fixOperationQueues.has(stored.documentUri);
   if (hasQueuedWork) {
-    panel.addFixLog("Another fix run is in progress for this file. Your request is queued.", "warn");
+    panel.addFixLog("A fix preview is already active for this file. Accept or Reject it first.", "warn");
+    void vscode.window.showInformationMessage("A fix preview is already active. Accept or Reject it before starting another fix.");
+    return;
   }
 
   const isBulkRun = mode !== "one";

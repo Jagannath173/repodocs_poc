@@ -106,6 +106,7 @@
         fixApplyingIndex: null,
         fixApplyingAll: false,
         reviewFixDetailsOpen: false,
+        reviewReportOnly: false,
         applyingCurrent: false,
         refactorCode: "",
       };
@@ -608,7 +609,7 @@
         return row;
       }
       function buildCaughtUpDetails() {
-        if (!(session && session.reviewFixDetailsOpen)) {
+        if (!(session && (session.reviewFixDetailsOpen || session.reviewReportOnly))) {
           return null;
         }
         var details = document.createElement("div");
@@ -792,6 +793,29 @@
           details.appendChild(block);
         });
         return details;
+      }
+      if (session && session.reviewReportOnly) {
+        clearEl(root);
+        var reportWrap = document.createElement("div");
+        reportWrap.className = "review-complete-only-wrap";
+        var reportCard = document.createElement("div");
+        reportCard.className = "review-complete-card";
+        var reportTitle = document.createElement("p");
+        reportTitle.className = "review-complete-title";
+        reportTitle.textContent = "Full review report";
+        reportCard.appendChild(reportTitle);
+        var reportSub = document.createElement("p");
+        reportSub.className = "review-complete-sub";
+        reportSub.textContent = "Detailed report snapshot in a separate Genie tab.";
+        reportCard.appendChild(reportSub);
+        reportCard.appendChild(buildCaughtUpActions());
+        var reportDetails = buildCaughtUpDetails();
+        if (reportDetails) {
+          reportCard.appendChild(reportDetails);
+        }
+        reportWrap.appendChild(reportCard);
+        root.appendChild(reportWrap);
+        return;
       }
       if (!reviewStillRunning && isReviewCaughtUpOnly(view)) {
         clearEl(root);
@@ -1877,6 +1901,7 @@
         s.remarks = m.remarks || "";
         s.displayText = m.displayText || "";
         s.structuredData = m.structuredData || null;
+        s.reviewReportOnly = !!m.reportOnly;
         s.reviewMode = !!m.reviewMode && !!m.hasCode;
         s.hasCode = !!m.hasCode;
         s.endpoint = m.endpoint || s.endpoint;

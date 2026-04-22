@@ -107,6 +107,7 @@ export class GeniePanelHost {
             remarks: "",
             displayText: "",
             structuredData: view as Record<string, unknown>,
+            reportOnly: true,
             reviewMode: false,
             diffParts: [],
             endpoint: "codeReview",

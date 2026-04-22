@@ -31,6 +31,7 @@ import { renderPromptTemplate } from "../../utils/promptRenderer";
 import { log, sanitizeForLog } from "../../utils/logger";
 import { resetMockReviewStage } from "../../utils/mockCopilot";
 import { useMockCopilotEnabled } from "../../utils/mockCopilot";
+import { hashDocumentText } from "../../utils/documentHash";
 
 const REVIEW_SYSTEM_ROLE =
   "Respond with only a valid JSON object and no extra text. " +
@@ -111,9 +112,18 @@ async function collectRepositoryContext(activeUri: vscode.Uri): Promise<string> 
 export async function runCodeReview(): Promise<void> {
   log.info("codeReview", "runCodeReview started");
   if (useMockCopilotEnabled()) {
-    void vscode.window.showWarningMessage(
-      "Code Review is currently using MOCK mode. Disable `codeReview.useMockCopilot` for real Copilot review."
+    const disableChoice = await vscode.window.showWarningMessage(
+      "Code Review is currently using MOCK mode, which returns sample findings/fixes and can look random.",
+      "Disable Mock",
+      "Continue Mock"
     );
+    if (disableChoice === "Disable Mock") {
+      const target = vscode.workspace.workspaceFolders?.length
+        ? vscode.ConfigurationTarget.Workspace
+        : vscode.ConfigurationTarget.Global;
+      await vscode.workspace.getConfiguration("codeReview").update("useMockCopilot", false, target);
+      void vscode.window.showInformationMessage("Mock mode disabled. Running live Copilot review.");
+    }
   }
   if (!(await ensureCopilotSession())) {
     log.warn("codeReview", "Aborted: Copilot session not available");
@@ -183,6 +193,25 @@ export async function runCodeReview(): Promise<void> {
   const panel = new ReviewWebviewSession(extensionContext, `Review: ${fileName}`, documentUri);
   /** Carry forward applied/rejected fingerprints so a new review run does not re-list completed rows. */
   const liveBeforeRun = getStoredReviewForDocumentUri(editor.document.uri);
+  const currentHash = hashDocumentText(fullText);
+  if (!selectionText.trim() && liveBeforeRun?.reviewedDocumentHash && liveBeforeRun.reviewedDocumentHash === currentHash) {
+    log.info("codeReview", "Reusing cached review for unchanged file", { fileName });
+    panel.setLoading("Using previous review snapshot…");
+    panel.setReview({
+      summary: liveBeforeRun.summary,
+      findings: liveBeforeRun.findings,
+      appliedIndices: liveBeforeRun.appliedIndices ?? [],
+      appliedFindingKeys: liveBeforeRun.appliedFindingKeys ?? [],
+      rejectedIndices: liveBeforeRun.rejectedIndices ?? [],
+      rejectedFindingKeys: liveBeforeRun.rejectedFindingKeys ?? [],
+      reviewFindingCount: liveBeforeRun.reviewFindingCount,
+      appliedFixRecords: liveBeforeRun.appliedFixRecords,
+      sections: [],
+    });
+    panel.addReviewLog("Loaded cached review for unchanged file content.", "info");
+    runningReviewUris.delete(documentUri);
+    return;
+  }
   const priorAppliedKeySet = new Set<string>(liveBeforeRun?.appliedFindingKeys ?? []);
   if (liveBeforeRun?.findings?.length && liveBeforeRun.appliedIndices?.length) {
     for (const idx of liveBeforeRun.appliedIndices) {
