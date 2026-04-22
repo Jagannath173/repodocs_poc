@@ -51,6 +51,16 @@ export async function cancelFixPreviewForDocumentUri(documentUri: string): Promi
   return true;
 }
 
+/** Best-effort cleanup for extension reload/deactivate: cancel active preview and restore base text. */
+export async function cancelAnyActiveFixPreview(): Promise<boolean> {
+  const active = activeFixPreviewCancellation;
+  if (!active) {
+    return false;
+  }
+  await active.cancel();
+  return true;
+}
+
 function flattenArgs(args: unknown[]): unknown[] {
   let a = [...args];
   while (a.length === 1 && Array.isArray(a[0])) {

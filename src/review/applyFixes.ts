@@ -1083,7 +1083,7 @@ export async function applyFixesFromReview(
 
   if (mode === "all" && targetIndices.length === 0 && !holisticApply) {
     void vscode.window.showInformationMessage(
-      "No fixes to run — all findings are already applied or marked rejected. Use Retry on a rejected row to try again, or use Apply with extra instructions… to guided-edit the file."
+      "All fixes are already applied."
     );
     return;
   }

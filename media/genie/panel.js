@@ -576,16 +576,14 @@
         btnDetails.type = "button";
         btnDetails.className = "secondary";
         btnDetails.textContent = "View full report";
-        btnDetails.title = "Show or hide the full review report in this Genie panel (no separate window).";
+        btnDetails.title = "Open the full report in a separate Genie tab.";
         btnDetails.onclick = function () {
-          var docEl = document.scrollingElement || document.documentElement || document.body;
-          var prevTop = docEl ? docEl.scrollTop : 0;
           var s = sessions[activeSessionId];
           if (!s) return;
-          s.reviewFixDetailsOpen = !s.reviewFixDetailsOpen;
-          renderSession();
-          requestAnimationFrame(function () {
-            if (docEl) docEl.scrollTop = prevTop;
+          vscode.postMessage({
+            command: "openReviewReportTab",
+            sessionId: activeSessionId,
+            view: view
           });
         };
         var btnPdf = document.createElement("button");
@@ -841,6 +839,9 @@
         return;
       }
 
+      var rm = computeReviewMetrics(view);
+      var visibleCount = collectVisibleFindingIndices(view).length;
+
       var toolbar = document.createElement("div");
       toolbar.className = "review-fix-toolbar";
       var btnAll = document.createElement("button");
@@ -859,14 +860,26 @@
       } else {
         btnAll.textContent = "Fix All One by One";
         btnAll.onclick = function () {
+          if (rm.pending <= 0) {
+            vscode.postMessage({
+              command: "showInfoToast",
+              sessionId: activeSessionId,
+              value: "All fixes are already applied."
+            });
+            return;
+          }
+          vscode.postMessage({ command: "applyFixes", mode: "all", sessionId: activeSessionId });
           var sess = sessions[activeSessionId];
           if (sess) {
             // Optimistic UI: mark all open rows as applying immediately for bulk run.
             sess.fixApplyingAll = true;
             sess.fixApplyingIndex = null;
-            renderSession();
+            try {
+              renderSession();
+            } catch (e) {
+              // do not block command dispatch
+            }
           }
-          vscode.postMessage({ command: "applyFixes", mode: "all", sessionId: activeSessionId });
         };
       }
       var btnExtra = document.createElement("button");
@@ -891,28 +904,37 @@
       btnStopReview.className = "secondary";
       btnStopReview.textContent = "⏹ Stop";
       var stopAvailable = reviewStillRunning || fixRunInProgress;
-      btnStopReview.disabled = !stopAvailable;
-      if (stopAvailable) {
-        btnStopReview.onclick = function () {
+      btnStopReview.disabled = false;
+      btnStopReview.onclick = function () {
+        if (stopAvailable) {
           vscode.postMessage({ command: "stopReview", sessionId: activeSessionId });
-        };
-      }
+          return;
+        }
+        vscode.postMessage({
+          command: "showInfoToast",
+          sessionId: activeSessionId,
+          value: "All fixes are already applied."
+        });
+      };
       toolbar.appendChild(btnStopReview);
       root.appendChild(toolbar);
 
-      var rm = computeReviewMetrics(view);
       var metricsBar = document.createElement("div");
       metricsBar.className = "review-metrics-bar";
       metricsBar.setAttribute("role", "status");
-      metricsBar.textContent =
-        rm.total +
-        " finding(s) in review · " +
-        rm.applied +
-        " fixed · " +
-        rm.rejected +
-        " rejected · " +
-        rm.pending +
-        " still open";
+      if (reviewStillRunning && visibleCount === 0) {
+        metricsBar.textContent = "Review in progress — findings will appear once each stage returns results.";
+      } else {
+        metricsBar.textContent =
+          rm.total +
+          " finding(s) in review · " +
+          rm.applied +
+          " fixed · " +
+          rm.rejected +
+          " rejected · " +
+          rm.pending +
+          " still open";
+      }
       root.appendChild(metricsBar);
 
       var fallbackGlobalIndex = 0;
@@ -1073,14 +1095,6 @@
                     var docEl = document.scrollingElement || document.documentElement || document.body;
                     var prevTop = docEl ? docEl.scrollTop : 0;
                     var sess = sessions[activeSessionId];
-                    if (sess) {
-                      sess.fixApplyingIndex = idx;
-                      sess.fixApplyingAll = false;
-                    }
-                    renderSession();
-                    requestAnimationFrame(function () {
-                      if (docEl) docEl.scrollTop = prevTop;
-                    });
                     vscode.postMessage({
                       command: "applyFixes",
                       mode: "one",
@@ -1088,6 +1102,18 @@
                       sessionId: activeSessionId,
                       extraInstructions: sess && sess.extraFixInstructions ? String(sess.extraFixInstructions) : ""
                     });
+                    if (sess) {
+                      sess.fixApplyingIndex = idx;
+                      sess.fixApplyingAll = false;
+                    }
+                    try {
+                      renderSession();
+                      requestAnimationFrame(function () {
+                        if (docEl) docEl.scrollTop = prevTop;
+                      });
+                    } catch (e) {
+                      // do not block command dispatch
+                    }
                   }
                   function fireReject() {
                     vscode.postMessage({

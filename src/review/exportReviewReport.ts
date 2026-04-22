@@ -64,8 +64,9 @@ function issueDescriptionOnly(detail: string): string {
 }
 
 export async function exportReviewReportToPdf(stored: ReviewTableState): Promise<void> {
+  const stamp = buildDateStamp();
   const pick = await vscode.window.showSaveDialog({
-    defaultUri: vscode.Uri.file(`${sanitizeBaseName(stored.fileName)}-review-report.pdf`),
+    defaultUri: vscode.Uri.file(`${sanitizeBaseName(stored.fileName)}-review-report-${stamp}.pdf`),
     filters: { "PDF": ["pdf"] },
     saveLabel: "Save PDF",
   });
@@ -329,8 +330,9 @@ export async function exportReviewReportToPdf(stored: ReviewTableState): Promise
 }
 
 export async function exportReviewReportToXlsx(stored: ReviewTableState): Promise<void> {
+  const stamp = buildDateStamp();
   const pick = await vscode.window.showSaveDialog({
-    defaultUri: vscode.Uri.file(`${sanitizeBaseName(stored.fileName)}-review-report.xlsx`),
+    defaultUri: vscode.Uri.file(`${sanitizeBaseName(stored.fileName)}-review-report-${stamp}.xlsx`),
     filters: { Excel: ["xlsx"] },
     saveLabel: "Save Excel",
   });
@@ -371,4 +373,11 @@ export async function exportReviewReportToXlsx(stored: ReviewTableState): Promis
 function sanitizeBaseName(fileName: string): string {
   const base = fileName.replace(/[\\/]/g, "_");
   return base.replace(/\.[^.]+$/, "") || "file";
+}
+
+function buildDateStamp(d: Date = new Date()): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
 }

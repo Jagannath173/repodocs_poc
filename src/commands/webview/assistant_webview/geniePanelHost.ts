@@ -46,15 +46,7 @@ export class GeniePanelHost {
           const selectedIndices = Array.isArray(m.indices) ? m.indices.filter((n) => typeof n === "number") : undefined;
           const extraPassThrough =
             typeof m.extraInstructions === "string" ? m.extraInstructions : "";
-          const sid = typeof m.sessionId === "string" ? m.sessionId : undefined;
-          const clearRowSpinner = () => {
-            if (sid) {
-              void this.panel.webview.postMessage({ type: "fixApplying", sessionId: sid, index: null });
-            }
-          };
-          void vscode.commands
-            .executeCommand("codeReview.applyFixes", mode, idx, extraPassThrough, selectedIndices)
-            .then(clearRowSpinner, clearRowSpinner);
+          void vscode.commands.executeCommand("codeReview.applyFixes", mode, idx, extraPassThrough, selectedIndices);
           return;
         }
         if (msg?.command === "analyzeExtraInstruction") {
@@ -80,6 +72,54 @@ export class GeniePanelHost {
           const m = msg as { format?: string };
           const fmt = m.format === "xlsx" ? "xlsx" : "pdf";
           void vscode.commands.executeCommand("codeReview.exportReviewReport", fmt);
+          return;
+        }
+        if (msg?.command === "showInfoToast") {
+          const text =
+            typeof (msg as { value?: string }).value === "string" && (msg as { value: string }).value.trim()
+              ? (msg as { value: string }).value.trim()
+              : "All fixes are already applied.";
+          void vscode.window.showInformationMessage(text);
+          return;
+        }
+        if (msg?.command === "openReviewReportTab") {
+          const sourceSessionId = typeof msg.sessionId === "string" ? msg.sessionId : "";
+          const source = sourceSessionId ? this.listeners.get(sourceSessionId) : undefined;
+          if (!sourceSessionId || !source) {
+            return;
+          }
+          const view = (msg as { view?: unknown }).view;
+          if (!view || typeof view !== "object") {
+            return;
+          }
+          const reportSessionId = `${sourceSessionId}:report:${Date.now()}`;
+          this.listeners.set(reportSessionId, {
+            apply: new Set(),
+            refine: new Set(),
+            fixDecision: new Set(),
+            messages: new Set(),
+          });
+          void this.postMessage({ type: "createSession", sessionId: reportSessionId, title: "Review Report" });
+          void this.postMessage({ type: "mode", sessionId: reportSessionId, endpoint: "codeReview" });
+          void this.postMessage({
+            type: "result",
+            sessionId: reportSessionId,
+            remarks: "",
+            displayText: "",
+            structuredData: view as Record<string, unknown>,
+            reviewMode: false,
+            diffParts: [],
+            endpoint: "codeReview",
+            hasCode: false,
+            generatedCode: "",
+            refactorCode: "",
+            generatedFiles: [],
+          });
+          void this.postMessage({
+            type: "status",
+            sessionId: reportSessionId,
+            text: "Full report snapshot",
+          });
           return;
         }
         const sessionId = msg?.sessionId;

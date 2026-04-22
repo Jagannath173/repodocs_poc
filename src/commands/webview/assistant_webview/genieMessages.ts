@@ -10,4 +10,6 @@ export type GenieCommand =
   | "rejectFinding"
   | "authenticate"
   | "submitPrompt"
-  | "exportReviewReport";
+  | "exportReviewReport"
+  | "openReviewReportTab"
+  | "showInfoToast";
