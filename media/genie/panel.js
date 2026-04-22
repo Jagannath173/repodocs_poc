@@ -655,6 +655,16 @@
         function isActionedStatus(status) {
           return status === "Accepted" || status === "Rejected";
         }
+        function reportSuggestedFix(item, fallback) {
+          var it = item && typeof item === "object" ? item : {};
+          var value =
+            String(it.suggestion || "").trim() ||
+            String(it.fix || "").trim() ||
+            String(it.remediation || "").trim() ||
+            String(it.recommendation || "").trim() ||
+            String(fallback || "").trim();
+          return value || "—";
+        }
 
         function compactTextForHeading(text) {
           return String(text || "")
@@ -720,7 +730,7 @@
               String(i + 1),
               String(item.severity || "—"),
               humanizeReviewReportField(issueDescriptionOnly(item)),
-              humanizeReviewReportField(String(item.suggestion || "—")),
+              humanizeReviewReportField(reportSuggestedFix(item)),
               statusForIndex(idx),
             ].forEach(function (text) {
               var td = document.createElement("td");
@@ -777,7 +787,7 @@
           var suggestionSrc =
             fromTable && fromTable.suggestion != null && String(fromTable.suggestion).trim()
               ? fromTable.suggestion
-              : r.suggestion;
+              : reportSuggestedFix(r, r.suggestion);
           var block = document.createElement("div");
           block.className = "review-fix-detail-block";
           var h2 = document.createElement("div");
@@ -789,7 +799,7 @@
           });
           block.appendChild(h2);
           appendReportFieldBody(block, "Description", issueDescriptionOnly({ detail: detailSrc }));
-          appendReportFieldBody(block, "Suggested fix", suggestionSrc || "—");
+          appendReportFieldBody(block, "Suggested fix", reportSuggestedFix({ suggestion: suggestionSrc }, "—"));
           details.appendChild(block);
         });
         return details;
@@ -799,7 +809,7 @@
         var reportWrap = document.createElement("div");
         reportWrap.className = "review-complete-only-wrap";
         var reportCard = document.createElement("div");
-        reportCard.className = "review-complete-card";
+        reportCard.className = "review-complete-card review-report-only-card";
         var reportTitle = document.createElement("p");
         reportTitle.className = "review-complete-title";
         reportTitle.textContent = "Full review report";

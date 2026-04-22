@@ -618,6 +618,53 @@ details.collapse-panel > summary::-webkit-details-marker { display: none; }
   max-width: 720px;
   margin: 0 auto;
 }
+.review-report-only-card {
+  border-left: 4px solid #1f6feb;
+  background: #ffffff;
+  color: #0f172a;
+  box-shadow:
+    0 0 0 1px rgba(31, 111, 235, 0.22),
+    0 10px 24px rgba(12, 40, 82, 0.18);
+}
+.review-report-only-card::after {
+  background: radial-gradient(circle, rgba(31, 111, 235, 0.22) 0%, rgba(31, 111, 235, 0) 72%);
+}
+.review-report-only-card .review-complete-title {
+  color: #1f6feb;
+  text-shadow: none;
+}
+.review-report-only-card .review-complete-sub {
+  color: #334155;
+}
+.review-report-only-card .review-complete-chip {
+  border: 1px solid rgba(31, 111, 235, 0.25);
+  background: rgba(31, 111, 235, 0.1);
+  color: #0f172a;
+}
+.review-report-only-card .review-fix-details {
+  border: 1px solid rgba(31, 111, 235, 0.35);
+  background: #ffffff;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9), 0 8px 24px rgba(12, 40, 82, 0.15);
+}
+.review-report-only-card .review-report-summary,
+.review-report-only-card .review-report-bullets li,
+.review-report-only-card .review-report-section-summary,
+.review-report-only-card .review-report-table td,
+.review-report-only-card .review-fix-detail-text {
+  color: #0f172a;
+}
+.review-report-only-card .review-report-table th,
+.review-report-only-card .review-report-section-title {
+  background: linear-gradient(180deg, #3387ff 0%, #1f6feb 100%);
+  color: #ffffff;
+}
+.review-report-only-card .review-report-actions-btns button.secondary {
+  background: #1f6feb;
+  color: #ffffff;
+}
+.review-report-only-card .review-report-actions-btns button.secondary:hover:not(:disabled) {
+  background: #185bc3;
+}
 .review-complete-only-text {
   font-size: 1.05em;
   font-weight: 700;

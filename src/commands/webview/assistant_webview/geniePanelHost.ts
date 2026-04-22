@@ -265,4 +265,5 @@ export class GeniePanelHost {
       this.listeners.delete(sessionId);
     }
   }
+
 }
