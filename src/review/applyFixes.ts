@@ -957,7 +957,7 @@ async function runHolisticApplyWithExtra(params: {
 
   await persistStoredReviewHashOnly(stored.documentUri);
   panel.addFixLog("Accepted — file updated. Review snapshot refreshed.", "success");
-  void vscode.window.showInformationMessage(`Guided edit applied for ${stored.fileName}. Save if needed.`);
+  void vscode.window.showInformationMessage("Fix applied.");
 }
 
 /**
@@ -1174,8 +1174,6 @@ export async function applyFixesFromReview(
 
         await clearFindingRejectedForIndex(originalIndex, live.documentUri);
         const finding = live.findings[originalIndex];
-        panel.startFixStep(step + 1, total, finding.title);
-        panel.addFixLog("Sending fix request to model.", "info");
 
         doc = await vscode.workspace.openTextDocument(uri);
         const baseText = doc.getText();
@@ -1187,6 +1185,9 @@ export async function applyFixesFromReview(
           appliedCount += 1;
           continue;
         }
+
+        panel.startFixStep(step + 1, total, finding.title);
+        panel.addFixLog("Sending fix request to model.", "info");
 
         const markApplyingEarly = !extra?.trim();
         if (markApplyingEarly) {
@@ -1415,6 +1416,9 @@ export async function applyFixesFromReview(
         appliedCount += 1;
         doc = await vscode.workspace.openTextDocument(uri);
         await revealAndHighlightAppliedFix(uri, baseText, afterText);
+        if (!isBulkRun) {
+          void vscode.window.showInformationMessage("Fix applied.");
+        }
       }
 
       log.info("applyFixes", "Apply fixes completed", { appliedCount, total });
@@ -1425,10 +1429,6 @@ export async function applyFixesFromReview(
             : "";
         void vscode.window.showInformationMessage(
           `Fix-all completed: applied ${appliedCount}/${total}, rejected ${rejectedCount}, failed ${failedCount}${skipPart}.`
-        );
-      } else {
-        void vscode.window.showInformationMessage(
-          `Accepted and applied ${appliedCount} fix step(s). Save the file if needed (${stored.fileName}).`
         );
       }
     } catch (e: unknown) {
@@ -1445,6 +1445,7 @@ export async function applyFixesFromReview(
       if (isBulkRun && (bulkApplyingVisible || !delayBulkApplyingUntilStream)) {
         panel.setApplyingFixAll(false);
       }
+      panel.clearFixApplyIdle?.();
     }
   });
 }

@@ -344,6 +344,14 @@ export class ReviewWebviewSession {
     this.panel.setApplyingFixAll(value);
   }
 
+  /** After preview accept/reject or fix-all completes — drops spinner and "Apply fix (n/m)" status. */
+  clearFixApplyIdle(): void {
+    if (this.disposed) return;
+    this.panel.setBusy(false);
+    this.panel.setStatus("");
+    this.panel.setProgressStep("");
+  }
+
   beginGuidedApplyStream(): void {
     if (this.disposed) return;
     this.panel.setStreamText("");

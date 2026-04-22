@@ -877,6 +877,70 @@ export async function previewFixInEditorAndWait(
     return focusedPendingChunkId;
   };
 
+  /** Text + per-chunk state after each successful full-buffer apply; undo/redo restores these so lenses/decorations match. */
+  type PreviewHistorySnapshot = {
+    text: string;
+    decisions: boolean[];
+    chunkDiffDismissed: boolean[];
+  };
+  const previewHistory: PreviewHistorySnapshot[] = [];
+  let previewHistoryCursor = -1;
+
+  const normalizeSnapshotText = (s: string): string => s.replace(/\r\n/g, "\n");
+
+  const applySnapshotToSession = (snap: PreviewHistorySnapshot): void => {
+    for (let i = 0; i < chunks.length; i++) {
+      decisions[i] = snap.decisions[i] ?? true;
+      chunkDiffDismissed[i] = snap.chunkDiffDismissed[i] ?? false;
+    }
+    focusedPendingChunkId = ensureFocusedPendingChunk();
+  };
+
+  const recordPreviewHistorySnapshot = async (): Promise<void> => {
+    const d = await vscode.workspace.openTextDocument(docUri);
+    const text = normalizeSnapshotText(d.getText());
+    if (previewHistoryCursor >= 0 && previewHistoryCursor < previewHistory.length - 1) {
+      previewHistory.splice(previewHistoryCursor + 1);
+    }
+    previewHistory.push({
+      text,
+      decisions: [...decisions],
+      chunkDiffDismissed: [...chunkDiffDismissed],
+    });
+    previewHistoryCursor = previewHistory.length - 1;
+  };
+
+  const reconcilePreviewHistoryFromDocument = (document: vscode.TextDocument): boolean => {
+    if (!previewHistory.length) {
+      return false;
+    }
+    const norm = normalizeSnapshotText(document.getText());
+    if (previewHistoryCursor > 0) {
+      const prev = previewHistory[previewHistoryCursor - 1];
+      if (prev.text === norm) {
+        previewHistoryCursor -= 1;
+        applySnapshotToSession(prev);
+        return true;
+      }
+    }
+    if (previewHistoryCursor >= 0 && previewHistoryCursor < previewHistory.length - 1) {
+      const next = previewHistory[previewHistoryCursor + 1];
+      if (next.text === norm) {
+        previewHistoryCursor += 1;
+        applySnapshotToSession(next);
+        return true;
+      }
+    }
+    for (let i = previewHistory.length - 1; i >= 0; i--) {
+      if (previewHistory[i].text === norm) {
+        previewHistoryCursor = i;
+        applySnapshotToSession(previewHistory[i]);
+        return true;
+      }
+    }
+    return false;
+  };
+
   const getPendingSummary = (): { current: number; total: number } | undefined => {
     const pending = getPendingChunkIds();
     if (!pending.length) {
@@ -1217,6 +1281,7 @@ export async function previewFixInEditorAndWait(
       if (fixPreviewLensState) {
         fixPreviewLensState.docUri = docAfter.uri.toString();
       }
+      reconcilePreviewHistoryFromDocument(docAfter);
       syncFixPreviewChunkLineIndexFromDocument(docAfter);
       scheduleUpdateDecorations();
       refreshLenses();
@@ -1250,6 +1315,7 @@ export async function previewFixInEditorAndWait(
       if (fixPreviewLensState) {
         fixPreviewLensState.docUri = docAfter.uri.toString();
       }
+      reconcilePreviewHistoryFromDocument(docAfter);
       syncFixPreviewChunkLineIndexFromDocument(docAfter);
       scheduleUpdateDecorations();
       refreshLenses();
@@ -1287,6 +1353,7 @@ export async function previewFixInEditorAndWait(
         }
         const docAfter = await vscode.workspace.openTextDocument(docUri);
         syncFixPreviewChunkLineIndexFromDocument(docAfter);
+        await recordPreviewHistorySnapshot();
         scheduleUpdateDecorations();
         refreshLenses();
         await finishWhenAllChunksDismissed();
@@ -1317,6 +1384,7 @@ export async function previewFixInEditorAndWait(
         }
         const docAfter = await vscode.workspace.openTextDocument(docUri);
         syncFixPreviewChunkLineIndexFromDocument(docAfter);
+        await recordPreviewHistorySnapshot();
         scheduleUpdateDecorations();
         refreshLenses();
         await finishWhenAllChunksDismissed();
@@ -1390,10 +1458,16 @@ export async function previewFixInEditorAndWait(
     if (fixPreviewLensState) {
       fixPreviewLensState.docUri = e.document.uri.toString();
     }
+    const historyRestored = reconcilePreviewHistoryFromDocument(e.document);
     syncFixPreviewChunkLineIndexFromDocument(e.document);
     scheduleUpdateDecorations();
-    if (e.reason === vscode.TextDocumentChangeReason.Undo || e.reason === vscode.TextDocumentChangeReason.Redo) {
+    if (
+      historyRestored ||
+      e.reason === vscode.TextDocumentChangeReason.Undo ||
+      e.reason === vscode.TextDocumentChangeReason.Redo
+    ) {
       refreshLenses();
+      void updateDecorationsAsync();
     } else {
       scheduleRefreshLensesDebounced();
     }
@@ -1433,6 +1507,7 @@ export async function previewFixInEditorAndWait(
       fixPreviewLensState.docUri = snapDoc.uri.toString();
     }
     syncFixPreviewChunkLineIndexFromDocument(snapDoc);
+    await recordPreviewHistorySnapshot();
     const proposedNorm = normalizeReviewText(buildCurrentMergedText());
     await revealAndHighlightAppliedFix(docUri, baseText, proposedNorm);
   } else {

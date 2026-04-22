@@ -19,6 +19,8 @@ export interface ReviewPanelLike {
   setApplyingFixIndex(index: number | null): void;
   /** "Fix All One by One" is running — toolbar button shows Applying… and row Fixes are gated. */
   setApplyingFixAll(value: boolean): void;
+  /** Clear fix-run busy header, status line, and step row (call when apply-fix pipeline finishes or stops). */
+  clearFixApplyIdle?(): void;
   /** Stream model output in Genie when running apply-with-extra with no pending findings (holistic pass). */
   beginGuidedApplyStream(): void;
   setGuidedApplyStream(text: string): void;
