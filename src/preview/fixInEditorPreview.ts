@@ -830,12 +830,27 @@ export async function previewFixInEditorAndWait(
   baseDoc: vscode.TextDocument,
   baseText: string,
   afterText: string,
-  _title: string
+  _title: string,
+  options?: { autoAcceptAll?: boolean; skipInteractivePreview?: boolean }
 ): Promise<FixInEditorChoice> {
+  const docUri = baseDoc.uri;
   const chunks = computeFixChunks(baseText, afterText, baseDoc);
 
   // No diff: nothing to accept/reject. Treat as "accept" so fix flow can continue.
   if (!chunks.length) {
+    return "accept";
+  }
+
+  if (options?.skipInteractivePreview) {
+    const ok = await applyWholeDocumentReplace(docUri, afterText);
+    if (!ok) {
+      void vscode.window.showWarningMessage(
+        "Could not write the file for this fix. Check if the document is read-only or locked."
+      );
+      return "cancelled";
+    }
+    await revealEditorForUri(docUri);
+    await revealAndHighlightAppliedFix(docUri, baseText, afterText);
     return "accept";
   }
 
@@ -846,8 +861,6 @@ export async function previewFixInEditorAndWait(
   const chunkDiffDismissed = chunks.map(() => false);
 
   const mergeParts = diffLines(baseText, afterText) as unknown as DiffPart[];
-
-  const docUri = baseDoc.uri;
 
   // Stacked diff: dark green = new lines, dark red = old lines (similar to VS Code inline diff).
   const decorationAddedLine = vscode.window.createTextEditorDecorationType({
@@ -1549,6 +1562,14 @@ export async function previewFixInEditorAndWait(
 
   // Ensure lenses are refreshed immediately (important when code lenses are registered dynamically).
   refreshLenses();
+
+  if (options?.autoAcceptAll) {
+    // For "Fix all one by one" / row "Accept", do not block on per-chunk CodeLens clicks.
+    // Keep this async so the preview buffer is painted first, then apply deterministically.
+    setTimeout(() => {
+      void activeFixPreviewSession?.acceptAll();
+    }, 0);
+  }
 
   return finalChoicePromise.finally(() => {
     cleanup();

@@ -943,7 +943,13 @@ async function runHolisticApplyWithExtra(params: {
   }
 
   const freshDoc = await vscode.workspace.openTextDocument(uri);
-  const choice = await previewFixInEditorAndWait(freshDoc, latestBase, afterText, "Apply with extra instructions");
+  const choice = await previewFixInEditorAndWait(
+    freshDoc,
+    latestBase,
+    afterText,
+    "Apply with extra instructions",
+    { autoAcceptAll: true, skipInteractivePreview: true }
+  );
   if (choice === "cancelled") {
     panel.addFixLog("Guided edit stopped by user — no finding status changed.", "warn");
     void vscode.window.showInformationMessage("Guided edit stopped.");
@@ -1191,10 +1197,7 @@ export async function applyFixesFromReview(
         panel.startFixStep(step + 1, total, finding.title);
         panel.addFixLog("Sending fix request to model.", "info");
 
-        const markApplyingEarly = !extra?.trim();
-        if (markApplyingEarly) {
-          panel.setApplyingFixIndex(originalIndex);
-        }
+        panel.setApplyingFixIndex(originalIndex);
         if (!isBulkRun) {
           await revealApproximateFindingLocation(uri, finding, baseText);
         }
@@ -1350,12 +1353,6 @@ export async function applyFixesFromReview(
           continue;
         }
 
-        // For "Apply with extra instructions", move row "Applying..." to just before apply/preview,
-        // so users can first read streamed analysis/output instead of seeing immediate apply state.
-        if (!markApplyingEarly) {
-          panel.setApplyingFixIndex(originalIndex);
-        }
-
         const normalizedBase = baseText.replace(/\r\n/g, "\n");
         const normalizedAfter = afterText.replace(/\r\n/g, "\n");
         if (normalizedBase === normalizedAfter) {
@@ -1383,7 +1380,10 @@ export async function applyFixesFromReview(
         }
 
         const previewTitle = finding.title || `Fix (${step + 1}/${total})`;
-        const choice = await previewFixInEditorAndWait(doc, baseText, afterText, previewTitle);
+        const choice = await previewFixInEditorAndWait(doc, baseText, afterText, previewTitle, {
+          autoAcceptAll: true,
+          skipInteractivePreview: true,
+        });
         if (choice === "cancelled") {
           panel.setApplyingFixIndex(null);
           if (isStopRequestedForDocumentUri(stored.documentUri)) {

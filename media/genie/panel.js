@@ -1051,7 +1051,7 @@
             tdFix.appendChild(spR);
           } else {
             var showApplying =
-              applyingAll || (applyingIndex !== null && applyingIndex === globalIndex);
+              applyingIndex !== null && applyingIndex === globalIndex;
             var fixRowLocked =
               !applyingAll &&
               applyingIndex !== null &&
