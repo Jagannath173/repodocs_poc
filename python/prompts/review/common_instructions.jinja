@@ -8,6 +8,8 @@ Include this template later in review prompts using: {% include 'review/common_i
 - **Do not** emit findings whose fix is already implemented in the submitted code.
 - **Do not** restate existing correct code as a "suggestion" or duplicate the snippet as if it were new work.
 - Every issue must describe a **remaining** problem and a **suggestion** that is a **minimal, concrete code change** to the current file (or files in scope), not generic advice unless the prompt explicitly allows it.
+- **No duplicate findings in one response:** If several rubrics would flag the same concrete code span with the same remedial change, emit a single issue with the best-matching policy or rule reference for this review type.
+- **Targeted fixes:** In `fix` / `suggestion`, change only the lines or expressions required (unsafe call, missing check, wrong API, etc.). Do not rewrite entire classes, unrelated methods, or whole-file structure when the defect is local.
 - If nothing needs to change, return an empty `issues` / `findings` list for that review.
 
 ### Codebase Relevance (REQUIRED)
@@ -189,6 +191,7 @@ All suggested "fix" code must:
 1. Be code-only and adhere to all rules in this prompt{% if review_type %}, including the {{ review_type }} rules when applicable{% endif %}.
 2. Not introduce new {% if review_type %}{{ review_type }} {% endif %}issues or violations of the listed requirements.
 3. Prefer best practices and maintain code quality.
+4. Match the actual submitted code: preserve names, imports, and patterns already in the file unless they must change for the fix; never replace working code with a generic template that ignores the file’s structure.
 If a fully compliant fix requires unavailable context (e.g., missing schema or dependencies), provide the smallest safe change that still complies with all rules.
 {% endif %}
 

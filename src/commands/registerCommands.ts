@@ -58,13 +58,13 @@ export function registerCommands(context: vscode.ExtensionContext): void {
     registerAssistantEndpointCommand("codeReview.assistant.testscriptSelfHealing", "testscriptSelfHealing"),
     vscode.commands.registerCommand(
       "codeReview.applyFixes",
-      (mode?: "all" | "one" | "selected", index?: number, extra?: string, indices?: number[]) => {
+      async (mode?: "all" | "one" | "selected", index?: number, extra?: string, indices?: number[]) => {
         log.info("command", "Command invoked", {
           commandId: "codeReview.applyFixes",
           mode: mode ?? "all",
           index: index ?? "",
         });
-        void applyFixesFromReview(mode ?? "all", index, extra, indices);
+        return applyFixesFromReview(mode ?? "all", index, extra, indices);
       }
     ),
     vscode.commands.registerCommand("codeReview.analyzeExtraInstruction", (extra?: string) => {

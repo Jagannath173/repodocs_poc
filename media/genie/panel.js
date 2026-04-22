@@ -316,6 +316,69 @@
       var head = detail.split(/\\n\\nCode:/i)[0].trim();
       return head || "—";
     }
+    /** Turn JSON-looking strings into readable prose for the in-panel report (not monospace JSON dumps). */
+    function humanizeReviewReportField(raw) {
+      var s = String(raw == null ? "" : raw).trim();
+      if (!s) {
+        return "—";
+      }
+      var t = s.replace(/^\uFEFF/, "");
+      if (
+        (t.charAt(0) === "{" && t.charAt(t.length - 1) === "}") ||
+        (t.charAt(0) === "[" && t.charAt(t.length - 1) === "]")
+      ) {
+        try {
+          return jsonValueToReadableReportText(JSON.parse(t));
+        } catch (err) {
+          return s;
+        }
+      }
+      return s;
+    }
+    function jsonValueToReadableReportText(v, depth) {
+      depth = depth || 0;
+      var pad = depth ? new Array(depth + 1).join("  ") : "";
+      if (v === null || v === undefined) {
+        return pad + "—";
+      }
+      if (typeof v === "string") {
+        return pad + v;
+      }
+      if (typeof v === "number" || typeof v === "boolean") {
+        return pad + String(v);
+      }
+      if (Array.isArray(v)) {
+        return v
+          .map(function (item, i) {
+            var inner = jsonValueToReadableReportText(item, depth + 1);
+            return pad + (i + 1) + ") " + String(inner).replace(/^\s+/, "");
+          })
+          .join("\n\n");
+      }
+      if (typeof v === "object") {
+        return Object.keys(v)
+          .map(function (k) {
+            var label = String(k).replace(/_/g, " ");
+            var sub = v[k];
+            if (sub !== null && typeof sub === "object") {
+              return pad + label + ":\n" + jsonValueToReadableReportText(sub, depth + 1);
+            }
+            return pad + label + ": " + String(sub);
+          })
+          .join("\n\n");
+      }
+      return pad + String(v);
+    }
+    function appendReportFieldBody(block, labelText, rawText) {
+      var sub = document.createElement("div");
+      sub.className = "review-fix-detail-label";
+      sub.textContent = labelText;
+      block.appendChild(sub);
+      var body = document.createElement("div");
+      body.className = "review-fix-detail-body";
+      body.textContent = humanizeReviewReportField(rawText);
+      block.appendChild(body);
+    }
     function renderSuggestedFixContent(cell, text) {
       var raw = String(text || "").trim();
       if (!raw) {
@@ -512,7 +575,8 @@
         var btnDetails = document.createElement("button");
         btnDetails.type = "button";
         btnDetails.className = "secondary";
-        btnDetails.textContent = "Review fix details";
+        btnDetails.textContent = "View full report";
+        btnDetails.title = "Show or hide the full review report in this Genie panel (no separate window).";
         btnDetails.onclick = function () {
           var docEl = document.scrollingElement || document.documentElement || document.body;
           var prevTop = docEl ? docEl.scrollTop : 0;
@@ -528,6 +592,7 @@
         btnPdf.type = "button";
         btnPdf.className = "secondary";
         btnPdf.textContent = "Download PDF";
+        btnPdf.title = "Save a PDF copy to disk.";
         btnPdf.onclick = function () {
           vscode.postMessage({ command: "exportReviewReport", format: "pdf" });
         };
@@ -535,6 +600,7 @@
         btnXlsx.type = "button";
         btnXlsx.className = "secondary";
         btnXlsx.textContent = "Download Excel";
+        btnXlsx.title = "Save an Excel workbook to disk.";
         btnXlsx.onclick = function () {
           vscode.postMessage({ command: "exportReviewReport", format: "xlsx" });
         };
@@ -573,6 +639,13 @@
           bullets.appendChild(li);
         });
         details.appendChild(bullets);
+        if (metrics.total === 0 && metrics.pending === 0) {
+          var noneP = document.createElement("p");
+          noneP.className = "review-report-summary";
+          noneP.textContent =
+            "The latest review did not report any open findings for this file. Use Download PDF/Excel if you need a file copy of this summary.";
+          details.appendChild(noneP);
+        }
 
         function statusForIndex(idx) {
           if (applied.indexOf(idx) >= 0) return "Accepted";
@@ -647,8 +720,8 @@
             [
               String(i + 1),
               String(item.severity || "—"),
-              issueDescriptionOnly(item),
-              String(item.suggestion || "—"),
+              humanizeReviewReportField(issueDescriptionOnly(item)),
+              humanizeReviewReportField(String(item.suggestion || "—")),
               statusForIndex(idx),
             ].forEach(function (text) {
               var td = document.createElement("td");
@@ -696,45 +769,28 @@
           if (r.isDemo) {
             return;
           }
+          var idx = typeof r.findingIndex === "number" ? r.findingIndex : -1;
+          var fromTable = idx >= 0 && Array.isArray(view.findings) ? view.findings[idx] : null;
+          var detailSrc =
+            fromTable && fromTable.detail != null && String(fromTable.detail).trim()
+              ? fromTable.detail
+              : r.detail;
+          var suggestionSrc =
+            fromTable && fromTable.suggestion != null && String(fromTable.suggestion).trim()
+              ? fromTable.suggestion
+              : r.suggestion;
           var block = document.createElement("div");
           block.className = "review-fix-detail-block";
           var h2 = document.createElement("div");
           h2.className = "review-fix-detail-title";
-          h2.textContent = shortHeadingFromRecord(r);
+          h2.textContent = shortHeadingFromRecord({
+            title: (fromTable && fromTable.title) || r.title,
+            detail: detailSrc,
+            suggestion: suggestionSrc,
+          });
           block.appendChild(h2);
-          [["Description", r.detail || "—"], ["Suggested fix", r.suggestion || "—"]].forEach(function (pair) {
-            var sub = document.createElement("div");
-            sub.className = "review-fix-detail-label";
-            sub.textContent = pair[0];
-            block.appendChild(sub);
-            var pre = document.createElement("pre");
-            pre.className = "review-fix-detail-pre";
-            pre.textContent = String(pair[1]);
-            block.appendChild(pre);
-          });
-          var subDiff = document.createElement("div");
-          subDiff.className = "review-fix-detail-label";
-          subDiff.textContent = "Unified diff";
-          block.appendChild(subDiff);
-          var diffWrap = document.createElement("div");
-          diffWrap.className = "review-fix-detail-diff";
-          var diffLines = String(r.unifiedDiff || "—").split(/\r?\n/);
-          diffLines.forEach(function (line) {
-            var ln = document.createElement("div");
-            ln.className = "review-fix-detail-diff-line";
-            if (line.indexOf("+++") === 0 || line.indexOf("+") === 0) {
-              ln.className += " add";
-            } else if (line.indexOf("---") === 0 || line.indexOf("-") === 0) {
-              ln.className += " del";
-            } else if (line.indexOf("@@") === 0) {
-              ln.className += " meta";
-            } else {
-              ln.className += " same";
-            }
-            ln.textContent = line || " ";
-            diffWrap.appendChild(ln);
-          });
-          block.appendChild(diffWrap);
+          appendReportFieldBody(block, "Description", issueDescriptionOnly({ detail: detailSrc }));
+          appendReportFieldBody(block, "Suggested fix", suggestionSrc || "—");
           details.appendChild(block);
         });
         return details;
@@ -903,12 +959,12 @@
           tr.appendChild(tdSev);
           var tdDesc = document.createElement("td");
           tdDesc.className = isApplied ? "col-description col-description-applied" : "";
-          tdDesc.textContent = issueDescriptionOnly(item);
+          tdDesc.textContent = humanizeReviewReportField(issueDescriptionOnly(item));
           tr.appendChild(tdDesc);
           var tdSug = document.createElement("td");
           var sugText = String(item.suggestion || "").trim();
           tdSug.className = isApplied ? "col-suggestion col-suggestion-applied" : "col-suggestion";
-          renderSuggestedFixContent(tdSug, sugText);
+          renderSuggestedFixContent(tdSug, humanizeReviewReportField(sugText || "—"));
           tr.appendChild(tdSug);
           var tdFix = document.createElement("td");
           tdFix.className = "col-fix";
@@ -1139,28 +1195,25 @@
             : "Nothing to apply right now.";
         doneCard.appendChild(doneSub);
 
-        if (totalFindings > 0 || mm.applied > 0 || mm.rejected > 0 || mm.pending > 0) {
-          var chips2 = document.createElement("div");
-          chips2.className = "review-complete-metrics";
-          [
-            "Findings reviewed: " + mm.total,
-            "Fixed (applied): " + mm.applied,
-            "Rejected: " + mm.rejected,
-            "Still pending: " + mm.pending
-          ].forEach(function (label) {
-            var chip = document.createElement("span");
-            chip.className = "review-complete-chip";
-            chip.textContent = label;
-            chips2.appendChild(chip);
-          });
-          doneCard.appendChild(chips2);
-        }
-        if (totalFindings > 0 || mm.applied > 0) {
-          doneCard.appendChild(buildCaughtUpActions());
-          var fallbackDetails = buildCaughtUpDetails();
-          if (fallbackDetails) {
-            doneCard.appendChild(fallbackDetails);
-          }
+        var chips2 = document.createElement("div");
+        chips2.className = "review-complete-metrics";
+        [
+          "Findings reviewed: " + mm.total,
+          "Fixed (applied): " + mm.applied,
+          "Rejected: " + mm.rejected,
+          "Still pending: " + mm.pending
+        ].forEach(function (label) {
+          var chip = document.createElement("span");
+          chip.className = "review-complete-chip";
+          chip.textContent = label;
+          chips2.appendChild(chip);
+        });
+        doneCard.appendChild(chips2);
+        // Full in-panel report (summary, metrics, accepted diffs) — same as when rows exist; not a separate webview.
+        doneCard.appendChild(buildCaughtUpActions());
+        var fallbackDetails = buildCaughtUpDetails();
+        if (fallbackDetails) {
+          doneCard.appendChild(fallbackDetails);
         }
         root.appendChild(doneCard);
       }
@@ -1383,12 +1436,28 @@
         streamStatusEl.textContent =
           s.endpoint === "codeReview" ? "Live review response" : "Live response stream";
       }
-      var showStream = !reviewCaughtUpOnly && (streamHasText || !!s.streamLive);
+      // Code review: keep the stream panel visible while the suite is busy so the UI does not "blink" empty between stages.
+      var reviewStreamVisible =
+        s.endpoint === "codeReview" &&
+        (streamHasText || !!s.streamLive || !!s.busy);
+      var showStream =
+        !reviewCaughtUpOnly &&
+        (s.endpoint === "codeReview" ? reviewStreamVisible : streamHasText || !!s.streamLive);
       if (showStream) {
         sw.classList.remove("hidden");
-        // While the model is streaming, show an empty live area (caret in CSS) — not "waiting for tokens".
-        st.textContent = streamHasText ? String(s.streamText) : "";
-        if (s.busy || s.streamLive) sw.classList.add("streaming"); else sw.classList.remove("streaming");
+        if (streamHasText) {
+          st.textContent = String(s.streamText);
+        } else if (s.endpoint === "codeReview") {
+          st.textContent = s.streamLive
+            ? "Streaming model output — text will appear below as tokens arrive."
+            : s.busy
+              ? "Preparing the next review step… Model output will stream here when it starts."
+              : "";
+        } else {
+          st.textContent = "";
+        }
+        if (s.busy || s.streamLive) sw.classList.add("streaming");
+        else sw.classList.remove("streaming");
         sw.open = s.endpoint === "codeReview" || !!s.streamLive || !!s.streamOpen;
       } else {
         st.textContent = "";
@@ -1509,11 +1578,18 @@
       var out = document.getElementById("out");
       var renderedPanel = document.getElementById("rendered-panel");
       var reviewHasRows = s.endpoint === "codeReview" ? hasRenderableReviewContent(s.structuredData) : true;
+      var hasStreamOrText =
+        !!(s.streamText && String(s.streamText).trim()) || !!(s.displayText && String(s.displayText).trim());
+      var hasStructuredKeys =
+        s.structuredData &&
+        typeof s.structuredData === "object" &&
+        Object.keys(s.structuredData).length > 0;
+      // Code review: show the results panel whenever we have saved structured data (including zero findings),
+      // so the green "caught up / no findings" card is not hidden behind an empty layout.
       var hasExplanationContent =
-        reviewHasRows &&
-        !!((s.streamText && String(s.streamText).trim()) ||
-          (s.displayText && String(s.displayText).trim()) ||
-          (s.structuredData && typeof s.structuredData === "object" && Object.keys(s.structuredData).length));
+        s.endpoint === "codeReview"
+          ? hasStructuredKeys
+          : reviewHasRows && (hasStreamOrText || hasStructuredKeys);
       if (hasExplanationContent) {
         renderedPanel.classList.remove("hidden");
         if (reviewCaughtUpOnly) {
@@ -1763,6 +1839,14 @@
         s.streamOpen = true;
       }
       if (m.type === "userQuestion") s.userQuestion = m.text != null ? String(m.text) : "";
+      if (m.type === "reviewPatch") {
+        if (m.displayText !== undefined && m.displayText !== null) {
+          s.displayText = String(m.displayText);
+        }
+        if (m.structuredData !== undefined && m.structuredData !== null) {
+          s.structuredData = m.structuredData;
+        }
+      }
       if (m.type === "result") {
         s.remarks = m.remarks || "";
         s.displayText = m.displayText || "";

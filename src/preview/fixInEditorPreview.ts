@@ -588,8 +588,10 @@ function computeFixChunks(baseText: string, afterText: string, baseDoc: vscode.T
       110
     );
 
+    // Sequential ids (0..n-1) must match `decisions` / `chunkDiffDismissed` array slots — span index can skip
+    // when a region is a no-op, so using `chunkIndex` here caused mis-indexing and false "all rejected" finishes.
     chunks.push({
-      id: chunkIndex,
+      id: chunks.length,
       startPartIndex: start,
       endPartIndex: end,
       anchorLine,
@@ -605,16 +607,33 @@ function computeFixChunks(baseText: string, afterText: string, baseDoc: vscode.T
 }
 
 async function applyWholeDocumentReplace(docUri: vscode.Uri, newText: string): Promise<boolean> {
-  for (let attempt = 0; attempt < 3; attempt++) {
+  const fullDocumentRange = (doc: vscode.TextDocument): vscode.Range => {
+    if (doc.lineCount === 0) {
+      return new vscode.Range(0, 0, 0, 0);
+    }
+    const last = doc.lineCount - 1;
+    return new vscode.Range(0, 0, last, doc.lineAt(last).text.length);
+  };
+
+  for (let attempt = 0; attempt < 8; attempt++) {
     const doc = await vscode.workspace.openTextDocument(docUri);
+    const visible = vscode.window.visibleTextEditors.find((e) => documentUrisEqual(e.document.uri, docUri));
+    if (visible && documentUrisEqual(visible.document.uri, doc.uri)) {
+      const rangeEd = fullDocumentRange(visible.document);
+      const edited = await visible.edit((eb) => eb.replace(rangeEd, newText));
+      if (edited) {
+        return true;
+      }
+    }
+    const range = fullDocumentRange(doc);
     const edit = new vscode.WorkspaceEdit();
-    const fullRange = new vscode.Range(doc.positionAt(0), doc.positionAt(doc.getText().length));
-    edit.replace(doc.uri, fullRange, newText);
+    edit.replace(doc.uri, range, newText);
     const ok = await vscode.workspace.applyEdit(edit);
     if (ok) {
       return true;
     }
-    await new Promise((resolve) => setTimeout(resolve, 18));
+    const backoff = 20 * Math.pow(2, Math.min(attempt, 5));
+    await new Promise((resolve) => setTimeout(resolve, backoff));
   }
   return false;
 }
@@ -667,7 +686,7 @@ function computeFixPreviewLensLayout(st: FixPreviewLensState, document: vscode.T
   const { mergeParts, chunks, decisions, chunkDiffDismissed } = st;
   const stackedMap = getChunkStackedVisualRanges(mergeParts, chunks, decisions, chunkDiffDismissed);
   const lineCount = document.lineCount;
-  const pendingGlobal = chunks.some((_, i) => !chunkDiffDismissed[i]);
+  const pendingGlobal = chunks.some((c) => !chunkDiffDismissed[c.id]);
   const maxChunkLineInclusive = pendingGlobal ? Math.max(0, lineCount - 2) : Math.max(0, lineCount - 1);
   const usedLines = new Set<number>();
   const chunkLineIndex = new Map<number, number>();
@@ -1068,7 +1087,7 @@ export async function previewFixInEditorAndWait(
   };
 
   const finishWhenAllChunksDismissed = async (): Promise<void> => {
-    if (!chunks.every((_, i) => chunkDiffDismissed[i])) {
+    if (!chunks.every((c) => chunkDiffDismissed[c.id])) {
       return;
     }
     if (resolved) {
@@ -1086,7 +1105,8 @@ export async function previewFixInEditorAndWait(
       cleanup();
       return;
     }
-    const allRejected = decisions.every((d) => !d);
+    const allRejected =
+      chunks.length > 0 && chunks.every((c) => decisions[c.id] === false);
     finalChoiceResolver(allRejected ? "reject" : "accept");
     cleanup();
   };
@@ -1125,9 +1145,9 @@ export async function previewFixInEditorAndWait(
   activeFixPreviewSession = {
     getChunkCount: () => chunks.length,
     getFirstPendingChunkId: () => {
-      for (let i = 0; i < chunkDiffDismissed.length; i++) {
-        if (!chunkDiffDismissed[i]) {
-          return i;
+      for (const c of chunks) {
+        if (!chunkDiffDismissed[c.id]) {
+          return c.id;
         }
       }
       return undefined;
@@ -1161,14 +1181,20 @@ export async function previewFixInEditorAndWait(
       if (id === undefined) {
         return;
       }
-      await activeFixPreviewSession?.acceptChunk(id);
+      const session = activeFixPreviewSession;
+      if (session) {
+        await session.acceptChunk(id);
+      }
     },
     rejectCurrentChunk: async () => {
       const id = ensureFocusedPendingChunk();
       if (id === undefined) {
         return;
       }
-      await activeFixPreviewSession?.rejectChunk(id);
+      const session = activeFixPreviewSession;
+      if (session) {
+        await session.rejectChunk(id);
+      }
     },
     undoInPreview: async () => {
       let ed = findTextEditorForUri(docUri);
@@ -1241,12 +1267,12 @@ export async function previewFixInEditorAndWait(
         if (resolved) return;
         if (chunkId < 0 || chunkId >= decisions.length) return;
         if (chunkDiffDismissed[chunkId]) {
-          const fallback = chunkDiffDismissed.findIndex((d) => !d);
-          if (fallback < 0) {
+          const pending = getPendingChunkIds();
+          if (!pending.length) {
             await finishWhenAllChunksDismissed();
             return;
           }
-          chunkId = fallback;
+          chunkId = pending[0];
         }
         decisions[chunkId] = true;
         chunkDiffDismissed[chunkId] = true;
@@ -1271,12 +1297,12 @@ export async function previewFixInEditorAndWait(
         if (resolved) return;
         if (chunkId < 0 || chunkId >= decisions.length) return;
         if (chunkDiffDismissed[chunkId]) {
-          const fallback = chunkDiffDismissed.findIndex((d) => !d);
-          if (fallback < 0) {
+          const pending = getPendingChunkIds();
+          if (!pending.length) {
             await finishWhenAllChunksDismissed();
             return;
           }
-          chunkId = fallback;
+          chunkId = pending[0];
         }
         decisions[chunkId] = false;
         chunkDiffDismissed[chunkId] = true;

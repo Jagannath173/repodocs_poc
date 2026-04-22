@@ -71,6 +71,53 @@ export interface ReviewTableState {
   appliedFixRecords?: AppliedFixRecord[];
 }
 
+function buildReviewGenieStructuredSnapshot(args: {
+  summary: string;
+  findings: ReviewFinding[];
+  sections: ReviewSectionPayload[];
+  appliedIndices?: number[];
+  appliedFindingKeys?: string[];
+  rejectedFindingKeys?: string[];
+  rejectedIndices?: number[];
+  reviewFindingCount?: number;
+  appliedFixRecords?: AppliedFixRecord[];
+  documentUri: string | undefined;
+}): { formattedDisplayText: string; structuredData: Record<string, unknown> } {
+  const findings = args.findings ?? [];
+  const formattedFindings = findings
+    .map((f, i) => {
+      return `${i + 1}. [${f.severity || "info"}] ${f.title || "Issue"}\nCategory: ${f.category || "-"}\nDetail: ${f.detail || "-"}\nSuggestion: ${f.suggestion || "-"}`;
+    })
+    .join("\n\n");
+  const findingsLen = findings.length;
+  const appliedKeyCount = args.appliedFindingKeys?.length ?? 0;
+  const rejectedKeyCount = args.rejectedFindingKeys?.length ?? 0;
+  const declaredCount =
+    typeof args.reviewFindingCount === "number" && !Number.isNaN(args.reviewFindingCount)
+      ? Math.max(0, args.reviewFindingCount)
+      : findingsLen;
+  const totalFindingsCount = Math.max(declaredCount, findingsLen, appliedKeyCount + rejectedKeyCount);
+  const reportLabel = basenameFromUriString(args.documentUri);
+  const structuredData = {
+    summary: args.summary,
+    findings,
+    sections: args.sections ?? [],
+    appliedIndices: args.appliedIndices ?? [],
+    appliedFindingKeys: args.appliedFindingKeys ?? [],
+    rejectedFindingKeys: args.rejectedFindingKeys ?? [],
+    rejectedIndices: args.rejectedIndices ?? [],
+    totalFindingsCount,
+    reviewFindingCount: totalFindingsCount,
+    appliedFixRecords: Array.isArray(args.appliedFixRecords) ? args.appliedFixRecords.filter((r) => !r?.isDemo) : [],
+    usingDemoFixRecords: false,
+    reportFileLabel: reportLabel,
+  } as unknown as Record<string, unknown>;
+  return {
+    formattedDisplayText: formattedFindings || "No findings.",
+    structuredData,
+  };
+}
+
 export class ReviewWebviewSession {
   private readonly panel: AssistantResultPanel;
   private disposed = false;
@@ -159,43 +206,24 @@ export class ReviewWebviewSession {
   setReview(payload: ReviewPayload): void {
     if (this.disposed) return;
     this.latestSections = payload.sections ?? [];
-    const formattedFindings = (payload.findings ?? [])
-      .map((f, i) => {
-        return `${i + 1}. [${f.severity || "info"}] ${f.title || "Issue"}\nCategory: ${f.category || "-"}\nDetail: ${f.detail || "-"}\nSuggestion: ${f.suggestion || "-"}`;
-      })
-      .join("\n\n");
-    const findingsLen = payload.findings?.length ?? 0;
-    const appliedKeyCount = payload.appliedFindingKeys?.length ?? 0;
-    const rejectedKeyCount = payload.rejectedFindingKeys?.length ?? 0;
-    const declaredCount =
-      typeof payload.reviewFindingCount === "number" && !Number.isNaN(payload.reviewFindingCount)
-        ? Math.max(0, payload.reviewFindingCount)
-        : findingsLen;
-    /** Keep totals truthful when `findings` is empty but fingerprint fix state persists (re-review, cleared table). */
-    const totalFindingsCount = Math.max(declaredCount, findingsLen, appliedKeyCount + rejectedKeyCount);
-    const reportLabel = basenameFromUriString(this.documentUri);
-    const structuredData = {
+    const { formattedDisplayText, structuredData } = buildReviewGenieStructuredSnapshot({
       summary: payload.summary,
-      findings: payload.findings,
+      findings: payload.findings ?? [],
       sections: payload.sections ?? [],
-      appliedIndices: payload.appliedIndices ?? [],
-      appliedFindingKeys: payload.appliedFindingKeys ?? [],
-      rejectedFindingKeys: payload.rejectedFindingKeys ?? [],
-      rejectedIndices: payload.rejectedIndices ?? [],
-      totalFindingsCount,
-      reviewFindingCount: totalFindingsCount,
-      appliedFixRecords: Array.isArray(payload.appliedFixRecords)
-        ? payload.appliedFixRecords.filter((r) => !r?.isDemo)
-        : [],
-      usingDemoFixRecords: false,
-      reportFileLabel: reportLabel,
-    } as unknown as Record<string, unknown>;
+      appliedIndices: payload.appliedIndices,
+      appliedFindingKeys: payload.appliedFindingKeys,
+      rejectedFindingKeys: payload.rejectedFindingKeys,
+      rejectedIndices: payload.rejectedIndices,
+      reviewFindingCount: payload.reviewFindingCount,
+      appliedFixRecords: payload.appliedFixRecords,
+      documentUri: this.documentUri,
+    });
     this.lastReviewStructuredData = structuredData;
     this.panel.setStreamText("");
     this.panel.setStreamLive(false);
     this.panel.setResult({
       remarks: "",
-      displayText: formattedFindings || "No findings.",
+      displayText: formattedDisplayText,
       endpoint: "codeReview",
       reviewMode: false,
       diffParts: [],
@@ -232,7 +260,7 @@ export class ReviewWebviewSession {
       storedFindingsLen,
       storedAppliedK + storedRejectedK
     );
-    this.setReview({
+    const { formattedDisplayText, structuredData } = buildReviewGenieStructuredSnapshot({
       summary: stored.summary,
       findings: stored.findings,
       sections: mappedSections,
@@ -242,6 +270,12 @@ export class ReviewWebviewSession {
       rejectedIndices: stored.rejectedIndices ?? [],
       reviewFindingCount,
       appliedFixRecords: stored.appliedFixRecords,
+      documentUri: this.documentUri,
+    });
+    this.lastReviewStructuredData = structuredData;
+    this.panel.patchReviewSnapshot({
+      displayText: formattedDisplayText,
+      structuredData,
     });
   }
 

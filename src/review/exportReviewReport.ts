@@ -16,7 +16,7 @@ function buildPlainReportBody(stored: ReviewTableState): string {
   lines.push(`Code review report — ${stored.fileName}`);
   lines.push(`Summary: ${stored.summary || "—"}`);
   lines.push("");
-  lines.push("Accepted fixes (unified diff per row):");
+  lines.push("Accepted fixes:");
   lines.push("");
   for (const r of records) {
     const title = String(r.title || "Finding").replace(/\[sample\]\s*/gi, "").trim();
@@ -29,8 +29,6 @@ function buildPlainReportBody(stored: ReviewTableState): string {
     if (r.appliedAt) {
       lines.push(`Recorded: ${r.appliedAt}`);
     }
-    lines.push("Unified diff:");
-    lines.push(r.unifiedDiff || "(no diff captured)");
     lines.push("");
   }
   return lines.join("\n");
@@ -78,7 +76,6 @@ export async function exportReviewReportToPdf(stored: ReviewTableState): Promise
   const pdfDoc = await PDFDocument.create();
   const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
   const fontBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
-  const mono = await pdfDoc.embedFont(StandardFonts.Courier);
   const pageWidth = 595; // A4
   const pageHeight = 842;
   const margin = 38;
@@ -290,8 +287,7 @@ export async function exportReviewReportToPdf(stored: ReviewTableState): Promise
     drawLines(["No accepted fixes recorded."], margin, contentW, 9, 12, textMuted, font);
   } else {
     for (const r of records) {
-      const diffLines = asciiSafe(r.unifiedDiff || "(no diff captured)").split("\n").slice(0, 44);
-      const blockNeed = 74 + Math.min(44, diffLines.length) * 9;
+      const blockNeed = 72;
       ensureSpace(blockNeed);
       page.drawRectangle({
         x: margin,
@@ -323,16 +319,6 @@ export async function exportReviewReportToPdf(stored: ReviewTableState): Promise
       const sug = `Suggested fix: ${clip(r.suggestion || "—", 220)}`;
       page.drawText(asciiSafe(desc), { x: margin + 10, y: y - 39, size: 8.2, font, color: textDark, maxWidth: contentW - 20 });
       page.drawText(asciiSafe(sug), { x: margin + 10, y: y - 50, size: 8.2, font, color: textDark, maxWidth: contentW - 20 });
-
-      const codeTop = y - 60;
-      const codeH = Math.max(18, Math.min(44, diffLines.length) * 9);
-      page.drawRectangle({ x: margin + 10, y: codeTop - codeH + 5, width: contentW - 20, height: codeH, color: rgb(0.95, 0.96, 0.98) });
-      let codeY = codeTop - 3;
-      for (const dl of diffLines) {
-        if (codeY < margin + 8) break;
-        page.drawText(clip(dl, 190), { x: margin + 14, y: codeY, size: 7, font: mono, color: rgb(0.18, 0.2, 0.24), maxWidth: contentW - 28 });
-        codeY -= 8.6;
-      }
       y -= blockNeed + 8;
     }
   }
@@ -357,12 +343,12 @@ export async function exportReviewReportToXlsx(stored: ReviewTableState): Promis
   const sheet = wb.addWorksheet("Review report", {
     properties: { defaultRowHeight: 18 },
   });
-  [6, 28, 12, 40, 36, 62, 22].forEach((w, i) => {
+  [6, 28, 12, 40, 36, 22].forEach((w, i) => {
     sheet.getColumn(i + 1).width = w;
   });
 
   let rowNum = 1;
-  const header = ["#", "Title", "Severity", "Description", "Suggested fix", "Unified diff", "Recorded (UTC)"];
+  const header = ["#", "Title", "Severity", "Description", "Suggested fix", "Recorded (UTC)"];
   sheet.getRow(rowNum).values = header;
   sheet.getRow(rowNum).font = { bold: true };
   rowNum++;
@@ -373,15 +359,7 @@ export async function exportReviewReportToXlsx(stored: ReviewTableState): Promis
   );
   for (const r of records) {
     const title = String(r.title || "").replace(/\[sample\]\s*/gi, "").trim();
-    sheet.getRow(rowNum).values = [
-      r.findingIndex + 1,
-      title,
-      r.severity,
-      r.detail,
-      r.suggestion,
-      r.unifiedDiff,
-      r.appliedAt ?? "",
-    ];
+    sheet.getRow(rowNum).values = [r.findingIndex + 1, title, r.severity, r.detail, r.suggestion, r.appliedAt ?? ""];
     rowNum++;
   }
 

@@ -25,6 +25,7 @@ import {
 import { disposeReviewPanelsForDocument } from "../../review/reviewBridge";
 import { tryGetGitDiffVsHead } from "../../utils/gitDiff";
 import { isFindingAlreadySatisfiedByFile } from "../../utils/reviewFilter";
+import { makeCrossStageDedupeKey } from "../../utils/reviewCrossStageDedupe";
 import { openAuthWebviewAndAuthenticate } from "../webview/auth_webview/authPanel";
 import { renderPromptTemplate } from "../../utils/promptRenderer";
 import { log, sanitizeForLog } from "../../utils/logger";
@@ -38,7 +39,9 @@ const REVIEW_SYSTEM_ROLE =
   "Each suggestion must be concrete, minimal, and directly change the codebase to address the issue. " +
   "Only report highly relevant findings that can be fixed in this exact file and current scope. " +
   "Do not report speculative issues, style-only nits without a concrete code edit, or findings that require unrelated refactors. " +
-  "Each suggestion must describe an exact code-level change, not a generic recommendation.";
+  "Each suggestion must describe an exact code-level change, not a generic recommendation. " +
+  "Do not repeat the same concrete defect in multiple findings within one response; merge duplicates. " +
+  "Prefer the smallest possible edit (the exact expression, call, or few lines involved)—do not rewrite whole classes, files, or import blocks unless the defect truly spans them.";
 
 const REVIEW_PROMPT_FILES = {
   quality: "review/quality_review.jinja",
@@ -249,6 +252,8 @@ export async function runCodeReview(): Promise<void> {
 
   const sections: ReviewSectionPayload[] = [];
   const combinedFindings: ReviewPayload["findings"] = [];
+  /** Same bad code + same fix text reported by Quality, Security, Cloud, Org, etc. → keep one row. */
+  const crossStageDedupeKeys = new Set<string>();
 
   try {
     resetMockReviewStage();
@@ -316,7 +321,7 @@ export async function runCodeReview(): Promise<void> {
               log.debug("codeReview", "Skipped non-JSON SSE payload", { endpoint, lineChars: trimmed.length });
             }
           },
-          { systemRole: systemRoleForReview, signal: activeReviewAbort.signal }
+          { systemRole: systemRoleForReview, signal: activeReviewAbort.signal, stream: true }
         );
       } catch (e: unknown) {
         const isAbort = e instanceof Error && e.name === "AbortError";
@@ -362,6 +367,7 @@ export async function runCodeReview(): Promise<void> {
       }
       let skippedApplied = 0;
       let skippedRejectedOnly = 0;
+      let skippedCrossStageDup = 0;
       const unseen: ReviewFinding[] = [];
       for (const f of filtered) {
         if ([...priorAppliedKeySet].some((sk) => findingMatchesStoredKey(f, sk))) {
@@ -372,6 +378,12 @@ export async function runCodeReview(): Promise<void> {
           skippedRejectedOnly += 1;
           continue;
         }
+        const dedupeKey = makeCrossStageDedupeKey(f);
+        if (crossStageDedupeKeys.has(dedupeKey)) {
+          skippedCrossStageDup += 1;
+          continue;
+        }
+        crossStageDedupeKeys.add(dedupeKey);
         unseen.push(f);
       }
       if (skippedApplied > 0) {
@@ -379,6 +391,12 @@ export async function runCodeReview(): Promise<void> {
       }
       if (skippedRejectedOnly > 0) {
         panel.addReviewLog(`[${label}] Skipped ${skippedRejectedOnly} rejected carry-over finding(s).`, "info");
+      }
+      if (skippedCrossStageDup > 0) {
+        panel.addReviewLog(
+          `[${label}] Skipped ${skippedCrossStageDup} duplicate finding(s) already reported in an earlier review stage.`,
+          "info"
+        );
       }
       if (unseen.length === 0) {
         if (review.findings.length > 0 || skippedApplied > 0 || skippedRejectedOnly > 0) {
@@ -542,7 +560,7 @@ function parseEndpointReviewJson(raw: string, endpoint: ReviewEndpoint): ReviewP
                 category: endpoint,
                 title: "Unstructured model response",
                 detail: raw.trim().slice(0, 4000),
-                suggestion: "Retry review or adjust prompt/template to enforce JSON output.",
+                suggestion: "—",
               },
             ]
           : [],

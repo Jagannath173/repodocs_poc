@@ -51,6 +51,19 @@ export class AssistantResultPanel {
     void this.host.postMessage({ type: "authData", sessionId: this.sessionId, url, code });
   }
 
+  /**
+   * Updates review table + structured payload in Genie without resetting fix-applying spinners
+   * or stream state (used after persist while a fix / preview is still in flight).
+   */
+  patchReviewSnapshot(payload: { displayText: string; structuredData: Record<string, unknown> }): void {
+    void this.host.postMessage({
+      type: "reviewPatch",
+      sessionId: this.sessionId,
+      displayText: payload.displayText,
+      structuredData: payload.structuredData,
+    });
+  }
+
   setResult(payload: AssistantRenderPayload): void {
     const apply = payload.applyCode?.trim() ?? "";
     void this.host.postMessage({

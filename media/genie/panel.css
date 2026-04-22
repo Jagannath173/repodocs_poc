@@ -210,6 +210,9 @@ details.collapse-panel > summary::-webkit-details-marker { display: none; }
 .stream-wrap.streaming:not([open]) .stream-status::after { content: " (streaming…)"; font-weight: 400; color: var(--vscode-descriptionForeground); }
 .stream-wrap.streaming[open] #stream::after { content: "▋"; opacity: 0.85; margin-left: 2px; animation: streamCaret 1s steps(1, end) infinite; }
 @keyframes streamCaret { 0%, 49% { opacity: 0; } 50%, 100% { opacity: 1; } }
+.stream-wrap.streaming #stream {
+  min-height: 3.2em;
+}
 #stream {
   margin: 0;
   padding: 10px 12px;
@@ -565,6 +568,19 @@ details.collapse-panel > summary::-webkit-details-marker { display: none; }
   font-size: 0.78em;
   color: var(--vscode-descriptionForeground);
   margin-bottom: 8px;
+}
+.review-fix-detail-body {
+  white-space: pre-wrap;
+  font-size: 0.88em;
+  line-height: 1.5;
+  color: var(--vscode-foreground);
+  margin: 0 0 12px;
+  max-height: 36vh;
+  overflow: auto;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: var(--vscode-editor-inactiveSelectionBackground, rgba(120, 120, 120, 0.12));
+  border: 1px solid var(--vscode-editorWidget-border, rgba(128, 128, 128, 0.25));
 }
 .review-fix-detail-label {
   font-size: 0.72em;
