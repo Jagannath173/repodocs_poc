@@ -516,6 +516,8 @@
       }
       var applied = Array.isArray(view.appliedIndices) ? view.appliedIndices : [];
       var rejected = Array.isArray(view.rejectedIndices) ? view.rejectedIndices : [];
+      var appliedKeys = Array.isArray(view.appliedFindingKeys) ? view.appliedFindingKeys : [];
+      var rejectedKeys = Array.isArray(view.rejectedFindingKeys) ? view.rejectedFindingKeys : [];
       var visibleIndices = collectVisibleFindingIndices(view);
       if (visibleIndices.length > 0) {
         var appliedVisible = 0;
@@ -566,27 +568,35 @@
       }
       var applied = Array.isArray(view.appliedIndices) ? view.appliedIndices : [];
       var rejected = Array.isArray(view.rejectedIndices) ? view.rejectedIndices : [];
+      var appliedKeys = Array.isArray(view.appliedFindingKeys) ? view.appliedFindingKeys : [];
+      var rejectedKeys = Array.isArray(view.rejectedFindingKeys) ? view.rejectedFindingKeys : [];
       var reviewStillRunning = !!(session && (session.busy || session.streamLive));
       var applyingIndex = session && session.fixApplyingIndex != null ? session.fixApplyingIndex : null;
       var applyingAll = !!(session && session.fixApplyingAll);
       var fixRunInProgress = applyingAll || applyingIndex !== null;
-      function buildCaughtUpActions() {
+      function buildReportActions(options) {
+        var includeViewFull = !!(options && options.includeViewFull);
+        var alignRight = !!(options && options.alignRight);
         var row = document.createElement("div");
         row.className = "review-report-actions-btns";
-        var btnDetails = document.createElement("button");
-        btnDetails.type = "button";
-        btnDetails.className = "secondary";
-        btnDetails.textContent = "View full report";
-        btnDetails.title = "Open the full report in a separate Genie tab.";
-        btnDetails.onclick = function () {
-          var s = sessions[activeSessionId];
-          if (!s) return;
-          vscode.postMessage({
-            command: "openReviewReportTab",
-            sessionId: activeSessionId,
-            view: view
-          });
-        };
+        if (alignRight) {
+          row.classList.add("review-report-actions-btns-corner");
+        }
+        if (includeViewFull) {
+          var btnFull = document.createElement("button");
+          btnFull.type = "button";
+          btnFull.className = "primary";
+          btnFull.textContent = "View full report";
+          btnFull.title = "Open full report in a new Genie tab.";
+          btnFull.onclick = function () {
+            vscode.postMessage({
+              command: "openReviewReportTab",
+              sessionId: activeSessionId,
+              view: view
+            });
+          };
+          row.appendChild(btnFull);
+        }
         var btnPdf = document.createElement("button");
         btnPdf.type = "button";
         btnPdf.className = "secondary";
@@ -603,15 +613,41 @@
         btnXlsx.onclick = function () {
           vscode.postMessage({ command: "exportReviewReport", format: "xlsx" });
         };
-        row.appendChild(btnDetails);
         row.appendChild(btnPdf);
         row.appendChild(btnXlsx);
         return row;
       }
+      function buildReviewSummaryCard() {
+        var box = document.createElement("div");
+        box.className = "review-summary-card";
+        var title = document.createElement("p");
+        title.className = "review-summary-title";
+        title.textContent = "Review summary";
+        box.appendChild(title);
+        var sub = document.createElement("p");
+        sub.className = "review-summary-sub";
+        sub.textContent =
+          "Use View full report to open the complete tables and accepted fix details in a new Genie tab.";
+        box.appendChild(sub);
+        var m = computeReviewMetrics(view);
+        var chips = document.createElement("div");
+        chips.className = "review-complete-metrics";
+        [
+          "Total findings: " + m.total,
+          "Fixed (Accepted): " + m.applied,
+          "Rejected: " + m.rejected,
+          "Still open: " + m.pending
+        ].forEach(function (label) {
+          var chip = document.createElement("span");
+          chip.className = "review-complete-chip";
+          chip.textContent = label;
+          chips.appendChild(chip);
+        });
+        box.appendChild(chips);
+        box.appendChild(buildReportActions({ includeViewFull: true, alignRight: false }));
+        return box;
+      }
       function buildCaughtUpDetails() {
-        if (!(session && (session.reviewFixDetailsOpen || session.reviewReportOnly))) {
-          return null;
-        }
         var details = document.createElement("div");
         details.className = "review-fix-details";
         var heading = document.createElement("h3");
@@ -651,10 +687,32 @@
           if (rejected.indexOf(idx) >= 0) return "Rejected";
           return "Open";
         }
-
-        function isActionedStatus(status) {
-          return status === "Accepted" || status === "Rejected";
+        function normalizeKeyPart(v) {
+          return String(v || "").trim().toLowerCase().replace(/\s+/g, " ");
         }
+        function legacyFindingKey(item) {
+          return [
+            normalizeKeyPart(item && item.title),
+            normalizeKeyPart(item && item.category),
+            normalizeKeyPart(item && item.severity),
+            normalizeKeyPart(reportSuggestedFix(item)),
+          ].join("|");
+        }
+        function stableFindingKey(item) {
+          var base = legacyFindingKey(item);
+          var d = normalizeKeyPart(item && item.detail).slice(0, 96);
+          return d ? base + "|" + d : base;
+        }
+        function statusForItem(item, idx) {
+          if (applied.indexOf(idx) >= 0) return "Accepted";
+          if (rejected.indexOf(idx) >= 0) return "Rejected";
+          var st = stableFindingKey(item || {});
+          var lg = legacyFindingKey(item || {});
+          if (appliedKeys.some(function (k) { return k === st || k === lg; })) return "Accepted";
+          if (rejectedKeys.some(function (k) { return k === st || k === lg; })) return "Rejected";
+          return "Open";
+        }
+
         function reportSuggestedFix(item, fallback) {
           var it = item && typeof item === "object" ? item : {};
           var value =
@@ -689,17 +747,9 @@
 
         function pushSectionTable(title, findings, summaryText) {
           if (!Array.isArray(findings) || !findings.length) return;
-          var actionedRows = findings.filter(function (f, i) {
-            var item = f && typeof f === "object" ? f : {};
-            var idx = typeof item.globalIndex === "number" ? item.globalIndex : i;
-            return isActionedStatus(statusForIndex(idx));
-          });
-          if (!actionedRows.length) {
-            return;
-          }
           var h = document.createElement("h4");
           h.className = "review-report-section-title";
-          h.textContent = title + " (actioned)";
+          h.textContent = title;
           details.appendChild(h);
           if (summaryText && String(summaryText).trim()) {
             var secSum = document.createElement("p");
@@ -722,7 +772,7 @@
           thead.appendChild(headRow);
           table.appendChild(thead);
           var tbody = document.createElement("tbody");
-          actionedRows.forEach(function (f, i) {
+          findings.forEach(function (f, i) {
             var item = f && typeof f === "object" ? f : {};
             var idx = typeof item.globalIndex === "number" ? item.globalIndex : i;
             var tr = document.createElement("tr");
@@ -731,7 +781,7 @@
               String(item.severity || "—"),
               humanizeReviewReportField(issueDescriptionOnly(item)),
               humanizeReviewReportField(reportSuggestedFix(item)),
-              statusForIndex(idx),
+              statusForItem(item, idx),
             ].forEach(function (text) {
               var td = document.createElement("td");
               td.textContent = text;
@@ -816,58 +866,24 @@
         reportCard.appendChild(reportTitle);
         var reportSub = document.createElement("p");
         reportSub.className = "review-complete-sub";
-        reportSub.textContent = "Detailed report snapshot in a separate Genie tab.";
+        reportSub.textContent = "Detailed report snapshot in this Genie tab.";
         reportCard.appendChild(reportSub);
-        reportCard.appendChild(buildCaughtUpActions());
         var reportDetails = buildCaughtUpDetails();
         if (reportDetails) {
           reportCard.appendChild(reportDetails);
         }
+        reportCard.appendChild(buildReportActions({ includeViewFull: false, alignRight: true }));
         reportWrap.appendChild(reportCard);
         root.appendChild(reportWrap);
         return;
       }
       if (!reviewStillRunning && isReviewCaughtUpOnly(view)) {
         clearEl(root);
-        var m = computeReviewMetrics(view);
 
         var onlyWrap = document.createElement("div");
         onlyWrap.className = "review-complete-only-wrap";
 
-        var doneCard = document.createElement("div");
-        doneCard.className = "review-complete-card";
-
-        var doneTitle = document.createElement("p");
-        doneTitle.className = "review-complete-title";
-        doneTitle.textContent = "All fixes are caught up for this file.";
-        doneCard.appendChild(doneTitle);
-
-        var doneSub = document.createElement("p");
-        doneSub.className = "review-complete-sub";
-        doneSub.textContent =
-          "Description and suggested fixes stay listed above whenever rows are shown. Run review again after large edits.";
-        doneCard.appendChild(doneSub);
-
-        var chips = document.createElement("div");
-        chips.className = "review-complete-metrics";
-        [
-          "Findings reviewed: " + m.total,
-          "Fixed (applied): " + m.applied,
-          "Rejected: " + m.rejected,
-          "Still pending: " + m.pending
-        ].forEach(function (label) {
-          var chip = document.createElement("span");
-          chip.className = "review-complete-chip";
-          chip.textContent = label;
-          chips.appendChild(chip);
-        });
-        doneCard.appendChild(chips);
-        doneCard.appendChild(buildCaughtUpActions());
-        var caughtDetails = buildCaughtUpDetails();
-        if (caughtDetails) {
-          doneCard.appendChild(caughtDetails);
-        }
-
+        var doneCard = buildReviewSummaryCard();
         onlyWrap.appendChild(doneCard);
         root.appendChild(onlyWrap);
         return;
@@ -970,7 +986,6 @@
           " still open";
       }
       root.appendChild(metricsBar);
-
       var fallbackGlobalIndex = 0;
       function renderFindingTable(sectionLabel, findings) {
         if (!Array.isArray(findings) || !findings.length) return;
@@ -1270,7 +1285,6 @@
         });
         doneCard.appendChild(chips2);
         // Full in-panel report (summary, metrics, accepted diffs) — same as when rows exist; not a separate webview.
-        doneCard.appendChild(buildCaughtUpActions());
         var fallbackDetails = buildCaughtUpDetails();
         if (fallbackDetails) {
           doneCard.appendChild(fallbackDetails);
@@ -1278,14 +1292,9 @@
         root.appendChild(doneCard);
       }
       if (root.querySelector(".review-findings-table")) {
-        var reportCorner = document.createElement("div");
-        reportCorner.className = "review-report-actions-corner";
-        reportCorner.appendChild(buildCaughtUpActions());
-        root.appendChild(reportCorner);
-        var liveDetails = buildCaughtUpDetails();
-        if (liveDetails) {
-          root.appendChild(liveDetails);
-        }
+        var actionsNearTable = buildReportActions({ includeViewFull: true, alignRight: false });
+        actionsNearTable.classList.add("review-report-actions-near-table");
+        root.appendChild(actionsNearTable);
       }
       if (applyingIndex !== null && applyingIndex !== undefined) {
         var scrollToApplyingRow = function () {

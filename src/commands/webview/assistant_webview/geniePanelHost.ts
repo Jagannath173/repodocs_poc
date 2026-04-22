@@ -3,6 +3,7 @@ import { getOrCreateGeniePanel } from "./genieHost";
 import { buildGeniePanelHtml } from "./genieDocument";
 import { getNonce } from "./genieNonce";
 import type { GenieCommand } from "./genieMessages";
+import { getStoredReview } from "../../../review/applyFixes";
 
 /**
  * Singleton mediator for the shared Genie `WebviewPanel`.
@@ -92,6 +93,20 @@ export class GeniePanelHost {
           if (!view || typeof view !== "object") {
             return;
           }
+          const liveStored = getStoredReview();
+          const reportView =
+            liveStored && liveStored.findings?.length
+              ? {
+                  ...(view as Record<string, unknown>),
+                  summary: liveStored.summary,
+                  findings: liveStored.findings,
+                  appliedIndices: liveStored.appliedIndices ?? [],
+                  rejectedIndices: liveStored.rejectedIndices ?? [],
+                  appliedFindingKeys: liveStored.appliedFindingKeys ?? [],
+                  rejectedFindingKeys: liveStored.rejectedFindingKeys ?? [],
+                  appliedFixRecords: liveStored.appliedFixRecords ?? [],
+                }
+              : (view as Record<string, unknown>);
           const reportSessionId = `${sourceSessionId}:report:${Date.now()}`;
           this.listeners.set(reportSessionId, {
             apply: new Set(),
@@ -106,7 +121,7 @@ export class GeniePanelHost {
             sessionId: reportSessionId,
             remarks: "",
             displayText: "",
-            structuredData: view as Record<string, unknown>,
+            structuredData: reportView,
             reportOnly: true,
             reviewMode: false,
             diffParts: [],
