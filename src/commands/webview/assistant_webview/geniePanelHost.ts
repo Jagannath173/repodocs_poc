@@ -47,7 +47,20 @@ export class GeniePanelHost {
           const selectedIndices = Array.isArray(m.indices) ? m.indices.filter((n) => typeof n === "number") : undefined;
           const extraPassThrough =
             typeof m.extraInstructions === "string" ? m.extraInstructions : "";
-          void vscode.commands.executeCommand("codeReview.applyFixes", mode, idx, extraPassThrough, selectedIndices);
+          void (async () => {
+            try {
+              await vscode.commands.executeCommand(
+                "codeReview.applyFixes",
+                mode,
+                idx,
+                extraPassThrough,
+                selectedIndices
+              );
+            } catch (err: unknown) {
+              const detail = err instanceof Error ? err.message : String(err);
+              void vscode.window.showErrorMessage(`Apply fixes could not run: ${detail}`);
+            }
+          })();
           return;
         }
         if (msg?.command === "analyzeExtraInstruction") {

@@ -1,4 +1,5 @@
 import type { ReviewTableState } from "../commands/webview/review_Webview/reviewPanel";
+import { canonicalizeDocumentUriString } from "../utils/documentUriCanonical";
 
 export type { ReviewTableState } from "../commands/webview/review_Webview/reviewPanel";
 
@@ -41,17 +42,20 @@ export function unregisterReviewPanel(panel: ReviewPanelLike): void {
 
 /** Notify every open review webview that matches the stored file (not only a single "active" pointer). */
 export function notifyReviewUpdated(stored: ReviewTableState): void {
+  const target = canonicalizeDocumentUriString(stored.documentUri);
   for (const p of registered) {
     const uri = p.getDocumentUri();
-    if (uri !== undefined && uri === stored.documentUri) {
+    if (uri !== undefined && canonicalizeDocumentUriString(uri) === target) {
       p.refreshFromStored(stored);
     }
   }
 }
 
 export function getReviewPanelForDocument(documentUri: string): ReviewPanelLike | undefined {
+  const target = canonicalizeDocumentUriString(documentUri);
   for (const p of registered) {
-    if (p.getDocumentUri() === documentUri) {
+    const uri = p.getDocumentUri();
+    if (uri !== undefined && canonicalizeDocumentUriString(uri) === target) {
       return p;
     }
   }
@@ -60,9 +64,11 @@ export function getReviewPanelForDocument(documentUri: string): ReviewPanelLike 
 
 /** Drop every open review panel for this document so the next session is the sole handler (stable Genie session id overwrites listeners). */
 export function disposeReviewPanelsForDocument(documentUri: string): void {
+  const target = canonicalizeDocumentUriString(documentUri);
   const snapshot = [...registered];
   for (const p of snapshot) {
-    if (p.getDocumentUri() === documentUri) {
+    const u = p.getDocumentUri();
+    if (u !== undefined && canonicalizeDocumentUriString(u) === target) {
       p.dispose?.();
     }
   }

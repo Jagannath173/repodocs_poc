@@ -32,6 +32,7 @@ import { log, sanitizeForLog } from "../../utils/logger";
 import { resetMockReviewStage } from "../../utils/mockCopilot";
 import { useMockCopilotEnabled } from "../../utils/mockCopilot";
 import { hashDocumentText } from "../../utils/documentHash";
+import { canonicalizeDocumentUriString } from "../../utils/documentUriCanonical";
 
 const REVIEW_SYSTEM_ROLE =
   "Respond with only a valid JSON object and no extra text. " +
@@ -187,10 +188,44 @@ export async function runCodeReview(): Promise<void> {
     fullFileChars: fullText.length,
   });
 
-  const documentUri = editor.document.uri.toString();
+  const documentUri = canonicalizeDocumentUriString(editor.document.uri.toString());
   runningReviewUris.add(documentUri);
   disposeReviewPanelsForDocument(documentUri);
   const panel = new ReviewWebviewSession(extensionContext, `Review: ${fileName}`, documentUri);
+  let stopRequested = false;
+  let activeReviewAbort: AbortController | undefined;
+  panel.onDispose(() => {
+    stopRequested = true;
+    activeReviewAbort?.abort();
+  });
+  panel.registerOnMessage((msg: unknown) => {
+    const m = msg as {
+      command?: string;
+      mode?: string;
+      index?: number;
+      indices?: number[];
+      extraInstructions?: string;
+    };
+    if (m?.command === "applyFixes") {
+      const mode = m.mode === "one" || m.mode === "selected" ? m.mode : "all";
+      const idx = typeof m.index === "number" ? m.index : undefined;
+      const selectedIndices = Array.isArray(m.indices) ? m.indices.filter((n) => typeof n === "number") : undefined;
+      const extraPassThrough = typeof m.extraInstructions === "string" ? m.extraInstructions : "";
+      void vscode.commands.executeCommand("codeReview.applyFixes", mode, idx, extraPassThrough, selectedIndices);
+    } else if (m?.command === "stopReview") {
+      stopRequested = true;
+      activeReviewAbort?.abort();
+      requestStopForDocumentUri(documentUri);
+      panel.addReviewLog("Stop requested. Finishing current stage and halting further review steps.", "warn");
+      panel.setStatus("Stopping…");
+      panel.endReviewStreamStage();
+      panel.setApplyingFixIndex(null);
+      panel.setApplyingFixAll(false);
+      panel.reveal();
+    } else if (m?.command === "authenticate") {
+      void vscode.commands.executeCommand("codeReview.authenticate");
+    }
+  });
   /** Carry forward applied/rejected fingerprints so a new review run does not re-list completed rows. */
   const liveBeforeRun = getStoredReviewForDocumentUri(editor.document.uri);
   const currentHash = hashDocumentText(fullText);
@@ -234,12 +269,6 @@ export async function runCodeReview(): Promise<void> {
 
   panel.setLoading("Running review suite…");
   let reviewRunDone = false;
-  let stopRequested = false;
-  let activeReviewAbort: AbortController | undefined;
-  panel.onDispose(() => {
-    stopRequested = true;
-    activeReviewAbort?.abort();
-  });
   if (reviewInputMode === "incremental") {
     panel.addReviewLog("Scope: git diff vs HEAD — findings should target your local changes only.", "info");
   } else if (reviewInputMode === "selection") {
@@ -250,35 +279,6 @@ export async function runCodeReview(): Promise<void> {
       "info"
     );
   }
-  panel.registerOnMessage((msg: unknown) => {
-    const m = msg as {
-      command?: string;
-      mode?: string;
-      index?: number;
-      indices?: number[];
-      extraInstructions?: string;
-    };
-    if (m?.command === "applyFixes") {
-      const mode = m.mode === "one" || m.mode === "selected" ? m.mode : "all";
-      const idx = typeof m.index === "number" ? m.index : undefined;
-      const selectedIndices = Array.isArray(m.indices) ? m.indices.filter((n) => typeof n === "number") : undefined;
-      const extraPassThrough = typeof m.extraInstructions === "string" ? m.extraInstructions : "";
-      void vscode.commands.executeCommand("codeReview.applyFixes", mode, idx, extraPassThrough, selectedIndices);
-    } else if (m?.command === "stopReview") {
-      stopRequested = true;
-      activeReviewAbort?.abort();
-      requestStopForDocumentUri(documentUri);
-      panel.addReviewLog("Stop requested. Finishing current stage and halting further review steps.", "warn");
-      panel.setStatus("Stopping…");
-      panel.endReviewStreamStage();
-      panel.setApplyingFixIndex(null);
-      panel.setApplyingFixAll(false);
-      panel.reveal();
-    } else if (m?.command === "authenticate") {
-      void vscode.commands.executeCommand("codeReview.authenticate");
-    }
-  });
-
   const sections: ReviewSectionPayload[] = [];
   const combinedFindings: ReviewPayload["findings"] = [];
   /** Same bad code + same fix text reported by Quality, Security, Cloud, Org, etc. → keep one row. */

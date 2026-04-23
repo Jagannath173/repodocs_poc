@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import { diffLines } from "diff";
 import { revealAndHighlightAppliedFix } from "../review/postApplyHighlight";
+import { canonicalizeDocumentUriString } from "../utils/documentUriCanonical";
 
 export type FixInEditorChoice = "accept" | "reject" | "cancelled";
 
@@ -42,9 +43,14 @@ let activeFixPreviewCancellation:
     }
   | undefined;
 
+function fixPreviewUriKey(uri: string | vscode.Uri): string {
+  return typeof uri === "string" ? canonicalizeDocumentUriString(uri) : canonicalizeDocumentUriString(uri.toString());
+}
+
 export async function cancelFixPreviewForDocumentUri(documentUri: string): Promise<boolean> {
   const active = activeFixPreviewCancellation;
-  if (!active || active.documentUri !== documentUri) {
+  const key = fixPreviewUriKey(documentUri);
+  if (!active || active.documentUri !== key) {
     return false;
   }
   await active.cancel();
@@ -665,7 +671,7 @@ async function applyWholeDocumentReplace(docUri: vscode.Uri, newText: string): P
 }
 
 /** After an edit, show the updated buffer so CodeLens and decorations use the latest document. */
-async function revealEditorForUri(docUri: vscode.Uri): Promise<void> {
+export async function revealEditorForUri(docUri: vscode.Uri): Promise<void> {
   const doc = await vscode.workspace.openTextDocument(docUri);
   const existing = findTextEditorForUri(docUri);
   await vscode.window.showTextDocument(doc, {
@@ -1123,13 +1129,16 @@ export async function previewFixInEditorAndWait(
     }
     try {
       const d = await vscode.workspace.openTextDocument(docUri);
+      const existing = findTextEditorForUri(docUri);
       const currentEditor = await vscode.window.showTextDocument(d, {
         viewColumn:
+          existing?.viewColumn ??
           vscode.window.activeTextEditor?.viewColumn ??
           vscode.window.visibleTextEditors[0]?.viewColumn ??
           vscode.ViewColumn.One,
         preview: false,
-        preserveFocus: true,
+        /** Must focus the source tab: Genie webview often has focus; preserveFocus true hid the preview on first apply. */
+        preserveFocus: false,
       });
       applyDecorationsToEditor(currentEditor);
     } catch {
@@ -1190,7 +1199,7 @@ export async function previewFixInEditorAndWait(
     if (resolved) return;
     resolved = true;
     activeFixPreviewSession = undefined;
-    if (activeFixPreviewCancellation?.documentUri === docUri.toString()) {
+    if (activeFixPreviewCancellation?.documentUri === fixPreviewUriKey(docUri)) {
       activeFixPreviewCancellation = undefined;
     }
     fixPreviewLensState = undefined;
@@ -1498,7 +1507,7 @@ export async function previewFixInEditorAndWait(
     },
   };
   activeFixPreviewCancellation = {
-    documentUri: docUri.toString(),
+    documentUri: fixPreviewUriKey(docUri),
     cancel: async () => {
       if (resolved) {
         return;
@@ -1587,6 +1596,20 @@ export async function previewFixInEditorAndWait(
 
   // Ensure lenses are refreshed immediately (important when code lenses are registered dynamically).
   refreshLenses();
+
+  /** Genie can steal focus when it handles `result`/patch messages; re-assert the source editor a few times. */
+  const refocusSource = (): void => {
+    void vscode.workspace.openTextDocument(docUri).then((d) =>
+      vscode.window.showTextDocument(d, {
+        viewColumn: preferredColumn,
+        preview: false,
+        preserveFocus: false,
+      })
+    );
+  };
+  refocusSource();
+  setTimeout(refocusSource, 80);
+  setTimeout(refocusSource, 240);
 
   if (options?.autoAcceptAll) {
     // For "Fix all one by one" / row "Accept", do not block on per-chunk CodeLens clicks.

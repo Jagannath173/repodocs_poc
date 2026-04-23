@@ -1,6 +1,6 @@
 import * as vscode from "vscode";
 import { extensionContext } from "../extension";
-import { ensureCopilotSession } from "../utils/session";
+import { authenticateCopilotWithToastUi } from "../commands/webview/auth_webview/authPanel";
 import { runCopilotInference } from "../utils/pythonRunner";
 import { createTwoFilesPatch } from "diff";
 import {
@@ -18,7 +18,12 @@ import {
 import { suppressReviewStaleFlushForUri } from "./reviewStaleSuppress";
 import { log, sanitizeForLog } from "../utils/logger";
 import { hashDocumentText } from "../utils/documentHash";
-import { cancelFixPreviewForDocumentUri, previewFixInEditorAndWait } from "../preview/fixInEditorPreview";
+import { canonicalizeDocumentUri, canonicalizeDocumentUriString } from "../utils/documentUriCanonical";
+import {
+  cancelFixPreviewForDocumentUri,
+  previewFixInEditorAndWait,
+  revealEditorForUri,
+} from "../preview/fixInEditorPreview";
 import { revealAndHighlightAppliedFix, revealApproximateFindingLocation } from "./postApplyHighlight";
 import { isFindingAlreadySatisfiedByFile } from "../utils/reviewFilter";
 
@@ -364,29 +369,65 @@ export async function rejectFindingFromReview(index: number): Promise<void> {
 
 export async function saveLastReview(payload: StoredReview): Promise<void> {
   const state = readReviewStateByUri();
-  state.byDocumentUri[payload.documentUri] = payload;
-  state.lastDocumentUri = payload.documentUri;
+  const normalizedUri = canonicalizeDocumentUriString(payload.documentUri);
+  const normalized: StoredReview = { ...payload, documentUri: normalizedUri };
+  for (const k of Object.keys(state.byDocumentUri)) {
+    if (k !== normalizedUri && canonicalizeDocumentUriString(k) === normalizedUri) {
+      delete state.byDocumentUri[k];
+    }
+  }
+  state.byDocumentUri[normalizedUri] = normalized;
+  state.lastDocumentUri = normalizedUri;
   await extensionContext.workspaceState.update(REVIEW_STATE_BY_URI_KEY, state);
   // Keep legacy key for backward compatibility with already persisted data.
-  await extensionContext.workspaceState.update(LAST_REVIEW_STATE_KEY, payload);
+  await extensionContext.workspaceState.update(LAST_REVIEW_STATE_KEY, normalized);
 }
 
 export function getStoredReview(): StoredReview | undefined {
   const state = readReviewStateByUri();
-  const activeUri = vscode.window.activeTextEditor?.document?.uri?.toString();
-  if (activeUri && state.byDocumentUri[activeUri]) {
-    return state.byDocumentUri[activeUri];
+  const activeEditor = vscode.window.activeTextEditor;
+  const activeUri = activeEditor?.document?.uri;
+  if (activeUri) {
+    const c = canonicalizeDocumentUri(activeUri);
+    const hit = state.byDocumentUri[c] ?? state.byDocumentUri[activeUri.toString()];
+    if (hit) {
+      return hit;
+    }
   }
-  if (state.lastDocumentUri && state.byDocumentUri[state.lastDocumentUri]) {
-    return state.byDocumentUri[state.lastDocumentUri];
+  if (state.lastDocumentUri) {
+    const lastCanon = canonicalizeDocumentUriString(state.lastDocumentUri);
+    const hit =
+      state.byDocumentUri[state.lastDocumentUri] ??
+      state.byDocumentUri[lastCanon] ??
+      findStoredReviewByCanonicalUri(state, lastCanon);
+    if (hit) {
+      return hit;
+    }
   }
-  return extensionContext.workspaceState.get<StoredReview>(LAST_REVIEW_STATE_KEY);
+  const legacy = extensionContext.workspaceState.get<StoredReview>(LAST_REVIEW_STATE_KEY);
+  if (!legacy) {
+    return undefined;
+  }
+  if (!legacy.documentUri) {
+    return legacy;
+  }
+  const legacyCanon = canonicalizeDocumentUriString(legacy.documentUri);
+  return legacyCanon === legacy.documentUri ? legacy : { ...legacy, documentUri: legacyCanon };
+}
+
+function findStoredReviewByCanonicalUri(state: ReviewStateByUri, targetCanon: string): StoredReview | undefined {
+  for (const s of Object.values(state.byDocumentUri)) {
+    if (s?.documentUri && canonicalizeDocumentUriString(s.documentUri) === targetCanon) {
+      return s;
+    }
+  }
+  return undefined;
 }
 
 /** Workspace review state only if it belongs to this document and matches the reviewed buffer snapshot. */
 export function getStoredReviewMatchingDocument(uri: vscode.Uri, documentText: string): StoredReview | undefined {
   const s = getStoredReview();
-  if (!s || s.documentUri !== uri.toString()) {
+  if (!s || canonicalizeDocumentUriString(s.documentUri) !== canonicalizeDocumentUri(uri)) {
     return undefined;
   }
   if (!s.reviewedDocumentHash) {
@@ -398,12 +439,17 @@ export function getStoredReviewMatchingDocument(uri: vscode.Uri, documentText: s
 /** Latest workspace review row when it targets this file (hash need not match — used to merge fix state after edits/reload). */
 export function getStoredReviewForDocumentUri(uri: vscode.Uri): StoredReview | undefined {
   const state = readReviewStateByUri();
-  const byUri = state.byDocumentUri[uri.toString()];
+  const target = canonicalizeDocumentUri(uri);
+  const byUri = state.byDocumentUri[target] ?? state.byDocumentUri[uri.toString()];
   if (byUri) {
     return byUri;
   }
+  const loose = findStoredReviewByCanonicalUri(state, target);
+  if (loose) {
+    return loose;
+  }
   const legacy = extensionContext.workspaceState.get<StoredReview>(LAST_REVIEW_STATE_KEY);
-  if (legacy && legacy.documentUri === uri.toString()) {
+  if (legacy && canonicalizeDocumentUriString(legacy.documentUri) === target) {
     return legacy;
   }
   return undefined;
@@ -978,10 +1024,6 @@ export async function applyFixesFromReview(
   selectedIndices?: number[]
 ): Promise<void> {
   log.info("applyFixes", "applyFixesFromReview started", { mode, index: index ?? "all" });
-  if (!(await ensureCopilotSession())) {
-    log.warn("applyFixes", "Aborted: no Copilot session");
-    return;
-  }
 
   let stored = getStoredReview();
   if (!stored || !stored.findings?.length) {
@@ -989,6 +1031,7 @@ export async function applyFixesFromReview(
     void vscode.window.showWarningMessage("Run Code Review on a file first, then use Apply fixes.");
     return;
   }
+  stored = { ...stored, documentUri: canonicalizeDocumentUriString(stored.documentUri) };
 
   const documentUri = stored.documentUri;
   clearStopForDocumentUri(documentUri);
@@ -1101,6 +1144,12 @@ export async function applyFixesFromReview(
     return;
   }
 
+  if (!(await authenticateCopilotWithToastUi(extensionContext))) {
+    log.warn("applyFixes", "Aborted: Copilot session not available after sign-in");
+    void vscode.window.showWarningMessage("Copilot sign-in is required to apply fixes. Try again after you finish signing in.");
+    return;
+  }
+
   const total = targetIndices.length;
   let appliedCount = 0;
   let rejectedCount = 0;
@@ -1110,7 +1159,14 @@ export async function applyFixesFromReview(
   const hasQueuedWork = fixOperationQueues.has(stored.documentUri);
   if (hasQueuedWork) {
     panel.addFixLog("A fix preview is already active for this file. Accept or Reject it first.", "warn");
-    void vscode.window.showInformationMessage("A fix preview is already active. Accept or Reject it before starting another fix.");
+    try {
+      await revealEditorForUri(uriCheck);
+    } catch {
+      /* best-effort: bring the source file forward so CodeLens preview is visible */
+    }
+    void vscode.window.showInformationMessage(
+      "A fix preview is already open for this file. Switch to the source editor and use Accept / Reject (or the status bar Fix actions). Then try again if needed."
+    );
     return;
   }
 
@@ -1471,6 +1527,11 @@ export async function analyzeExtraInstructionForReview(extraInstruction: string)
     return;
   }
 
+  if (!(await authenticateCopilotWithToastUi(extensionContext))) {
+    void vscode.window.showWarningMessage("Copilot sign-in is required for this action.");
+    return;
+  }
+
   if (stored.reviewedDocumentHash && hashDocumentText(doc.getText()) !== stored.reviewedDocumentHash) {
     const refreshed: StoredReview = { ...stored, reviewedDocumentHash: hashDocumentText(doc.getText()) };
     await saveLastReview(refreshed);
@@ -1527,7 +1588,7 @@ export function toStoredReview(
   const reviewFindingCount = Math.max(n, floorFromKeys);
   const rejectedFindingKeys = payload.rejectedFindingKeys ?? [];
   return {
-    documentUri: uri.toString(),
+    documentUri: canonicalizeDocumentUri(uri),
     fileName,
     summary: payload.summary,
     findings: payload.findings,

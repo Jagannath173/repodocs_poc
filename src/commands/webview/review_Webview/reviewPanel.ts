@@ -2,6 +2,7 @@ import * as vscode from "vscode";
 import { registerReviewPanel, unregisterReviewPanel } from "../../../review/reviewBridge";
 import { AssistantResultPanel } from "../../../assistant";
 import { basenameFromUriString } from "../../../review/reviewReportDemo";
+import { canonicalizeDocumentUriString } from "../../../utils/documentUriCanonical";
 
 export interface ReviewFinding {
   severity: string;
@@ -127,13 +128,15 @@ export class ReviewWebviewSession {
   private lastReviewStructuredData: Record<string, unknown> | undefined;
   private readonly subscriptions: vscode.Disposable[] = [];
   private readonly disposeCallbacks = new Set<() => void>();
+  private readonly documentUri: string | undefined;
 
   constructor(
     context: vscode.ExtensionContext,
     title: string,
-    private readonly documentUri: string | undefined
+    documentUri: string | undefined
   ) {
     void title;
+    this.documentUri = documentUri ? canonicalizeDocumentUriString(documentUri) : undefined;
     registerReviewPanel(this);
     this.panel = new AssistantResultPanel(context, "Review", "review");
     this.panel.setMode("codeReview");

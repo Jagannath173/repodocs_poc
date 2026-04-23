@@ -732,17 +732,56 @@
             .trim();
         }
 
+        function looksLikeCodeSnippet(s) {
+          var t = String(s || "").trim();
+          if (!t) return false;
+          if (t.length > 110) return true;
+          if (/[{}]/.test(t) && t.split(/\s+/).length < 14) return true;
+          if (/\b(const|let|var|function|def|import|export|await|async|=>)\b/.test(t)) return true;
+          if (/\.(on|stderr|stdout)\s*\(/.test(t)) return true;
+          return false;
+        }
+
+        function proseBeforeCodeBlock(detail) {
+          var head = String(detail || "").split(/\n\nCode:/i)[0].trim();
+          return compactTextForHeading(head);
+        }
+
+        function truncateToWords(s, maxWords) {
+          var words = String(s || "")
+            .trim()
+            .split(/\s+/)
+            .filter(function (w) {
+              return !!w;
+            });
+          if (!words.length) return "";
+          if (words.length <= maxWords) return words.join(" ");
+          return words.slice(0, maxWords).join(" ") + "…";
+        }
+
+        /** Short label for report cards (≤10 words): prefer finding title / prose, not raw code. */
         function shortHeadingFromRecord(r) {
-          var source =
-            compactTextForHeading(r && r.suggestion) ||
-            compactTextForHeading(r && r.detail) ||
-            compactTextForHeading(r && r.title) ||
-            "Accepted fix";
-          var words = source.split(" ").filter(function (w) { return !!w; });
-          if (words.length <= 15) {
-            return source;
+          var title = compactTextForHeading(r && r.title);
+          var detailProse = proseBeforeCodeBlock(r && r.detail);
+          var sug = compactTextForHeading(r && r.suggestion);
+          var cand = "";
+          if (title && !looksLikeCodeSnippet(title)) {
+            cand = title;
+          } else if (detailProse && !looksLikeCodeSnippet(detailProse)) {
+            cand = detailProse;
+          } else if (title) {
+            cand = title;
+          } else if (detailProse) {
+            cand = detailProse;
+          } else if (sug && !looksLikeCodeSnippet(sug) && sug.length < 100) {
+            cand = sug;
+          } else if (sug) {
+            cand = truncateToWords(sug.split(/[;{}]/)[0] || sug, 10);
+          } else {
+            cand = "Accepted fix";
           }
-          return words.slice(0, 15).join(" ") + "…";
+          cand = truncateToWords(cand, 10);
+          return cand || "Accepted fix";
         }
 
         function pushSectionTable(title, findings, summaryText) {
@@ -1050,12 +1089,13 @@
             spR.textContent = "Rejected";
             tdFix.appendChild(spR);
           } else {
-            var showApplying =
-              applyingIndex !== null && applyingIndex === globalIndex;
-            var fixRowLocked =
-              !applyingAll &&
-              applyingIndex !== null &&
-              applyingIndex !== globalIndex;
+            var rowPending = !isApplied && !isRejected;
+            var showApplying = applyingAll
+              ? rowPending
+              : applyingIndex !== null && applyingIndex === globalIndex;
+            var fixRowLocked = applyingAll
+              ? rowPending
+              : applyingIndex !== null && applyingIndex !== globalIndex;
             var primaryClasses = "primary review-fix-btn";
             if (showApplying) {
               tr.setAttribute("data-applying-row", "1");
@@ -1920,6 +1960,8 @@
         }
       }
       if (m.type === "result") {
+        var preserveFixApplySpinners =
+          m.endpoint === "codeReview" && !!m.reviewMode && !!m.hasCode;
         s.remarks = m.remarks || "";
         s.displayText = m.displayText || "";
         s.structuredData = m.structuredData || null;
@@ -1937,8 +1979,10 @@
         s.streamLive = false;
         s.streamText = "";
         s.applyingCurrent = false;
-        s.fixApplyingIndex = null;
-        s.fixApplyingAll = false;
+        if (!preserveFixApplySpinners) {
+          s.fixApplyingIndex = null;
+          s.fixApplyingAll = false;
+        }
         s.fixDecisionPhase = "pending";
       }
       if (m.type === "fixDecisionPhase") {

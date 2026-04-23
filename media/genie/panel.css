@@ -688,6 +688,9 @@ details.collapse-panel > summary::-webkit-details-marker { display: none; }
   max-width: 620px;
   margin: 0 auto;
 }
+.review-complete-only-wrap .review-report-only-card {
+  max-width: min(960px, 100%);
+}
 .review-summary-card {
   width: 100%;
   max-width: 560px;
@@ -721,53 +724,102 @@ details.collapse-panel > summary::-webkit-details-marker { display: none; }
 .review-fix-details .review-report-actions-btns {
   justify-content: flex-end;
 }
+/* Full in-tab report: dark surface + one accent (matches VS Code button blue). */
 .review-report-only-card {
-  border-left: 4px solid #1f6feb;
-  background: #ffffff;
-  color: #0f172a;
+  --rpt-accent: var(--vscode-button-background, #0e639c);
+  --rpt-accent-fg: var(--vscode-button-foreground, #ffffff);
+  border-left: 4px solid var(--rpt-accent);
+  background: var(--vscode-editor-background, #1e1e1e);
+  color: var(--vscode-editor-foreground, #cccccc);
   box-shadow:
-    0 0 0 1px rgba(31, 111, 235, 0.22),
-    0 10px 24px rgba(12, 40, 82, 0.18);
+    0 0 0 1px color-mix(in srgb, var(--rpt-accent) 45%, var(--vscode-editorWidget-border)),
+    0 10px 28px rgba(0, 0, 0, 0.45);
 }
 .review-report-only-card::after {
-  background: radial-gradient(circle, rgba(31, 111, 235, 0.22) 0%, rgba(31, 111, 235, 0) 72%);
+  background: radial-gradient(circle, color-mix(in srgb, var(--rpt-accent) 35%, transparent) 0%, transparent 72%);
 }
 .review-report-only-card .review-complete-title {
-  color: #1f6feb;
+  color: var(--rpt-accent-fg);
+  background: var(--rpt-accent);
+  display: inline-block;
+  padding: 4px 10px;
+  border-radius: 6px;
   text-shadow: none;
 }
 .review-report-only-card .review-complete-sub {
-  color: #334155;
+  color: var(--vscode-descriptionForeground);
 }
 .review-report-only-card .review-complete-chip {
-  border: 1px solid rgba(31, 111, 235, 0.25);
-  background: rgba(31, 111, 235, 0.1);
-  color: #0f172a;
+  border: 1px solid color-mix(in srgb, var(--rpt-accent) 55%, var(--vscode-editorWidget-border));
+  background: color-mix(in srgb, var(--rpt-accent) 18%, var(--vscode-editor-background));
+  color: var(--vscode-editor-foreground);
 }
 .review-report-only-card .review-fix-details {
-  border: 1px solid rgba(31, 111, 235, 0.35);
-  background: #ffffff;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9), 0 8px 24px rgba(12, 40, 82, 0.15);
+  border: 1px solid var(--vscode-editorWidget-border);
+  background: color-mix(in srgb, var(--vscode-editor-background) 92%, var(--rpt-accent) 8%);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--vscode-foreground) 8%, transparent);
+  scrollbar-color: color-mix(in srgb, var(--vscode-scrollbarSlider-background) 80%, transparent)
+    var(--vscode-editor-inactiveSelectionBackground, rgba(128, 128, 128, 0.2));
+}
+.review-report-only-card .review-fix-details::-webkit-scrollbar-track {
+  background: var(--vscode-editor-inactiveSelectionBackground, rgba(128, 128, 128, 0.2));
+}
+.review-report-only-card .review-fix-details::-webkit-scrollbar-thumb {
+  background: var(--vscode-scrollbarSlider-background, rgba(121, 121, 121, 0.6));
 }
 .review-report-only-card .review-report-summary,
 .review-report-only-card .review-report-bullets li,
 .review-report-only-card .review-report-section-summary,
 .review-report-only-card .review-report-table td,
 .review-report-only-card .review-fix-detail-text {
-  color: #0f172a;
+  color: var(--vscode-editor-foreground);
 }
-.review-report-only-card .review-report-table th,
+.review-report-only-card .review-report-title,
 .review-report-only-card .review-report-section-title {
-  background: linear-gradient(180deg, #7ca8f2 0%, #6d97e8 100%);
-  color: #10213a;
+  background: var(--rpt-accent);
+  color: var(--rpt-accent-fg);
+  box-shadow: none;
+}
+.review-report-only-card .review-report-table-wrap {
+  border: 1px solid var(--vscode-editorWidget-border);
+  background: var(--vscode-sideBar-background, color-mix(in srgb, var(--vscode-editor-background) 88%, #000));
+}
+.review-report-only-card .review-report-table th {
+  background: var(--rpt-accent);
+  color: var(--rpt-accent-fg);
+  font-weight: 700;
+}
+.review-report-only-card .review-report-table td {
+  color: var(--vscode-editor-foreground);
+  background: color-mix(in srgb, var(--vscode-editor-background) 94%, var(--vscode-foreground) 6%);
+}
+.review-report-only-card .review-fix-detail-block {
+  background: var(--vscode-editor-inactiveSelectionBackground, rgba(255, 255, 255, 0.06));
+  border-color: var(--vscode-editorWidget-border);
+}
+.review-report-only-card .review-fix-detail-title {
+  color: var(--vscode-editor-foreground);
+  font-size: 1em;
+  font-weight: 700;
+}
+.review-report-only-card .review-fix-detail-label {
+  color: color-mix(in srgb, var(--vscode-editor-foreground) 75%, var(--rpt-accent));
+}
+.review-report-only-card .review-fix-detail-body {
+  color: var(--vscode-editor-foreground);
+  background: var(--vscode-textCodeBlock-background, rgba(0, 0, 0, 0.35));
+  border-color: var(--vscode-editorWidget-border);
+}
+.review-report-only-card .review-report-actions-btns {
+  border-top-color: var(--vscode-editorWidget-border);
 }
 .review-report-only-card .review-report-actions-btns button.secondary {
-  background: #88a9d0;
-  color: #0f233b;
-  border: 1px solid rgba(92, 124, 171, 0.35);
+  background: var(--vscode-button-background);
+  color: var(--vscode-button-foreground);
+  border: 1px solid transparent;
 }
 .review-report-only-card .review-report-actions-btns button.secondary:hover:not(:disabled) {
-  background: #789cc8;
+  background: var(--vscode-button-hoverBackground, var(--vscode-button-background));
 }
 .review-complete-only-text {
   font-size: 1.05em;
