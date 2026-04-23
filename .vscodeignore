@@ -6,6 +6,14 @@ tsconfig.json
 eslint.config.js
 eslint.config.mjs
 **/*.map
+**/*.log
+logs/**
+test/**
+tests/**
+**/*.spec.*
+**/*.test.*
+coverage/**
+agent-transcripts/**
 # Local Python venv is recreated on first run; bundling it makes the VSIX huge.
 python/venv/**
 python/**/__pycache__/**

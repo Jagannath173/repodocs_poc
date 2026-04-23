@@ -1381,8 +1381,8 @@ export async function applyFixesFromReview(
 
         const previewTitle = finding.title || `Fix (${step + 1}/${total})`;
         const choice = await previewFixInEditorAndWait(doc, baseText, afterText, previewTitle, {
-          autoAcceptAll: true,
-          skipInteractivePreview: true,
+          autoAcceptAll: false,
+          skipInteractivePreview: false,
         });
         if (choice === "cancelled") {
           panel.setApplyingFixIndex(null);

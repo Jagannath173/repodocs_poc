@@ -6,12 +6,21 @@ import { runMockCopilotInference, useMockCopilotEnabled } from "./mockCopilot";
 import { clearGithubUserProfile, setGithubUserProfile, type GithubUserProfile } from "./githubUserState";
 
 const pythonRelDir = "python";
-const venvBin = (root: string, isWin: boolean) =>
-  path.join(root, pythonRelDir, "venv", isWin ? "Scripts" : "bin", isWin ? "python.exe" : "python");
-const pipBin = (root: string, isWin: boolean) =>
-  path.join(root, pythonRelDir, "venv", isWin ? "Scripts" : "bin", isWin ? "pip.exe" : "pip");
+const venvBin = (venvRoot: string, isWin: boolean) =>
+  path.join(venvRoot, "venv", isWin ? "Scripts" : "bin", isWin ? "python.exe" : "python");
+const pipBin = (venvRoot: string, isWin: boolean) =>
+  path.join(venvRoot, "venv", isWin ? "Scripts" : "bin", isWin ? "pip.exe" : "pip");
 
 let ensurePythonPromise: Promise<void> | null = null;
+
+function getPythonScriptDir(context: vscode.ExtensionContext): string {
+  return path.join(context.extensionPath, pythonRelDir);
+}
+
+function getPythonRuntimeDir(context: vscode.ExtensionContext): string {
+  // Extension install dir can be read-only in some environments; globalStorage is writable.
+  return path.join(context.globalStorageUri.fsPath, "python-runtime");
+}
 
 /** User-configured `.env` path (outside VSIX). `~` expands to home. Relative paths resolve from first workspace folder. */
 function resolveOptionalEnvFilePath(raw: string | undefined): string | undefined {
@@ -46,9 +55,31 @@ function buildCopilotProcessEnv(context: vscode.ExtensionContext, options?: Copi
     ...process.env,
     PYTHONUNBUFFERED: "1",
   };
+  const cfg = vscode.workspace.getConfiguration("codeReview");
   const envFile = resolveOptionalEnvFilePath(vscode.workspace.getConfiguration("codeReview").get<string>("envFile"));
   if (envFile) {
     env.CODE_REVIEW_DOTENV_PATH = envFile;
+  }
+  const sslCertFile = resolveOptionalEnvFilePath(cfg.get<string>("sslCertFile"));
+  if (sslCertFile) {
+    // Keep Node and Python TLS roots aligned in corporate environments.
+    env.SSL_CERT_FILE = sslCertFile;
+    env.NODE_EXTRA_CA_CERTS = sslCertFile;
+  }
+  const httpProxy = cfg.get<string>("httpProxy")?.trim();
+  if (httpProxy) {
+    env.HTTP_PROXY = httpProxy;
+    env.http_proxy = httpProxy;
+  }
+  const httpsProxy = cfg.get<string>("httpsProxy")?.trim();
+  if (httpsProxy) {
+    env.HTTPS_PROXY = httpsProxy;
+    env.https_proxy = httpsProxy;
+  }
+  const noProxy = cfg.get<string>("noProxy")?.trim();
+  if (noProxy) {
+    env.NO_PROXY = noProxy;
+    env.no_proxy = noProxy;
   }
   const storedSessionId = context.globalState.get<string>("copilot_session_id");
   const storedTokenOverride = context.globalState.get<string>("copilot_access_token_override");
@@ -76,18 +107,20 @@ export async function ensurePythonEnvironment(
 ): Promise<void> {
   if (!ensurePythonPromise) {
     ensurePythonPromise = (async () => {
-      const pythonDir = path.join(context.extensionPath, pythonRelDir);
+      const pythonDir = getPythonScriptDir(context);
+      const runtimeDir = getPythonRuntimeDir(context);
       const isWin = process.platform === "win32";
-      const pythonPath = venvBin(context.extensionPath, isWin);
+      const pythonPath = venvBin(runtimeDir, isWin);
+      await fs.promises.mkdir(runtimeDir, { recursive: true });
 
       if (!(await pathExists(pythonPath))) {
         onProgress?.("Creating Python virtual environment…");
         const launcher = await detectSystemPython();
-        await runProcess(launcher.command, [...launcher.baseArgs, "-m", "venv", "venv"], pythonDir);
+        await runProcess(launcher.command, [...launcher.baseArgs, "-m", "venv", "venv"], runtimeDir);
       }
 
       onProgress?.("Installing Python dependencies…");
-      const pipPath = pipBin(context.extensionPath, isWin);
+      const pipPath = pipBin(runtimeDir, isWin);
       await runProcess(pipPath, ["install", "-r", "requirements.txt"], pythonDir);
     })().catch((e) => {
       ensurePythonPromise = null;
@@ -120,6 +153,17 @@ async function detectSystemPython() {
   throw new Error("Python not found on system.");
 }
 
+async function resolvePythonExecution(context: vscode.ExtensionContext): Promise<{ command: string; baseArgs: string[] }> {
+  const isWin = process.platform === "win32";
+  const runtimeDir = getPythonRuntimeDir(context);
+  const runtimePython = venvBin(runtimeDir, isWin);
+  if (await pathExists(runtimePython)) {
+    return { command: runtimePython, baseArgs: [] };
+  }
+  const launcher = await detectSystemPython();
+  return { command: launcher.command, baseArgs: launcher.baseArgs };
+}
+
 export interface CopilotInferenceOptions {
   /** Overrides COPILOT_SYSTEM_ROLE for the Copilot proxy process. */
   systemRole?: string;
@@ -144,17 +188,16 @@ export async function runCopilotInference(
     throw new Error(`Python environment setup failed: ${e.message}`);
   });
 
-  const pythonDir = path.join(context.extensionPath, pythonRelDir);
+  const pythonDir = getPythonScriptDir(context);
   const scriptPath = path.join(pythonDir, "copilot_client.py");
-  const isWin = process.platform === "win32";
-  const pythonPath = venvBin(context.extensionPath, isWin);
+  const pythonExec = await resolvePythonExecution(context);
 
   return new Promise<void>((resolve, reject) => {
     onLog(">>> Calling local Copilot proxy…");
 
     const env = buildCopilotProcessEnv(context, options);
 
-    const child = spawn(pythonPath, [scriptPath], { cwd: pythonDir, env });
+    const child = spawn(pythonExec.command, [...pythonExec.baseArgs, scriptPath], { cwd: pythonDir, env });
     let aborted = false;
     const cleanupAbortListener = () => {
       if (options?.signal && abortHandler) {
@@ -332,15 +375,14 @@ export async function authenticateCopilot(
     throw new Error(`Python environment setup failed: ${e.message}`);
   });
 
-  const pythonDir = path.join(context.extensionPath, pythonRelDir);
+  const pythonDir = getPythonScriptDir(context);
   const scriptPath = path.join(pythonDir, "copilot_client.py");
-  const isWin = process.platform === "win32";
-  const pythonPath = venvBin(context.extensionPath, isWin);
+  const pythonExec = await resolvePythonExecution(context);
 
   return new Promise<void>((resolve, reject) => {
     onLog(">>> Starting device sign-in…");
     const env = buildCopilotProcessEnv(context);
-    const child = spawn(pythonPath, [scriptPath, "--authenticate"], { cwd: pythonDir, env });
+    const child = spawn(pythonExec.command, [...pythonExec.baseArgs, scriptPath, "--authenticate"], { cwd: pythonDir, env });
 
     let authBuffer = "";
     let settled = false;

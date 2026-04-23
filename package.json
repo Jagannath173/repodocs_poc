@@ -166,6 +166,26 @@
           "type": "string",
           "default": "",
           "markdownDescription": "Absolute path to a `.env` file **outside** the extension (VSIX packages cannot ship secrets). Example: `C:\\\\Users\\\\me\\\\.code-review.env` or `~/.code-review.env`. If set and the file exists, Copilot Python loads it. Leave empty to use only `python/.env` next to the bundled script (dev) or your OS environment variables."
+        },
+        "codeReview.httpProxy": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Optional HTTP proxy URL for Copilot Python calls. Leave empty to use environment defaults."
+        },
+        "codeReview.httpsProxy": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Optional HTTPS proxy URL for Copilot Python calls. Leave empty to use environment defaults."
+        },
+        "codeReview.noProxy": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Optional comma-separated hosts that should bypass proxy (NO_PROXY)."
+        },
+        "codeReview.sslCertFile": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Optional absolute path to corporate CA certificate bundle (PEM). Applied to Python (`SSL_CERT_FILE`) and Node (`NODE_EXTRA_CA_CERTS`)."
         }
       }
     }
@@ -175,7 +195,7 @@
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
     "lint": "eslint \"src/**/*.ts\"",
-    "vsix": "npm run compile && vsce package"
+    "vsix": "npm run compile && npx @vscode/vsce package"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.0",

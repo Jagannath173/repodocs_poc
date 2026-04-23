@@ -6,11 +6,16 @@ import base64
 import logging
 import requests
 import urllib3
+from urllib.parse import quote
 try:
     import pandas as pd
 except ImportError:
     pd = None
 from dotenv import load_dotenv
+try:
+    import certifi
+except ImportError:
+    certifi = None
 
 # Suppress messy SSL warnings across all levels
 try:
@@ -32,26 +37,69 @@ if _env_from_setting and os.path.isfile(_env_from_setting):
     load_dotenv(_env_from_setting, override=True)
 else:
     load_dotenv(os.path.join(_script_dir, ".env"))
-    load_dotenv()
+    # VSIX flow: packaged fallback defaults.
+    load_dotenv(os.path.join(_script_dir, "sample.env"))
+    # Finally, let process environment override file values.
+    load_dotenv(override=True)
 
 TOKEN_CACHE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "copilot_token_cache.json")
+DEFAULT_GITHUB_COPILOT_CLIENT_ID = "iv1.b507a08c87ecfe98"
+DEFAULT_DEVICE_CODE_URL = "https://github.com/login/device/code"
+DEFAULT_ACCESS_TOKEN_URL = "https://github.com/login/oauth/access_token"
+DEFAULT_LLM_TOKEN_URL = "https://api.github.com/copilot_internal/v2/token"
+DEFAULT_LLM_CHAT_URL = "https://api.githubcopilot.com/chat/completions"
 
 # Global variables
 cached_tokens = None
 proxies = None
 
-# SSL Verification
-ssl_cert_file = os.environ.get('SSL_CERT_FILE')
-if ssl_cert_file and not os.path.exists(ssl_cert_file):
-    ssl_cert_file = False
-elif not ssl_cert_file:
-    ssl_cert_file = False
-cwd = os.getcwd()
-config_path = os.path.join(cwd, 'config', 'config.json')
+def env_or_default(name, default_value):
+    value = os.environ.get(name)
+    if value is None:
+        return default_value
+    value = value.strip()
+    return value if value else default_value
+
+def resolve_ssl_verify_path():
+    """Resolve SSL verify path across corp/home environments."""
+    raw = os.environ.get("SSL_CERT_FILE", "").strip()
+    if raw:
+        if not os.path.isabs(raw):
+            raw = os.path.join(_script_dir, raw)
+        if os.path.exists(raw):
+            return raw
+
+    certs_dir = os.path.join(_script_dir, "certs")
+    if os.path.isdir(certs_dir):
+        pem_files = sorted(
+            os.path.join(certs_dir, f)
+            for f in os.listdir(certs_dir)
+            if f.lower().endswith(".pem") and os.path.isfile(os.path.join(certs_dir, f))
+        )
+        if pem_files:
+            bundle_path = os.path.join(_script_dir, "runtime-ca-bundle.pem")
+            with open(bundle_path, "w", encoding="utf-8") as bundle:
+                for pem in pem_files:
+                    with open(pem, "r", encoding="utf-8", errors="ignore") as src:
+                        bundle.write(src.read())
+                        bundle.write("\n")
+            return bundle_path
+
+    if certifi is not None:
+        return certifi.where()
+
+    return False
+
+ssl_cert_file = resolve_ssl_verify_path()
+config_path = os.path.join(_script_dir, "config", "config.json")
+legacy_config_path = os.path.join(os.getcwd(), "config", "config.json")
 
 def load_config():
     if os.path.exists(config_path):
         with open(config_path, "r") as f:
+            return json.load(f)
+    if os.path.exists(legacy_config_path):
+        with open(legacy_config_path, "r") as f:
             return json.load(f)
     return {}
 
@@ -112,9 +160,16 @@ def getproxies():
             except Exception as e:
                 logger.error(f"Error setting up complex proxies: {e}")
         
-        # FALLBACK: Just use the raw environment proxy if it exists
         raw_http = os.environ.get('HTTP_PROXY')
         raw_https = os.environ.get('HTTPS_PROXY')
+        proxy_user = os.environ.get("PROXY_USERNAME") or os.environ.get("AD_STAFF_ID") or ""
+        proxy_pass = os.environ.get("PROXY_PASSWORD") or os.environ.get("AD_PASSWORD") or ""
+        encoded_user = quote(proxy_user, safe="") if proxy_user else ""
+        encoded_pass = quote(proxy_pass, safe="") if proxy_pass else ""
+        if raw_http and "{{" in raw_http and (proxy_user or proxy_pass):
+            raw_http = raw_http.replace("{{AD_STAFF_ID}}", encoded_user).replace("{{AD_PASSWORD}}", encoded_pass)
+        if raw_https and "{{" in raw_https and (proxy_user or proxy_pass):
+            raw_https = raw_https.replace("{{AD_STAFF_ID}}", encoded_user).replace("{{AD_PASSWORD}}", encoded_pass)
         
         # Detect if placeholders are still present and ignore them
         if raw_http and "{{" in raw_http:
@@ -156,7 +211,7 @@ def construct_data(prompt, system_role, previous_question, previous_answer, stre
     return data
 
 def generateGitHubCopilotDeviceCode():
-    device_code, user_code = getDeviceCode()
+    device_code, user_code, _ = getDeviceCode()
     return {
         "deviceCode": device_code,
         "userCode": user_code
@@ -174,9 +229,10 @@ def get_sessionToken(access_token):
         "User-Agent": "GitHubCopilot/1.155.0"
     }
     current_proxies = getproxies()
-    logger.info(f"Fetching session token from {os.environ.get('GITHUB_COPILOT_LLM_TOKEN_URL')}")
+    llm_token_url = env_or_default("GITHUB_COPILOT_LLM_TOKEN_URL", DEFAULT_LLM_TOKEN_URL)
+    logger.info(f"Fetching session token from {llm_token_url}")
     try:
-        url = os.environ.get('GITHUB_COPILOT_LLM_TOKEN_URL')
+        url = llm_token_url
         if not url:
             logger.error("GITHUB_COPILOT_LLM_TOKEN_URL not set in environment.")
             return None, 0, "URL_MISSING"
@@ -184,6 +240,9 @@ def get_sessionToken(access_token):
         try:
             logger.info(f"Attempting session exchange using proxies: {current_proxies}")
             resp = requests.get(url, headers=headers, proxies=current_proxies, verify=ssl_cert_file, timeout=30)
+            if resp.status_code == 407 and current_proxies:
+                logger.info("Proxy auth required (407) during session exchange. Retrying direct...")
+                resp = requests.get(url, headers=headers, proxies={'http': None, 'https': None}, verify=ssl_cert_file, timeout=30)
         except (requests.exceptions.ProxyError, requests.exceptions.ConnectionError) as e:
             logger.info(f"Proxy unavailable during session exchange ({e}). Retrying direct...")
             resp = requests.get(url, headers=headers, proxies={'http': None, 'https': None}, verify=ssl_cert_file, timeout=30)
@@ -259,14 +318,15 @@ def generate_response(prompt, sessionToken_b64, stream: bool = True, checkSessio
         data = construct_data(prompt, system_role, "", "", stream)
         
         # Log the target environment
-        logger.info(f"Targeting LLM URL: {os.environ.get('GITHUB_COPILOT_LLM_CHAT_URL')}")
+        llm_chat_url = env_or_default("GITHUB_COPILOT_LLM_CHAT_URL", DEFAULT_LLM_CHAT_URL)
+        logger.info(f"Targeting LLM URL: {llm_chat_url}")
         
         # PROXY FAILSAFE: If the configured proxy fails, we retry direct.
         # This is critical for users moving between office (HSBC) and home network.
         current_proxies = getproxies()
         try:
             response = requests.post(
-                os.environ.get('GITHUB_COPILOT_LLM_CHAT_URL'),
+                llm_chat_url,
                 headers=headers,
                 json=data,
                 proxies=current_proxies,
@@ -274,10 +334,21 @@ def generate_response(prompt, sessionToken_b64, stream: bool = True, checkSessio
                 stream=stream,
                 timeout=120
             )
+            if response.status_code == 407 and current_proxies:
+                logger.info("Proxy auth required (407) for chat request. Retrying direct connection...")
+                response = requests.post(
+                    llm_chat_url,
+                    headers=headers,
+                    json=data,
+                    proxies={'http': None, 'https': None},
+                    verify=ssl_cert_file,
+                    stream=stream,
+                    timeout=120
+                )
         except (requests.exceptions.ProxyError, requests.exceptions.ConnectionError, requests.exceptions.ChunkedEncodingError) as e:
             logger.info(f"Connection issue ({type(e).__name__}). Retrying direct connection...")
             response = requests.post(
-                os.environ.get('GITHUB_COPILOT_LLM_CHAT_URL'),
+                llm_chat_url,
                 headers=headers,
                 json=data,
                 proxies={'http': None, 'https': None},
@@ -348,15 +419,18 @@ def getDeviceCode():
         'user-agent': 'GitHubCopilot/1.155.0'
     }
     data = {
-        "client_id": os.environ.get("GITHUB_COPILOT_CLIENT_ID"),
+        "client_id": env_or_default("GITHUB_COPILOT_CLIENT_ID", DEFAULT_GITHUB_COPILOT_CLIENT_ID),
         "scope": "read:user user:email",
     }
-    url = os.environ.get('GITHUB_COPILOT_DEVICE_CODE_URL')
+    url = env_or_default("GITHUB_COPILOT_DEVICE_CODE_URL", DEFAULT_DEVICE_CODE_URL)
     
     current_proxies = getproxies()
     try:
         try:
             resp = requests.post(url, headers=headers, data=data, proxies=current_proxies, verify=ssl_cert_file, timeout=30)
+            if resp.status_code == 407 and current_proxies:
+                logger.info("Proxy auth required (407) for device code. Retrying direct connection...")
+                resp = requests.post(url, headers=headers, data=data, proxies={'http': None, 'https': None}, verify=ssl_cert_file, timeout=30)
         except (requests.exceptions.ProxyError, requests.exceptions.ConnectionError) as e:
             logger.info(f"Proxy redirection ({e}). Attempting direct connection...")
             # FORCE direct connection if proxy fails
@@ -364,17 +438,17 @@ def getDeviceCode():
             
         if resp.status_code != 200:
             logger.error(f"GitHub Device Code Request failed with status {resp.status_code}: {resp.text}")
-            return None, None
+            return None, None, f"HTTP_{resp.status_code}"
         resp_json = resp.json()
     except Exception as e:
         logger.error(f"Failed to fetch or parse device code response: {e}")
-        return None, None
+        return None, None, str(e)
         
     if 'device_code' not in resp_json:
         logger.error(f"GitHub Auth Error (No device_code): {resp_json}")
-        return None, None
+        return None, None, "NO_DEVICE_CODE_IN_RESPONSE"
         
-    return resp_json.get('device_code'), resp_json.get('user_code')
+    return resp_json.get('device_code'), resp_json.get('user_code'), ""
 
 def print_github_user_profile_for_vscode(access_token):
     """
@@ -462,14 +536,17 @@ def getGithubCopilotToken(device_code, cache=None):
     poll_interval = 5
     while True:
         data = {
-            "client_id": os.environ.get("GITHUB_COPILOT_CLIENT_ID"),
+            "client_id": env_or_default("GITHUB_COPILOT_CLIENT_ID", DEFAULT_GITHUB_COPILOT_CLIENT_ID),
             "device_code": device_code,
             "grant_type": "urn:ietf:params:oauth:grant-type:device_code"
         }
         try:
-            url = os.environ.get('GITHUB_COPILOT_ACCESS_TOKEN_URL')
+            url = env_or_default("GITHUB_COPILOT_ACCESS_TOKEN_URL", DEFAULT_ACCESS_TOKEN_URL)
             try:
                 resp = requests.post(url, headers=headers, data=data, proxies=current_proxies, verify=ssl_cert_file, timeout=30)
+                if resp.status_code == 407 and current_proxies:
+                    logger.info("Proxy auth required (407) while polling token. Retrying direct...")
+                    resp = requests.post(url, headers=headers, data=data, proxies={'http': None, 'https': None}, verify=ssl_cert_file, timeout=30)
             except (requests.exceptions.ProxyError, requests.exceptions.ConnectionError):
                 resp = requests.post(url, headers=headers, data=data, proxies={'http': None, 'https': None}, verify=ssl_cert_file, timeout=30)
             
@@ -550,7 +627,7 @@ if __name__ == "__main__":
         # For VSIX integration
         if "--authenticate" in sys.argv:
             # 1. Get Device Code
-            device_code, user_code = getDeviceCode()
+            device_code, user_code, device_err = getDeviceCode()
             verification_uri = "https://github.com/login/device"
             
             # 2. Output to VS Code so it can show the user
@@ -561,7 +638,10 @@ if __name__ == "__main__":
                 getGithubCopilotToken(device_code, cache={})
                 print("AUTH_SUCCESS", flush=True)
             else:
-                print("AUTH_ERROR|Failed to generate device code. Check your GITHUB_COPILOT_CLIENT_ID and network.", flush=True)
+                print(
+                    f"AUTH_ERROR|Failed to generate device code ({device_err or 'unknown'}). Check network/proxy/cert settings.",
+                    flush=True
+                )
         else:
             logger.info(">>> Mode: Documentation Generation")
             # DYNAMIC FLOW: Fetch fresh session token using the long-lived access token

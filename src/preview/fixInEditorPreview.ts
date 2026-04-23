@@ -667,7 +667,16 @@ async function applyWholeDocumentReplace(docUri: vscode.Uri, newText: string): P
 /** After an edit, show the updated buffer so CodeLens and decorations use the latest document. */
 async function revealEditorForUri(docUri: vscode.Uri): Promise<void> {
   const doc = await vscode.workspace.openTextDocument(docUri);
-  await vscode.window.showTextDocument(doc, { preview: false, preserveFocus: false });
+  const existing = findTextEditorForUri(docUri);
+  await vscode.window.showTextDocument(doc, {
+    viewColumn:
+      existing?.viewColumn ??
+      vscode.window.activeTextEditor?.viewColumn ??
+      vscode.window.visibleTextEditors[0]?.viewColumn ??
+      vscode.ViewColumn.One,
+    preview: false,
+    preserveFocus: false,
+  });
 }
 
 /** CodeLens on first “new” line when possible, else first removed line (delete-only). */
@@ -1001,7 +1010,16 @@ export async function previewFixInEditorAndWait(
       return;
     }
     const currentDoc = await vscode.workspace.openTextDocument(docUri);
-    const editor = await vscode.window.showTextDocument(currentDoc, { preview: false, preserveFocus: false });
+    const existing = findTextEditorForUri(docUri);
+    const editor = await vscode.window.showTextDocument(currentDoc, {
+      viewColumn:
+        existing?.viewColumn ??
+        vscode.window.activeTextEditor?.viewColumn ??
+        vscode.window.visibleTextEditors[0]?.viewColumn ??
+        vscode.ViewColumn.One,
+      preview: false,
+      preserveFocus: false,
+    });
     const stackedMap = getChunkStackedVisualRanges(mergeParts, chunks, decisions, chunkDiffDismissed);
     const vis = stackedMap.get(chunkId);
     if (!vis) {
@@ -1105,7 +1123,14 @@ export async function previewFixInEditorAndWait(
     }
     try {
       const d = await vscode.workspace.openTextDocument(docUri);
-      const currentEditor = await vscode.window.showTextDocument(d, { preview: false, preserveFocus: true });
+      const currentEditor = await vscode.window.showTextDocument(d, {
+        viewColumn:
+          vscode.window.activeTextEditor?.viewColumn ??
+          vscode.window.visibleTextEditors[0]?.viewColumn ??
+          vscode.ViewColumn.One,
+        preview: false,
+        preserveFocus: true,
+      });
       applyDecorationsToEditor(currentEditor);
     } catch {
       updateStatusUi();

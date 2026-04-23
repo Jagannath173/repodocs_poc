@@ -644,7 +644,7 @@
           chips.appendChild(chip);
         });
         box.appendChild(chips);
-        box.appendChild(buildReportActions({ includeViewFull: true, alignRight: false }));
+        box.appendChild(buildReportActions({ includeViewFull: true, alignRight: true }));
         return box;
       }
       function buildCaughtUpDetails() {
@@ -1292,7 +1292,7 @@
         root.appendChild(doneCard);
       }
       if (root.querySelector(".review-findings-table")) {
-        var actionsNearTable = buildReportActions({ includeViewFull: true, alignRight: false });
+        var actionsNearTable = buildReportActions({ includeViewFull: true, alignRight: true });
         actionsNearTable.classList.add("review-report-actions-near-table");
         root.appendChild(actionsNearTable);
       }
@@ -1480,8 +1480,11 @@
       var statusRow = statusEl ? statusEl.parentElement : null;
       statusEl.textContent = reviewCaughtUpOnly || hasAuthData ? "" : (s.status || "");
       if (statusRow) {
-        if (reviewCaughtUpOnly) statusRow.classList.add("hidden");
-        else statusRow.classList.remove("hidden");
+        var hasStatusText = !!(statusEl.textContent && String(statusEl.textContent).trim());
+        var hasStepText = !!(s.step && String(s.step).trim());
+        var shouldShowStatusRow = !reviewCaughtUpOnly && !hasAuthData && (hasStatusText || !!s.busy || hasStepText);
+        if (shouldShowStatusRow) statusRow.classList.remove("hidden");
+        else statusRow.classList.add("hidden");
       }
       var root = document.getElementById("root");
       if (s.busy) root.classList.add("busy"); else root.classList.remove("busy");
