@@ -21,8 +21,25 @@ def emit_final_text(text: str) -> None:
     print(f"data: {json.dumps(payload, ensure_ascii=False)}", flush=True)
 
 
-def emit_tool_event(event_type: str, name: str, preview: str = "") -> None:
-    payload = {"tool_event": {"type": event_type, "name": name, "preview": (preview or "")[:240]}}
+def emit_tool_event(
+    event_type: str,
+    name: str,
+    message: str = "",
+    icon: str = "",
+    preview: str = "",
+) -> None:
+    """Emit a rich tool-activity line. The TS side renders `icon` + `message` directly
+    and falls back to `name` + `preview` only if message/icon are missing. Payload also
+    includes `preview` so logs retain the raw args/result for debugging."""
+    payload = {
+        "tool_event": {
+            "type": event_type,
+            "name": name,
+            "message": (message or "")[:400],
+            "icon": icon or "",
+            "preview": (preview or "")[:240],
+        }
+    }
     print(f"data: {json.dumps(payload, ensure_ascii=False)}", flush=True)
 
 

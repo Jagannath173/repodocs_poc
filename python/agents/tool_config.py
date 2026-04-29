@@ -1,13 +1,13 @@
 """Per-review-type tool whitelist. Keys must match REVIEW_TYPE values sent by the extension."""
 
 TOOLS_BY_REVIEW_TYPE: dict[str, list[str]] = {
-    "quality":     ["grep_codebase", "read_file", "list_imports_and_usages", "find_similar_patterns"],
-    "security":    ["grep_codebase", "read_file", "list_imports_and_usages", "semgrep_scan", "get_git_blame"],
-    "performance": ["grep_codebase", "read_file", "list_imports_and_usages", "find_similar_patterns", "get_recent_commits"],
-    "syntax":      ["grep_codebase", "read_file"],
+    "quality":     ["grep_codebase", "read_file", "list_imports_and_usages", "find_similar_patterns", "mcp_lint_check", "mcp_sonar_check"],
+    "security":    ["grep_codebase", "read_file", "list_imports_and_usages", "semgrep_scan", "get_git_blame", "mcp_lint_check"],
+    "performance": ["grep_codebase", "read_file", "list_imports_and_usages", "find_similar_patterns", "get_recent_commits", "mcp_sonar_check"],
+    "syntax":      ["grep_codebase", "read_file", "mcp_lint_check"],
     "cloud":       ["grep_codebase", "read_file", "list_imports_and_usages"],
-    "orgStd":      ["grep_codebase", "read_file", "find_similar_patterns", "list_imports_and_usages"],
-    "ckDesign":    ["grep_codebase", "read_file", "find_similar_patterns", "list_imports_and_usages"],
+    "orgStd":      ["grep_codebase", "read_file", "find_similar_patterns", "list_imports_and_usages", "mcp_sonar_check"],
+    "ckDesign":    ["grep_codebase", "read_file", "find_similar_patterns", "list_imports_and_usages", "mcp_sonar_check"],
     "bigquery":    ["grep_codebase", "read_file"],
 }
 
@@ -38,6 +38,10 @@ def load_tools(names: list[str]):
                 from ..tools.find_similar_patterns import find_similar_patterns as t
             elif name == "semgrep_scan":
                 from ..tools.semgrep_scan import semgrep_scan as t
+            elif name == "mcp_lint_check":
+                from ..tools.mcp_lint_check import mcp_lint_check as t
+            elif name == "mcp_sonar_check":
+                from ..tools.mcp_sonar_check import mcp_sonar_check as t
             else:
                 continue
             loaded.append(t)

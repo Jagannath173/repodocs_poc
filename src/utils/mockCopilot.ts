@@ -1,4 +1,5 @@
 import * as vscode from "vscode";
+import type { CopilotInferenceOptions } from "./pythonRunner";
 
 /** When true, `runCopilotInference` uses local mock output instead of the Copilot proxy. */
 export function useMockCopilotEnabled(): boolean {
@@ -34,7 +35,7 @@ function emitSseCompletion(content: string, onLog: (data: string) => void): void
 }
 
 /** Simulates SSE token streaming (`delta.content`) so the Genie webview updates incrementally. */
-async function emitSseDeltaStream(content: string, onLog: (data: string) => void): Promise<void> {
+async function emitSseDeltaStream(content: string, onLog: (data: string) => void, delayMs = 18): Promise<void> {
   const chunks = content.match(/[^\n]*\n?|[^\n]+$/g) ?? [content];
   for (const piece of chunks) {
     if (!piece) continue;
@@ -42,7 +43,75 @@ async function emitSseDeltaStream(content: string, onLog: (data: string) => void
       choices: [{ delta: { content: piece } }],
     });
     onLog(`data: ${line}`);
-    await new Promise((r) => setTimeout(r, 18));
+    await new Promise((r) => setTimeout(r, delayMs));
+  }
+}
+
+/** Emit a tool_event SSE line identical to what python/agents/streaming.py sends. */
+function emitMockToolEvent(
+  onLog: (data: string) => void,
+  evt: { type: "call" | "result"; name: string; icon: string; message: string; preview?: string }
+): void {
+  const line = JSON.stringify({ tool_event: evt });
+  onLog(`data: ${line}`);
+}
+
+/** A short scripted tool-use sequence per review type, mirroring the real agent's behavior. */
+type MockToolStep = { name: string; icon: string; callMsg: string; resultMsg: string };
+
+const MOCK_TOOL_SCRIPTS: Record<string, MockToolStep[]> = {
+  quality: [
+    { name: "grep_codebase", icon: "🔍", callMsg: "Searching codebase for repeated patterns", resultMsg: "3 matches; first: src/utils/sample.ts:14" },
+    { name: "mcp_lint_check", icon: "🔧", callMsg: "MCP Linter is checking the active file", resultMsg: "2 warnings: unused-var, no-console" },
+    { name: "mcp_sonar_check", icon: "📊", callMsg: "MCP SonarQube-style rules checking the active file", resultMsg: "1 finding: S1541 (cognitive complexity)" },
+    { name: "find_similar_patterns", icon: "🧩", callMsg: "Finding similar function shapes in the repo", resultMsg: "2 similar functions found" },
+  ],
+  security: [
+    { name: "grep_codebase", icon: "🔍", callMsg: "Searching codebase for secret/API-key patterns", resultMsg: "no matches" },
+    { name: "semgrep_scan", icon: "🛡️", callMsg: "MCP Semgrep scanning the active file with ruleset 'auto'", resultMsg: "no semgrep findings" },
+    { name: "mcp_lint_check", icon: "🔧", callMsg: "MCP Linter is checking the active file", resultMsg: "no issues" },
+    { name: "get_git_blame", icon: "🔎", callMsg: "Checking git blame for the modified region", resultMsg: "last touched 2026-04-21 by you" },
+  ],
+  performance: [
+    { name: "grep_codebase", icon: "🔍", callMsg: "Searching codebase for hot-path callers", resultMsg: "4 callers found" },
+    { name: "list_imports_and_usages", icon: "🔗", callMsg: "Tracing imports and usages of key symbols", resultMsg: "imported in 2 files" },
+    { name: "get_recent_commits", icon: "📜", callMsg: "Reviewing recent commits touching this file", resultMsg: "5 commits in last 30 days" },
+    { name: "mcp_sonar_check", icon: "📊", callMsg: "MCP SonarQube-style rules checking the active file", resultMsg: "0 findings" },
+  ],
+  syntax: [
+    { name: "mcp_lint_check", icon: "🔧", callMsg: "MCP Linter is checking the active file", resultMsg: "0 issues" },
+    { name: "read_file", icon: "📖", callMsg: "Reading the full file for syntactic context", resultMsg: "200 lines read" },
+  ],
+  cloud: [
+    { name: "grep_codebase", icon: "🔍", callMsg: "Searching codebase for cloud SDK imports", resultMsg: "2 imports of aws-sdk" },
+    { name: "list_imports_and_usages", icon: "🔗", callMsg: "Tracing cloud-client usage across the repo", resultMsg: "used in 3 files" },
+  ],
+  orgStd: [
+    { name: "grep_codebase", icon: "🔍", callMsg: "Searching codebase for organisational conventions", resultMsg: "5 reference files" },
+    { name: "find_similar_patterns", icon: "🧩", callMsg: "Finding similar implementations in sibling modules", resultMsg: "3 similar patterns" },
+    { name: "mcp_sonar_check", icon: "📊", callMsg: "MCP SonarQube-style rules checking the active file", resultMsg: "1 finding: S117 (short name)" },
+  ],
+  ckDesign: [
+    { name: "grep_codebase", icon: "🔍", callMsg: "Searching codebase for CK design references", resultMsg: "2 matches" },
+    { name: "find_similar_patterns", icon: "🧩", callMsg: "Finding reference CK designs", resultMsg: "1 related component" },
+    { name: "mcp_sonar_check", icon: "📊", callMsg: "MCP SonarQube-style rules checking the active file", resultMsg: "0 findings" },
+  ],
+  bigquery: [
+    { name: "grep_codebase", icon: "🔍", callMsg: "Searching codebase for BigQuery dataset usage", resultMsg: "no matches" },
+    { name: "read_file", icon: "📖", callMsg: "Reading the active file for BigQuery contexts", resultMsg: "200 lines read" },
+  ],
+};
+
+async function emitMockToolActivity(
+  reviewType: string | undefined,
+  onLog: (data: string) => void
+): Promise<void> {
+  const steps = (reviewType && MOCK_TOOL_SCRIPTS[reviewType]) || MOCK_TOOL_SCRIPTS.quality;
+  for (const s of steps) {
+    emitMockToolEvent(onLog, { type: "call", name: s.name, icon: s.icon, message: s.callMsg });
+    await new Promise((r) => setTimeout(r, 350));
+    emitMockToolEvent(onLog, { type: "result", name: s.name, icon: "↳", message: s.resultMsg });
+    await new Promise((r) => setTimeout(r, 180));
   }
 }
 
@@ -150,12 +219,14 @@ function mockAssistantBody(prompt: string): string {
 
 /**
  * Simulates one Copilot completion: same `data: {...}` shape the Python proxy streams.
- * Does not require Python or network.
+ * When agentMode is on for a review, also emits `tool_event` SSE lines with the same
+ * icon + message fields the real Python agent emits — so the webview renders the
+ * Claude-style tool-use activity identically to the live path.
  */
 export async function runMockCopilotInference(
   prompt: string,
   onLog: (data: string) => void,
-  options?: { systemRole?: string; stream?: boolean }
+  options?: CopilotInferenceOptions
 ): Promise<void> {
   await Promise.resolve();
   onLog(">>> Mock Copilot — no Python proxy, no network.");
@@ -175,6 +246,10 @@ export async function runMockCopilotInference(
     default:
       content = mockAssistantBody(prompt);
       break;
+  }
+
+  if (kind === "review" && options?.agentMode) {
+    await emitMockToolActivity(options.reviewType, onLog);
   }
 
   if (options?.stream === false) {

@@ -85,6 +85,25 @@ const REVIEW_SEQUENCE: ReviewEndpoint[] = [
   "bigquery",
 ];
 
+/**
+ * Format a tool_event emitted by the Python agent for display. Python already sends
+ * a ready-to-render `icon` + `message`; we only fall back to `name` + `preview` when
+ * those fields are missing (older Python revisions, or an unknown tool).
+ */
+function formatToolEvent(evt: { name?: string; message?: string; icon?: string; preview?: string }): {
+  icon: string;
+  message: string;
+} {
+  const icon = evt.icon?.trim() || "⚡";
+  if (evt.message && evt.message.trim()) {
+    return { icon, message: evt.message.trim() };
+  }
+  const name = evt.name || "tool";
+  const preview = (evt.preview || "").trim();
+  const shortPreview = preview.length > 80 ? preview.slice(0, 80) + "…" : preview;
+  return { icon, message: shortPreview ? `${name}: ${shortPreview}` : name };
+}
+
 function buildAgentOptions(endpoint: ReviewEndpoint, activeUri: vscode.Uri) {
   const cfg = vscode.workspace.getConfiguration("codeReview");
   const agentMode = cfg.get<boolean>("agentMode", true);
@@ -323,6 +342,7 @@ export async function runCodeReview(): Promise<void> {
       panel.addReviewLog(`Running ${label} review (${i + 1}/${REVIEW_SEQUENCE.length})…`, "info");
       panel.addReviewLog(`[${label}] Started`, "info");
       let assistantText = `### ${label} review\nAnalyzing current code...\n`;
+      let toolActivityText = "";
       let authError = false;
       panel.beginReviewStreamStage();
       panel.setReviewStream(assistantText);
@@ -348,22 +368,36 @@ export async function runCodeReview(): Promise<void> {
             try {
               const json = JSON.parse(jsonStr) as {
                 choices?: Array<{ delta?: { content?: string }; message?: { content?: string }; text?: string }>;
+                tool_event?: { type?: string; name?: string; message?: string; icon?: string; preview?: string };
               };
+              if (json.tool_event) {
+                const evt = json.tool_event;
+                const { icon, message } = formatToolEvent(evt);
+                if (evt.type === "call") {
+                  panel.setStatus(`${icon} ${message}`);
+                  panel.addReviewLog(`[${label}] ${icon} ${message}`, "info");
+                  toolActivityText += `${icon} ${message}\n`;
+                  panel.setReviewStream(toolActivityText + assistantText);
+                } else if (evt.type === "result") {
+                  if (message) {
+                    toolActivityText += `   ${icon} ${message}\n`;
+                    panel.setReviewStream(toolActivityText + assistantText);
+                  }
+                }
+                return;
+              }
               const text =
                 json.choices?.[0]?.delta?.content ||
                 json.choices?.[0]?.message?.content ||
                 json.choices?.[0]?.text;
               if (text) {
                 assistantText += text;
-                panel.setReviewStream(assistantText);
+                panel.setReviewStream(toolActivityText + assistantText);
                 log.debug("codeReview", "SSE text delta added", {
                   endpoint,
                   deltaChars: text.length,
                   totalChars: assistantText.length,
                 });
-                if (text.length > 0) {
-                  panel.addReviewLog(`[${label}] +${text.length} chars (total ${assistantText.length})`, "info");
-                }
               }
             } catch {
               log.debug("codeReview", "Skipped non-JSON SSE payload", { endpoint, lineChars: trimmed.length });

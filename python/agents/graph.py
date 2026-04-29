@@ -10,6 +10,7 @@ from langgraph.prebuilt import ToolNode
 
 from . import streaming
 from .llm import build_chat_model
+from .tool_meta import describe_call, summarize_result
 
 
 AGENT_SYSTEM_PROMPT = (
@@ -46,8 +47,11 @@ def _plan_factory(llm_with_tools):
         response = llm_with_tools.invoke(state["messages"])
         tool_calls = getattr(response, "tool_calls", None) or []
         for call in tool_calls:
-            preview = json.dumps(call.get("args") or {}, ensure_ascii=False)[:200]
-            streaming.emit_tool_event("call", call.get("name", ""), preview)
+            name = call.get("name", "") or ""
+            args = call.get("args") or {}
+            icon, message = describe_call(name, args)
+            preview = json.dumps(args, ensure_ascii=False)[:200]
+            streaming.emit_tool_event("call", name, message=message, icon=icon, preview=preview)
         return {"messages": [response], "iterations": iters + 1}
     return plan
 
@@ -59,7 +63,12 @@ def _tools_node_factory(tools: list):
         result = tool_node.invoke(state)
         for msg in result.get("messages", []):
             if isinstance(msg, ToolMessage):
-                streaming.emit_tool_event("result", msg.name or "tool", str(msg.content)[:200])
+                name = msg.name or "tool"
+                raw = str(msg.content)
+                summary = summarize_result(name, raw)
+                streaming.emit_tool_event(
+                    "result", name, message=summary, icon="↳", preview=raw[:200]
+                )
         return result
     return tools_step
 
