@@ -85,6 +85,25 @@ const REVIEW_SEQUENCE: ReviewEndpoint[] = [
   "bigquery",
 ];
 
+function buildAgentOptions(endpoint: ReviewEndpoint, activeUri: vscode.Uri) {
+  const cfg = vscode.workspace.getConfiguration("codeReview");
+  const agentMode = cfg.get<boolean>("agentMode", true);
+  if (!agentMode) {
+    return {};
+  }
+  const workspaceRoot =
+    vscode.workspace.getWorkspaceFolder(activeUri)?.uri.fsPath ??
+    vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  return {
+    agentMode: true,
+    agentModel: cfg.get<string>("agentModel", "gpt-5.5") || undefined,
+    agentMaxIterations: cfg.get<number>("agentMaxIterations", 8),
+    agentSemgrepEnabled: cfg.get<boolean>("agentTools.semgrep", true),
+    reviewType: endpoint,
+    workspaceRoot,
+  } as const;
+}
+
 async function collectRepositoryContext(activeUri: vscode.Uri): Promise<string> {
   const folder = vscode.workspace.workspaceFolders?.[0];
   if (!folder) {
@@ -350,7 +369,12 @@ export async function runCodeReview(): Promise<void> {
               log.debug("codeReview", "Skipped non-JSON SSE payload", { endpoint, lineChars: trimmed.length });
             }
           },
-          { systemRole: systemRoleForReview, signal: activeReviewAbort.signal, stream: true }
+          {
+            systemRole: systemRoleForReview,
+            signal: activeReviewAbort.signal,
+            stream: true,
+            ...buildAgentOptions(endpoint, editor.document.uri),
+          }
         );
       } catch (e: unknown) {
         const isAbort = e instanceof Error && e.name === "AbortError";

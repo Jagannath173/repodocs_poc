@@ -97,6 +97,24 @@ function buildCopilotProcessEnv(context: vscode.ExtensionContext, options?: Copi
   } else if (options?.stream === true) {
     env.COPILOT_STREAM = "1";
   }
+  if (options?.agentMode) {
+    env.GITHUB_COPILOT_AGENT_MODE = "1";
+    if (options.agentModel) {
+      env.GITHUB_COPILOT_AGENT_MODEL = options.agentModel;
+    }
+    if (typeof options.agentMaxIterations === "number" && options.agentMaxIterations > 0) {
+      env.GITHUB_COPILOT_AGENT_MAX_ITERATIONS = String(options.agentMaxIterations);
+    }
+    if (options.agentSemgrepEnabled === false) {
+      env.CODE_REVIEW_AGENT_SEMGREP_ENABLED = "0";
+    }
+  }
+  if (options?.reviewType) {
+    env.REVIEW_TYPE = options.reviewType;
+  }
+  if (options?.workspaceRoot) {
+    env.WORKSPACE_ROOT = options.workspaceRoot;
+  }
   return env;
 }
 
@@ -122,6 +140,19 @@ export async function ensurePythonEnvironment(
       onProgress?.("Installing Python dependencies…");
       const pipPath = pipBin(runtimeDir, isWin);
       await runProcess(pipPath, ["install", "-r", "requirements.txt"], pythonDir);
+
+      const optionalReq = path.join(pythonDir, "requirements-optional.txt");
+      if (await pathExists(optionalReq)) {
+        onProgress?.("Installing optional agent dependencies (failures are non-fatal)…");
+        try {
+          await runProcess(pipPath, ["install", "-r", "requirements-optional.txt"], pythonDir);
+        } catch (e) {
+          onProgress?.(
+            `Optional agent dependencies could not be installed (${(e as Error).message}). ` +
+              "Agent tools that rely on them (tree-sitter, semgrep) will self-disable."
+          );
+        }
+      }
     })().catch((e) => {
       ensurePythonPromise = null;
       throw e;
@@ -171,6 +202,18 @@ export interface CopilotInferenceOptions {
   stream?: boolean;
   /** Abort in-flight proxy process (used by Stop actions). */
   signal?: AbortSignal;
+  /** When true, route the prompt through the LangGraph agent (see python/agents/). */
+  agentMode?: boolean;
+  /** Override the model used by the agent loop (independent of the non-agent GITHUB_COPILOT_MODEL). */
+  agentModel?: string;
+  /** Cap on plan→tool iterations inside the agent. */
+  agentMaxIterations?: number;
+  /** Disable the semgrep tool at runtime (e.g. if install failed). */
+  agentSemgrepEnabled?: boolean;
+  /** Which review type the agent is producing findings for (keys from REVIEW_PROMPT_FILES). */
+  reviewType?: string;
+  /** Absolute workspace folder path, used by agent tools to scope file access. */
+  workspaceRoot?: string;
 }
 
 export async function runCopilotInference(

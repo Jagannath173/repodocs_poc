@@ -186,6 +186,28 @@
           "type": "string",
           "default": "",
           "markdownDescription": "Optional absolute path to corporate CA certificate bundle (PEM). Applied to Python (`SSL_CERT_FILE`) and Node (`NODE_EXTRA_CA_CERTS`)."
+        },
+        "codeReview.agentMode": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "When **enabled**, each of the 8 review types runs through a LangGraph agent that can call local tools (codebase grep, file read, git blame, semgrep, AST pattern matching, etc.) before producing findings. Turn off to fall back to a single non-agent LLM call per review type."
+        },
+        "codeReview.agentModel": {
+          "type": "string",
+          "default": "gpt-5.5",
+          "markdownDescription": "Model used for agent-mode reviews. Passed to the GitHub Copilot proxy as the `model` field. Does not affect the non-agent path (which uses `GITHUB_COPILOT_MODEL`)."
+        },
+        "codeReview.agentMaxIterations": {
+          "type": "number",
+          "default": 8,
+          "minimum": 1,
+          "maximum": 32,
+          "markdownDescription": "Maximum plan→tool loop iterations per review type. Higher = more thorough but slower and more expensive."
+        },
+        "codeReview.agentTools.semgrep": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Allow the agent to invoke `semgrep` (local static analysis). Turn off if semgrep is not installed or not desired on this machine."
         }
       }
     }

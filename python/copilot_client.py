@@ -201,7 +201,7 @@ def construct_data(prompt, system_role, previous_question, previous_answer, stre
 
     data = {
         "messages": messages,
-        "model": os.environ.get('GITHUB_COPILOT_MODEL', 'gpt-4o'),
+        "model": os.environ.get('GITHUB_COPILOT_MODEL', 'gpt-5.5'),
         "max_tokens": int(os.environ.get('GITHUB_COPILOT_MAX_TOKENS', 4096)),
         "temperature": float(os.environ.get('GITHUB_COPILOT_TEMPERATURE', 0.1)),
         "top_p": 1,
@@ -674,8 +674,13 @@ if __name__ == "__main__":
                 if token:
                     logger.info(">>> Mode: Documentation Generation")
                     logger.info(f">>> Prompt received via stdin ({len(prompt)} chars).")
-                    # Pass access_token to allow internal refresh if needed
-                    generate_response(prompt, token, checkSessionExpiry=True, access_token=access_token)
+                    if os.environ.get("GITHUB_COPILOT_AGENT_MODE") == "1":
+                        logger.info(">>> Agent mode enabled; delegating to LangGraph runner.")
+                        from agents.runner import run_review_agent
+                        run_review_agent(prompt=prompt, session_token_b64=token, access_token=access_token or "")
+                    else:
+                        # Pass access_token to allow internal refresh if needed
+                        generate_response(prompt, token, checkSessionExpiry=True, access_token=access_token)
                 else:
                     err_msg = "Error: No active Copilot session. Use Review in the Code Review sidebar to sign in."
                     print(f"data: {json.dumps({'choices':[{'delta':{'content':err_msg}}]})}")
