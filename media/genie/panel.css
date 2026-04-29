@@ -652,6 +652,15 @@ details.collapse-panel > summary::-webkit-details-marker { display: none; }
   background: var(--vscode-editor-inactiveSelectionBackground, rgba(120, 120, 120, 0.12));
   border: 1px solid var(--vscode-editorWidget-border, rgba(128, 128, 128, 0.25));
 }
+.review-fix-detail-body--mono {
+  font-family: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+  font-size: 0.8em;
+  line-height: 1.45;
+}
+.review-report-only-card .review-fix-detail-body--mono {
+  color: var(--vscode-editor-foreground);
+  background: var(--vscode-textCodeBlock-background, rgba(0, 0, 0, 0.4));
+}
 .review-fix-detail-label {
   font-size: 0.72em;
   font-weight: 600;

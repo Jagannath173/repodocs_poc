@@ -377,7 +377,14 @@
       block.appendChild(sub);
       var body = document.createElement("div");
       body.className = "review-fix-detail-body";
-      body.textContent = humanizeReviewReportField(rawText);
+      var raw = String(rawText == null ? "" : rawText);
+      body.textContent = humanizeReviewReportField(raw);
+      if (
+        labelText === "Suggested fix" &&
+        (raw.indexOf("\n") >= 0 || /(^|\n)---\s/.test(raw) || /^\s*[\+\-]/.test(raw))
+      ) {
+        body.classList.add("review-fix-detail-body--mono");
+      }
       block.appendChild(body);
     }
     function renderSuggestedFixContent(cell, text) {
@@ -720,6 +727,7 @@
             String(it.fix || "").trim() ||
             String(it.remediation || "").trim() ||
             String(it.recommendation || "").trim() ||
+            String(it.unifiedDiff || "").trim() ||
             String(fallback || "").trim();
           return value || "—";
         }
@@ -873,10 +881,14 @@
             fromTable && fromTable.detail != null && String(fromTable.detail).trim()
               ? fromTable.detail
               : r.detail;
-          var suggestionSrc =
+          var suggestionForTitle =
             fromTable && fromTable.suggestion != null && String(fromTable.suggestion).trim()
-              ? fromTable.suggestion
-              : reportSuggestedFix(r, r.suggestion);
+              ? String(fromTable.suggestion).trim()
+              : String(r.suggestion || "").trim();
+          var suggestedFixBody = reportSuggestedFix(
+            { suggestion: suggestionForTitle, unifiedDiff: r.unifiedDiff },
+            suggestionForTitle
+          );
           var block = document.createElement("div");
           block.className = "review-fix-detail-block";
           var h2 = document.createElement("div");
@@ -884,11 +896,11 @@
           h2.textContent = shortHeadingFromRecord({
             title: (fromTable && fromTable.title) || r.title,
             detail: detailSrc,
-            suggestion: suggestionSrc,
+            suggestion: suggestionForTitle,
           });
           block.appendChild(h2);
           appendReportFieldBody(block, "Description", issueDescriptionOnly({ detail: detailSrc }));
-          appendReportFieldBody(block, "Suggested fix", reportSuggestedFix({ suggestion: suggestionSrc }, "—"));
+          appendReportFieldBody(block, "Suggested fix", suggestedFixBody);
           details.appendChild(block);
         });
         return details;

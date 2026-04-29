@@ -4,3 +4,4 @@ python/venv/
 *.vsix
 .env
 python/copilot_token_cache.json
+sample.env
