@@ -61,44 +61,44 @@ type MockToolStep = { name: string; icon: string; callMsg: string; resultMsg: st
 
 const MOCK_TOOL_SCRIPTS: Record<string, MockToolStep[]> = {
   quality: [
-    { name: "grep_codebase", icon: "🔍", callMsg: "Searching codebase for repeated patterns", resultMsg: "3 matches; first: src/utils/sample.ts:14" },
-    { name: "mcp_lint_check", icon: "🔧", callMsg: "MCP Linter is checking the active file", resultMsg: "2 warnings: unused-var, no-console" },
-    { name: "mcp_sonar_check", icon: "📊", callMsg: "MCP SonarQube-style rules checking the active file", resultMsg: "1 finding: S1541 (cognitive complexity)" },
-    { name: "find_similar_patterns", icon: "🧩", callMsg: "Finding similar function shapes in the repo", resultMsg: "2 similar functions found" },
+    { name: "grep_codebase",         icon: "[SEARCH]",    callMsg: "Querying codebase for repeated patterns",                        resultMsg: "3 matches identified (src/utils/sample.ts:14 and 2 others)" },
+    { name: "mcp_lint_check",        icon: "[MCP:LINT]",  callMsg: "Executing project linter against the active file",              resultMsg: "2 warnings detected: unused-variable, no-console" },
+    { name: "mcp_sonar_check",       icon: "[MCP:SONAR]", callMsg: "Applying SonarQube-equivalent quality rules to the active file", resultMsg: "1 finding: S1541 (cognitive complexity exceeds threshold)" },
+    { name: "find_similar_patterns", icon: "[MATCH]",     callMsg: "Identifying structurally similar function implementations",      resultMsg: "2 similar implementations located" },
   ],
   security: [
-    { name: "grep_codebase", icon: "🔍", callMsg: "Searching codebase for secret/API-key patterns", resultMsg: "no matches" },
-    { name: "semgrep_scan", icon: "🛡️", callMsg: "MCP Semgrep scanning the active file with ruleset 'auto'", resultMsg: "no semgrep findings" },
-    { name: "mcp_lint_check", icon: "🔧", callMsg: "MCP Linter is checking the active file", resultMsg: "no issues" },
-    { name: "get_git_blame", icon: "🔎", callMsg: "Checking git blame for the modified region", resultMsg: "last touched 2026-04-21 by you" },
+    { name: "grep_codebase",   icon: "[SEARCH]",       callMsg: "Querying codebase for credential and API-key patterns",             resultMsg: "No sensitive literals detected" },
+    { name: "semgrep_scan",    icon: "[MCP:SEMGREP]",  callMsg: "Executing Semgrep static analysis on the active file (ruleset: auto)", resultMsg: "Scan complete — no security findings" },
+    { name: "mcp_lint_check",  icon: "[MCP:LINT]",     callMsg: "Executing project linter against the active file",                 resultMsg: "Clean — no lint issues" },
+    { name: "get_git_blame",   icon: "[BLAME]",        callMsg: "Retrieving authorship history for the modified region",             resultMsg: "Region last modified on 2026-04-21" },
   ],
   performance: [
-    { name: "grep_codebase", icon: "🔍", callMsg: "Searching codebase for hot-path callers", resultMsg: "4 callers found" },
-    { name: "list_imports_and_usages", icon: "🔗", callMsg: "Tracing imports and usages of key symbols", resultMsg: "imported in 2 files" },
-    { name: "get_recent_commits", icon: "📜", callMsg: "Reviewing recent commits touching this file", resultMsg: "5 commits in last 30 days" },
-    { name: "mcp_sonar_check", icon: "📊", callMsg: "MCP SonarQube-style rules checking the active file", resultMsg: "0 findings" },
+    { name: "grep_codebase",           icon: "[SEARCH]",     callMsg: "Querying codebase for hot-path call sites",                   resultMsg: "4 call sites located" },
+    { name: "list_imports_and_usages", icon: "[XREF]",       callMsg: "Resolving imports and call sites for exported symbols",       resultMsg: "Referenced across 2 modules" },
+    { name: "get_recent_commits",      icon: "[HISTORY]",    callMsg: "Analyzing recent commit activity on this file",               resultMsg: "5 commits recorded in the last 30 days" },
+    { name: "mcp_sonar_check",         icon: "[MCP:SONAR]",  callMsg: "Applying SonarQube-equivalent performance rules",              resultMsg: "No performance rule violations" },
   ],
   syntax: [
-    { name: "mcp_lint_check", icon: "🔧", callMsg: "MCP Linter is checking the active file", resultMsg: "0 issues" },
-    { name: "read_file", icon: "📖", callMsg: "Reading the full file for syntactic context", resultMsg: "200 lines read" },
+    { name: "mcp_lint_check", icon: "[MCP:LINT]", callMsg: "Executing project linter against the active file",       resultMsg: "No syntactic issues" },
+    { name: "read_file",      icon: "[READ]",     callMsg: "Inspecting the active file for syntactic context",       resultMsg: "200 lines retrieved" },
   ],
   cloud: [
-    { name: "grep_codebase", icon: "🔍", callMsg: "Searching codebase for cloud SDK imports", resultMsg: "2 imports of aws-sdk" },
-    { name: "list_imports_and_usages", icon: "🔗", callMsg: "Tracing cloud-client usage across the repo", resultMsg: "used in 3 files" },
+    { name: "grep_codebase",           icon: "[SEARCH]", callMsg: "Querying codebase for cloud SDK usage",              resultMsg: "2 imports of aws-sdk located" },
+    { name: "list_imports_and_usages", icon: "[XREF]",   callMsg: "Resolving cloud-client call sites across the repo", resultMsg: "Referenced across 3 modules" },
   ],
   orgStd: [
-    { name: "grep_codebase", icon: "🔍", callMsg: "Searching codebase for organisational conventions", resultMsg: "5 reference files" },
-    { name: "find_similar_patterns", icon: "🧩", callMsg: "Finding similar implementations in sibling modules", resultMsg: "3 similar patterns" },
-    { name: "mcp_sonar_check", icon: "📊", callMsg: "MCP SonarQube-style rules checking the active file", resultMsg: "1 finding: S117 (short name)" },
+    { name: "grep_codebase",         icon: "[SEARCH]",    callMsg: "Querying codebase for organisational convention references",   resultMsg: "5 reference implementations located" },
+    { name: "find_similar_patterns", icon: "[MATCH]",     callMsg: "Identifying similar implementations in sibling modules",        resultMsg: "3 structurally equivalent implementations found" },
+    { name: "mcp_sonar_check",       icon: "[MCP:SONAR]", callMsg: "Applying SonarQube-equivalent quality rules to the active file", resultMsg: "1 finding: S117 (identifier length below convention)" },
   ],
   ckDesign: [
-    { name: "grep_codebase", icon: "🔍", callMsg: "Searching codebase for CK design references", resultMsg: "2 matches" },
-    { name: "find_similar_patterns", icon: "🧩", callMsg: "Finding reference CK designs", resultMsg: "1 related component" },
-    { name: "mcp_sonar_check", icon: "📊", callMsg: "MCP SonarQube-style rules checking the active file", resultMsg: "0 findings" },
+    { name: "grep_codebase",         icon: "[SEARCH]",    callMsg: "Querying codebase for CK design-system references",    resultMsg: "2 references located" },
+    { name: "find_similar_patterns", icon: "[MATCH]",     callMsg: "Identifying reference CK design implementations",       resultMsg: "1 related component identified" },
+    { name: "mcp_sonar_check",       icon: "[MCP:SONAR]", callMsg: "Applying SonarQube-equivalent quality rules",           resultMsg: "No violations" },
   ],
   bigquery: [
-    { name: "grep_codebase", icon: "🔍", callMsg: "Searching codebase for BigQuery dataset usage", resultMsg: "no matches" },
-    { name: "read_file", icon: "📖", callMsg: "Reading the active file for BigQuery contexts", resultMsg: "200 lines read" },
+    { name: "grep_codebase", icon: "[SEARCH]", callMsg: "Querying codebase for BigQuery dataset usage",      resultMsg: "No references located" },
+    { name: "read_file",     icon: "[READ]",   callMsg: "Inspecting the active file for BigQuery contexts", resultMsg: "200 lines retrieved" },
   ],
 };
 
@@ -107,12 +107,32 @@ async function emitMockToolActivity(
   onLog: (data: string) => void
 ): Promise<void> {
   const steps = (reviewType && MOCK_TOOL_SCRIPTS[reviewType]) || MOCK_TOOL_SCRIPTS.quality;
+
+  // Mirror the real agent lifecycle: [INIT] → [PLAN] → tools → [SYNTH] → stream JSON
+  const label = reviewType ?? "quality";
+  emitMockToolEvent(onLog, {
+    type: "call", name: "agent", icon: "[INIT]",
+    message: `Initializing ${label} review agent with ${steps.length} available tool(s)`,
+  });
+  await new Promise((r) => setTimeout(r, 220));
+  emitMockToolEvent(onLog, {
+    type: "call", name: "agent", icon: "[PLAN]",
+    message: "Planning investigation strategy",
+  });
+  await new Promise((r) => setTimeout(r, 260));
+
   for (const s of steps) {
     emitMockToolEvent(onLog, { type: "call", name: s.name, icon: s.icon, message: s.callMsg });
-    await new Promise((r) => setTimeout(r, 350));
-    emitMockToolEvent(onLog, { type: "result", name: s.name, icon: "↳", message: s.resultMsg });
-    await new Promise((r) => setTimeout(r, 180));
+    await new Promise((r) => setTimeout(r, 320));
+    emitMockToolEvent(onLog, { type: "result", name: s.name, icon: "[RESULT]", message: s.resultMsg });
+    await new Promise((r) => setTimeout(r, 160));
   }
+
+  emitMockToolEvent(onLog, {
+    type: "call", name: "synthesis", icon: "[SYNTH]",
+    message: "Consolidating findings and generating review report",
+  });
+  await new Promise((r) => setTimeout(r, 220));
 }
 
 /** Matches `REVIEW_SEQUENCE` / labels in `codeReview.ts` — one distinct mock finding per stage. */

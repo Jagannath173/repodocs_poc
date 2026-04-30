@@ -159,7 +159,7 @@
       "properties": {
         "codeReview.useMockCopilot": {
           "type": "boolean",
-          "default": true,
+          "default": false,
           "markdownDescription": "When **enabled**, the extension uses built-in mock responses (no Python proxy, no Copilot API). When **disabled** or removed, requests go to the real Copilot client. For HSBC/production, leave this **off**."
         },
         "codeReview.envFile": {
@@ -203,6 +203,11 @@
           "minimum": 1,
           "maximum": 32,
           "markdownDescription": "Maximum plan→tool loop iterations per review type. Higher = more thorough but slower and more expensive."
+        },
+        "codeReview.fixApplyImmediately": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "When **enabled** (default), clicking **Accept** or **Fix All One by One** in the review panel writes the fix to the file in one step — no separate in-editor diff confirmation. Disable to keep the CodeLens-based two-step preview where you accept/reject each diff block in the editor."
         },
         "codeReview.agentTools.semgrep": {
           "type": "boolean",

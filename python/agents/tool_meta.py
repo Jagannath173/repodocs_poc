@@ -18,8 +18,8 @@ def _grep_msg(args: dict) -> str:
     pat = _quote_arg(args.get("pattern"))
     scope = _quote_arg(args.get("file_glob"), 30)
     if scope:
-        return f"Searching codebase for '{pat}' in {scope}"
-    return f"Searching codebase for '{pat}'"
+        return f"Querying codebase for pattern '{pat}' within {scope}"
+    return f"Querying codebase for pattern '{pat}'"
 
 
 def _read_file_msg(args: dict) -> str:
@@ -27,56 +27,61 @@ def _read_file_msg(args: dict) -> str:
     start = args.get("start_line") or 1
     end = args.get("end_line") or 0
     if end and end > 0:
-        return f"Reading file {path} (lines {start}–{end})"
-    return f"Reading file {path}"
+        return f"Inspecting {path} (lines {start}–{end})"
+    return f"Inspecting {path}"
 
 
 def _blame_msg(args: dict) -> str:
     path = _quote_arg(args.get("path"))
-    return f"Checking git blame for {path} lines {args.get('start_line')}–{args.get('end_line')}"
+    return f"Retrieving authorship history for {path} (lines {args.get('start_line')}–{args.get('end_line')})"
 
 
 def _recent_commits_msg(args: dict) -> str:
     path = _quote_arg(args.get("path"))
-    return f"Reviewing recent commits touching {path}"
+    return f"Analyzing recent commit activity on {path}"
 
 
 def _imports_msg(args: dict) -> str:
     sym = _quote_arg(args.get("symbol"), 40)
-    return f"Tracing imports and usages of {sym}"
+    return f"Resolving imports and call sites for symbol '{sym}'"
 
 
 def _similar_msg(args: dict) -> str:
     path = _quote_arg(args.get("path"))
-    return f"Finding similar patterns near {path}:{args.get('line')}"
+    return f"Identifying structurally similar implementations relative to {path}:{args.get('line')}"
 
 
 def _semgrep_msg(args: dict) -> str:
     path = _quote_arg(args.get("path"))
     cfg = _quote_arg(args.get("config"), 30) or "auto"
-    return f"MCP Semgrep scanning {path} with ruleset '{cfg}'"
+    return f"Executing Semgrep static analysis on {path} (ruleset: {cfg})"
 
 
 def _mcp_lint_msg(args: dict) -> str:
     path = _quote_arg(args.get("path"))
-    return f"MCP Linter is checking {path}"
+    return f"Executing project linter against {path}"
 
 
 def _mcp_sonar_msg(args: dict) -> str:
     path = _quote_arg(args.get("path"))
-    return f"MCP SonarQube-style rules checking {path}"
+    return f"Applying SonarQube-equivalent quality rules to {path}"
 
 
 TOOL_META: dict[str, dict[str, Any]] = {
-    "grep_codebase":           {"icon": "🔍",  "display": "Codebase search",        "describe": _grep_msg},
-    "read_file":               {"icon": "📖",  "display": "File reader",            "describe": _read_file_msg},
-    "get_git_blame":           {"icon": "🔎",  "display": "Git blame",              "describe": _blame_msg},
-    "get_recent_commits":      {"icon": "📜",  "display": "Git history",            "describe": _recent_commits_msg},
-    "list_imports_and_usages": {"icon": "🔗",  "display": "Cross-reference",        "describe": _imports_msg},
-    "find_similar_patterns":   {"icon": "🧩",  "display": "Pattern finder",         "describe": _similar_msg},
-    "semgrep_scan":            {"icon": "🛡️", "display": "MCP Semgrep scan",       "describe": _semgrep_msg},
-    "mcp_lint_check":          {"icon": "🔧",  "display": "MCP Linter",             "describe": _mcp_lint_msg},
-    "mcp_sonar_check":         {"icon": "📊",  "display": "MCP SonarQube rules",    "describe": _mcp_sonar_msg},
+    # Lifecycle labels (not real tools — used for agent startup / planning / synthesis).
+    "agent":                   {"icon": "[AGENT]",   "display": "Agent",                "describe": lambda args: _quote_arg(args.get("message"), 200) or "Agent is working"},
+    "synthesis":               {"icon": "[SYNTH]",   "display": "Synthesis",            "describe": lambda args: _quote_arg(args.get("message"), 200) or "Compiling findings"},
+    # Codebase inspection tools.
+    "grep_codebase":           {"icon": "[SEARCH]",  "display": "Codebase Search",      "describe": _grep_msg},
+    "read_file":               {"icon": "[READ]",    "display": "File Reader",          "describe": _read_file_msg},
+    "get_git_blame":           {"icon": "[BLAME]",   "display": "Git Blame",            "describe": _blame_msg},
+    "get_recent_commits":      {"icon": "[HISTORY]", "display": "Git History",          "describe": _recent_commits_msg},
+    "list_imports_and_usages": {"icon": "[XREF]",    "display": "Cross-reference",      "describe": _imports_msg},
+    "find_similar_patterns":   {"icon": "[MATCH]",   "display": "Pattern Analysis",     "describe": _similar_msg},
+    # MCP-bridged analyzers.
+    "semgrep_scan":            {"icon": "[MCP:SEMGREP]", "display": "Semgrep (MCP)",    "describe": _semgrep_msg},
+    "mcp_lint_check":          {"icon": "[MCP:LINT]",    "display": "Linter (MCP)",     "describe": _mcp_lint_msg},
+    "mcp_sonar_check":         {"icon": "[MCP:SONAR]",   "display": "SonarQube (MCP)",  "describe": _mcp_sonar_msg},
 }
 
 

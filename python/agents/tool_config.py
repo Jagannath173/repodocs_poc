@@ -9,6 +9,10 @@ TOOLS_BY_REVIEW_TYPE: dict[str, list[str]] = {
     "orgStd":      ["grep_codebase", "read_file", "find_similar_patterns", "list_imports_and_usages", "mcp_sonar_check"],
     "ckDesign":    ["grep_codebase", "read_file", "find_similar_patterns", "list_imports_and_usages", "mcp_sonar_check"],
     "bigquery":    ["grep_codebase", "read_file"],
+    # Guided apply: user-supplied instruction is applied as a whole-file edit.
+    # The agent investigates the codebase to ensure the edit stays consistent with
+    # existing conventions and doesn't break callers before producing the new file.
+    "guidedApply": ["grep_codebase", "read_file", "list_imports_and_usages", "find_similar_patterns", "get_recent_commits", "mcp_lint_check", "mcp_sonar_check"],
 }
 
 DEFAULT_TOOL_SET = ["grep_codebase", "read_file"]

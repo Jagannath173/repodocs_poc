@@ -5,3 +5,4 @@ python/venv/
 .env
 python/copilot_token_cache.json
 sample.env
+python/agents/

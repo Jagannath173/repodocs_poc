@@ -676,7 +676,32 @@ if __name__ == "__main__":
                     logger.info(f">>> Prompt received via stdin ({len(prompt)} chars).")
                     if os.environ.get("GITHUB_COPILOT_AGENT_MODE") == "1":
                         logger.info(">>> Agent mode enabled; delegating to LangGraph runner.")
+                        # Emit BEFORE importing the agent module. langgraph + langchain-openai
+                        # can take 3-10s to import on a cold venv; without this event the
+                        # webview shows nothing but a blinking cursor during that window.
+                        _review_type = os.environ.get("REVIEW_TYPE", "quality")
+                        _init_payload = json.dumps({
+                            "tool_event": {
+                                "type": "call",
+                                "name": "agent",
+                                "icon": "[INIT]",
+                                "message": f"Agent mode engaged — loading LangGraph runtime for {_review_type} review",
+                                "preview": "",
+                            }
+                        }, ensure_ascii=False)
+                        print(f"data: {_init_payload}", flush=True)
                         from agents.runner import run_review_agent
+                        # Second progress event: imports finished, entering the agent.
+                        _ready_payload = json.dumps({
+                            "tool_event": {
+                                "type": "call",
+                                "name": "agent",
+                                "icon": "[INIT]",
+                                "message": "LangGraph runtime ready — constructing review graph",
+                                "preview": "",
+                            }
+                        }, ensure_ascii=False)
+                        print(f"data: {_ready_payload}", flush=True)
                         run_review_agent(prompt=prompt, session_token_b64=token, access_token=access_token or "")
                     else:
                         # Pass access_token to allow internal refresh if needed

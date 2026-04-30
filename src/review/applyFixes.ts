@@ -945,16 +945,67 @@ async function runHolisticApplyWithExtra(params: {
 
   panel.beginGuidedApplyStream();
   const state = { text: "" };
+  // Tool-activity lines (data: {"tool_event":{...}}) from the agent are surfaced to the
+  // guided-apply stream so the user sees the same Claude-style "[SEARCH]/[READ]/..."
+  // progress the review panel shows.
+  let toolActivityText = "";
+  const cfg = vscode.workspace.getConfiguration("codeReview");
+  const guidedAgentMode = cfg.get<boolean>("agentMode", true);
+  const workspaceRoot =
+    vscode.workspace.getWorkspaceFolder(uri)?.uri.fsPath ??
+    vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
   try {
     await runCopilotInference(
       extensionContext,
       buildHolisticExtraPrompt(stored, baseText, extra),
       (line) => {
         log.proxyLine("applyFixesHolistic", line);
+        const trimmed = line.trim();
+        // Intercept tool_event lines for live progress; forward everything else to the
+        // normal SSE text accumulator.
+        if (trimmed.startsWith("data: ")) {
+          const jsonStr = trimmed.substring(6).trim();
+          if (jsonStr !== "[DONE]") {
+            try {
+              const json = JSON.parse(jsonStr) as {
+                tool_event?: { type?: string; name?: string; message?: string; icon?: string };
+              };
+              if (json.tool_event) {
+                const evt = json.tool_event;
+                const icon = (evt.icon || "").trim() || "•";
+                const message = (evt.message || evt.name || "").trim();
+                if (message) {
+                  if (evt.type === "call") {
+                    toolActivityText += `${icon} ${message}\n`;
+                  } else if (evt.type === "result") {
+                    toolActivityText += `   ${icon} ${message}\n`;
+                  }
+                  panel.setGuidedApplyStream(toolActivityText + state.text);
+                }
+                return;
+              }
+            } catch {
+              /* fall through to the normal text accumulator below */
+            }
+          }
+        }
         appendAssistantFromSseLine(line, state);
-        panel.setGuidedApplyStream(state.text);
+        panel.setGuidedApplyStream(toolActivityText + state.text);
       },
-      { systemRole: FIX_SYSTEM_ROLE, stream: true }
+      {
+        systemRole: FIX_SYSTEM_ROLE,
+        stream: true,
+        ...(guidedAgentMode
+          ? {
+              agentMode: true,
+              agentModel: cfg.get<string>("agentModel", "gpt-5.5") || undefined,
+              agentMaxIterations: cfg.get<number>("agentMaxIterations", 8),
+              agentSemgrepEnabled: cfg.get<boolean>("agentTools.semgrep", true),
+              reviewType: "guidedApply",
+              workspaceRoot,
+            }
+          : {}),
+      }
     );
   } finally {
     panel.endGuidedApplyStream();
@@ -1156,18 +1207,27 @@ export async function applyFixesFromReview(
   let failedCount = 0;
   let skippedIrrelevantInstructionCount = 0;
 
-  const hasQueuedWork = fixOperationQueues.has(stored.documentUri);
-  if (hasQueuedWork) {
-    panel.addFixLog("A fix preview is already active for this file. Accept or Reject it first.", "warn");
-    try {
-      await revealEditorForUri(uriCheck);
-    } catch {
-      /* best-effort: bring the source file forward so CodeLens preview is visible */
+  // When "apply immediately" is on, clicks write the fix directly — no in-editor diff
+  // preview — so there's no open preview to conflict with; the per-document queue below
+  // serialises clicks automatically. Only the legacy CodeLens-preview mode needs the gate.
+  const applyImmediately = vscode.workspace
+    .getConfiguration("codeReview")
+    .get<boolean>("fixApplyImmediately", true);
+
+  if (!applyImmediately) {
+    const hasQueuedWork = fixOperationQueues.has(stored.documentUri);
+    if (hasQueuedWork) {
+      panel.addFixLog("A fix preview is already active for this file. Accept or Reject it first.", "warn");
+      try {
+        await revealEditorForUri(uriCheck);
+      } catch {
+        /* best-effort: bring the source file forward so CodeLens preview is visible */
+      }
+      void vscode.window.showInformationMessage(
+        "A fix preview is already open for this file. Switch to the source editor and use Accept / Reject (or the status bar Fix actions). Then try again if needed."
+      );
+      return;
     }
-    void vscode.window.showInformationMessage(
-      "A fix preview is already open for this file. Switch to the source editor and use Accept / Reject (or the status bar Fix actions). Then try again if needed."
-    );
-    return;
   }
 
   const isBulkRun = mode !== "one";
@@ -1437,8 +1497,8 @@ export async function applyFixesFromReview(
 
         const previewTitle = finding.title || `Fix (${step + 1}/${total})`;
         const choice = await previewFixInEditorAndWait(doc, baseText, afterText, previewTitle, {
-          autoAcceptAll: false,
-          skipInteractivePreview: false,
+          autoAcceptAll: applyImmediately,
+          skipInteractivePreview: applyImmediately,
         });
         if (choice === "cancelled") {
           panel.setApplyingFixIndex(null);
@@ -1457,8 +1517,8 @@ export async function applyFixesFromReview(
           continue;
         }
         if (choice === "reject") {
-          panel.setApplyingFixIndex(null);
           await markFindingRejected(originalIndex, live.documentUri);
+          panel.setApplyingFixIndex(null);
           rejectedCount += 1;
           panel.addFixLog(`Step ${step + 1}/${total} rejected. Continuing with next finding.`, "warn");
           if (!isBulkRun) {
@@ -1468,9 +1528,12 @@ export async function applyFixesFromReview(
           continue;
         }
 
-        panel.setApplyingFixIndex(null);
+        // Mark the finding applied FIRST so the panel renders the "Applied" pill
+        // immediately when we clear the applying flag — otherwise there is a brief
+        // render where the row reverts to "Accept" before "Applied" arrives.
         const fixRec = buildAppliedFixRecord(originalIndex, finding, baseText, afterText);
         await markFindingApplied(originalIndex, fixRec, live.documentUri);
+        panel.setApplyingFixIndex(null);
         appliedCount += 1;
         doc = await vscode.workspace.openTextDocument(uri);
         await revealAndHighlightAppliedFix(uri, baseText, afterText);

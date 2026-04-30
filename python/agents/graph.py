@@ -1,6 +1,7 @@
 """LangGraph plan -> tools -> synthesize loop for a single review type."""
 import json
 import os
+import re
 from typing import Annotated, TypedDict
 
 from langchain_core.messages import AnyMessage, AIMessage, AIMessageChunk, HumanMessage, SystemMessage, ToolMessage
@@ -10,23 +11,15 @@ from langgraph.prebuilt import ToolNode
 
 from . import streaming
 from .llm import build_chat_model
+from .system_prompts import build_system_prompt
 from .tool_meta import describe_call, summarize_result
 
 
-AGENT_SYSTEM_PROMPT = (
-    "You are a senior code reviewer. You have been given a file to review and a set of tools to "
-    "investigate the codebase. Before emitting findings, use tools when they will meaningfully "
-    "improve the review (e.g. confirm a symbol is used elsewhere, check recent history, scan for "
-    "security patterns, find similar implementations).\n\n"
-    "Rules:\n"
-    "1. Call tools only when the extra context is likely to change what you report.\n"
-    "2. Do not call the same tool with the same arguments twice.\n"
-    "3. When you have enough context, respond with a single JSON object matching this shape:\n"
-    '   {"findings":[{"severity":"critical|high|medium|low|info","category":"<short>","title":"<short>","detail":"<explanation>","suggestion":"<concrete code-level fix>"}]}\n'
-    "4. Output ONLY the JSON object in your final message. No commentary, no markdown fence.\n"
-    "5. Each finding must be directly fixable in the file under review. Omit speculative or style-only nits.\n"
-    "6. Merge duplicates. Prefer the smallest possible edit."
-)
+def _extract_active_file(prompt: str) -> str:
+    """Pull the 'Active file: <path>' line out of the Jinja-rendered user prompt so the
+    agent can call path-taking tools with a real workspace-relative path."""
+    m = re.search(r"^Active file:\s*(.+)$", prompt, re.MULTILINE)
+    return m.group(1).strip() if m else ""
 
 
 class ReviewState(TypedDict):
@@ -35,23 +28,68 @@ class ReviewState(TypedDict):
     max_iterations: int
 
 
-def _plan_factory(llm_with_tools):
+def _plan_factory(llm_required, llm_auto):
+    """Return a plan-node callable.
+
+    `llm_required` is the model bound with tool_choice='any' and is used on iteration 0 so the
+    agent is forced to start by investigating the codebase rather than answering from memory.
+    `llm_auto` is the standard tool_choice='auto' binding used for later iterations so the
+    agent can decide to produce findings once it has enough context.
+    """
     def plan(state: ReviewState):
         iters = state.get("iterations", 0)
         max_iters = state.get("max_iterations", 8)
         if iters >= max_iters:
             return {"messages": [AIMessage(content='{"findings":[]}')], "iterations": iters + 1}
-        # When run under stream_mode="messages", LangGraph intercepts the LLM call and
-        # emits AIMessageChunk events for each token. We still call .invoke() so the
-        # returned message is the fully-aggregated one for state bookkeeping.
-        response = llm_with_tools.invoke(state["messages"])
+
+        # Emit an immediate "planning" event so the user sees progress BEFORE the first
+        # LLM response arrives.
+        thinking_msg = (
+            "Planning investigation strategy"
+            if iters == 0
+            else f"Evaluating next investigation step (iteration {iters + 1})"
+        )
+        streaming.emit_tool_event("call", "agent", message=thinking_msg, icon="[PLAN]")
+
+        # On the first iteration, force the model to call a tool (tool_choice='any') so it
+        # cannot skip investigation entirely and answer from prior knowledge.
+        model = llm_required if iters == 0 else llm_auto
+        try:
+            response = model.invoke(state["messages"])
+        except Exception as e:
+            # If tool_choice='any' isn't supported by the provider, fall back to auto so
+            # the review at least completes.
+            if iters == 0 and llm_required is not llm_auto:
+                streaming.emit_tool_event(
+                    "call", "agent",
+                    message=f"Provider rejected forced tool call ({type(e).__name__}); retrying with automatic tool choice",
+                    icon="[NOTE]",
+                )
+                response = llm_auto.invoke(state["messages"])
+            else:
+                raise
         tool_calls = getattr(response, "tool_calls", None) or []
-        for call in tool_calls:
-            name = call.get("name", "") or ""
-            args = call.get("args") or {}
-            icon, message = describe_call(name, args)
-            preview = json.dumps(args, ensure_ascii=False)[:200]
-            streaming.emit_tool_event("call", name, message=message, icon=icon, preview=preview)
+
+        if tool_calls:
+            for call in tool_calls:
+                name = call.get("name", "") or ""
+                args = call.get("args") or {}
+                icon, message = describe_call(name, args)
+                preview = json.dumps(args, ensure_ascii=False)[:200]
+                streaming.emit_tool_event("call", name, message=message, icon=icon, preview=preview)
+        else:
+            if iters == 0:
+                streaming.emit_tool_event(
+                    "call", "agent",
+                    message="Model produced findings without tool use — they may be grounded only in the snippet",
+                    icon="[NOTE]",
+                )
+            streaming.emit_tool_event(
+                "call", "synthesis",
+                message="Consolidating findings and generating review report",
+                icon="[SYNTH]",
+            )
+
         return {"messages": [response], "iterations": iters + 1}
     return plan
 
@@ -67,7 +105,7 @@ def _tools_node_factory(tools: list):
                 raw = str(msg.content)
                 summary = summarize_result(name, raw)
                 streaming.emit_tool_event(
-                    "result", name, message=summary, icon="↳", preview=raw[:200]
+                    "result", name, message=summary, icon="[RESULT]", preview=raw[:200]
                 )
         return result
     return tools_step
@@ -92,9 +130,18 @@ def _finalize(state: ReviewState):
 
 
 def build_graph(tools: list, llm):
-    llm_with_tools = llm.bind_tools(tools) if tools else llm
+    if tools:
+        llm_auto = llm.bind_tools(tools)
+        try:
+            llm_required = llm.bind_tools(tools, tool_choice="any")
+        except TypeError:
+            # Older langchain-openai versions don't accept tool_choice on bind_tools.
+            llm_required = llm_auto
+    else:
+        llm_auto = llm
+        llm_required = llm
     g = StateGraph(ReviewState)
-    g.add_node("plan", _plan_factory(llm_with_tools))
+    g.add_node("plan", _plan_factory(llm_required, llm_auto))
     g.add_node("tools", _tools_node_factory(tools))
     g.add_node("finalize", _finalize)
     g.set_entry_point("plan")
@@ -112,7 +159,23 @@ def run_review_agent(prompt: str, session_token_b64: str, review_type: str) -> N
     tools = load_tools(tool_names)
     llm = build_chat_model(session_token_b64)
 
-    messages = [SystemMessage(content=AGENT_SYSTEM_PROMPT), HumanMessage(content=prompt)]
+    active_file = _extract_active_file(prompt)
+    workspace_root = os.environ.get("WORKSPACE_ROOT", "")
+    system_prompt = build_system_prompt(review_type, active_file, workspace_root)
+
+    # Immediate kick-off event so the webview switches from "Analyzing current code…"
+    # to a live agent-activity line before the first LLM call returns.
+    loaded_tool_names = [getattr(t, "name", "") for t in tools if getattr(t, "name", "")]
+    streaming.emit_tool_event(
+        "call", "agent",
+        message=(
+            f"Initializing {review_type} review agent | active file: "
+            f"{active_file or '(unknown)'} | tools: {', '.join(loaded_tool_names) or 'none'}"
+        ),
+        icon="[INIT]",
+    )
+
+    messages = [SystemMessage(content=system_prompt), HumanMessage(content=prompt)]
     graph = build_graph(tools, llm)
 
     # stream_mode="messages" yields (chunk, metadata) pairs as the LLM inside a node

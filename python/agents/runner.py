@@ -6,6 +6,11 @@ from . import streaming
 
 def run_review_agent(prompt: str, session_token_b64: str, access_token: str = "") -> None:
     review_type = os.environ.get("REVIEW_TYPE", "quality")
+    streaming.emit_tool_event(
+        "call", "agent",
+        message=f"Runner entered — dispatching {review_type} review to graph",
+        icon="[INIT]",
+    )
     try:
         from .graph import run_review_agent as _run
         _run(prompt=prompt, session_token_b64=session_token_b64, review_type=review_type)
